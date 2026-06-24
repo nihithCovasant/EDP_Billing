@@ -1,0 +1,120 @@
+{
+  "agent_definition": {
+    "agent_id": "my-custom-agent",
+    "name": "My Custom Agent",
+    "agent_type": "PRO_CODE",
+    "version": "1.0.0",
+    "description": "A customizable AI agent for product recommendations",
+    "capabilities": {
+      "streaming": true,
+      "push_notifications": false,
+      "multi_turn": true,
+      "context_aware": true
+    },
+    "provider": {
+      "organization": "CAMS",
+      "url": "https://cams.example.com"
+    },
+    "defaultInputModes": [
+      "text"
+    ],
+    "defaultOutputModes": [
+      "text"
+    ],
+    "skills": [
+      {
+        "skill_id": "product-search",
+        "skill_name": "Product Search",
+        "skill_description": "Search for products based on user queries",
+        "tags": [
+          "search",
+          "products",
+          "e-commerce"
+        ],
+        "examples": [
+          "Find me a laptop for gaming",
+          "Show me running shoes under $100"
+        ]
+      }
+    ],
+    "root_agent": true,
+    "url": "https://my-agent.example.com",
+    "sub_agents": []
+  },
+  "agent_config": {
+    "agent_id": "my-custom-agent",
+    "agent_name": "My Custom Agent",
+    "app_name_adk": "my_custom_agent",
+    "instructions": "You are a knowledgeable AI assistant with access to various tools and knowledge sources.\n\nYour role is to:\n- Provide accurate, well-researched answers using retrieved information\n- Cite sources when relevant information is found\n- Clearly state when information is not available\n- Ask clarifying questions when queries are ambiguous\n- Maintain accuracy over completeness\n\nAlways prioritize factual accuracy and cite your sources when possible.",
+    "llm_config": {
+      "model": "gpt-4o",
+      "temperature": 0.3,
+      "max_tokens": "4096"
+    },
+    "llm_provider": "openai",
+    "max_steps": 10,
+    "max_iterations": 5,
+    "datastores": [
+      {
+        "id": "product-catalog-001",
+        "display_name": "Product Catalog",
+        "description": "Main product database with inventory and pricing"
+      }
+    ],
+    "tools": [
+      {
+        "name": "product_search",
+        "description": "Search products by keywords, category, or filters",
+        "mcp_url": "http://mcp-server.example.com:5000/sse",
+        "owner": "my-company"
+      },
+      {
+        "name": "get_product_details",
+        "description": "Get detailed information about a specific product",
+        "mcp_url": "http://mcp-server.example.com:5000/sse",
+        "owner": "my-company"
+      }
+    ],
+    "output_key": "final_response",
+    "subagent_configs": [],
+    "domain_knowledge": {
+      "description": "Static knowledge base for the agent (customizable per use case)",
+      "categories": [
+        "products",
+        "pricing",
+        "inventory"
+      ],
+      "rules": [
+        "Always verify product availability before recommending",
+        "Cite the product catalog when providing prices"
+      ],
+      "examples": [
+        {
+          "input": "Find me a gaming laptop under $1500",
+          "output": "Here are the top gaming laptops matching your budget: ..."
+        }
+      ]
+    },
+    "prompts": {
+      "system": "You are a knowledgeable AI assistant.",
+      "retrieval": "",
+      "response": ""
+    },
+    "secrets": {
+      "litellm": {
+        "enabled": true,
+        "base_url": "https://aifabric-litellm.example.com/v1",
+        "api_key": "sk-litellm-example-key"
+      },
+      "pinecone": {
+        "environment": "us-east-1-aws"
+      }
+    }
+  },
+  "dependantAgents": [],
+  "runtime_context": {
+    "tenant_id": "default",
+    "user_id": "N/A",
+    "instance_id": "my-agent-instance-001"
+  }
+}

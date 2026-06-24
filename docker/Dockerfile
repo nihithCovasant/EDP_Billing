@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build for optimized production image
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv venv
+ENV PATH="/app/venv/bin:$PATH"
+
+COPY requirements.txt .
+
+RUN pip install --upgrade pip \
+    && pip install keyring keyrings.google-artifactregistry-auth google-auth
+
+# Pull requirements from GCP Artifact Registry (private packages like platform-sdk-common)
+# and public PyPI. The GCP service account key is mounted as a build secret.
+RUN --mount=type=secret,id=gcp_reader_sa \
+    export GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp_reader_sa && \
+    ACCESS_TOKEN=$(python3 -c "import google.auth; import google.auth.transport.requests; creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform']); creds.refresh(google.auth.transport.requests.Request()); print(creds.token)") && \
+    pip install -r requirements.txt \
+        --index-url https://oauth2accesstoken:${ACCESS_TOKEN}@us-central1-python.pkg.dev/cams-151225/cams-python-repo/simple/ \
+        --extra-index-url https://pypi.org/simple/ \
+        --no-input && \
+    pip uninstall -y keyring keyrings.google-artifactregistry-auth
+
+# Production stage
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Copy venv from builder
+COPY --from=builder /app/venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# Copy application code
+COPY src/ ./src/
+
+# Copy entrypoint script and fix line endings (Windows CRLF -> Unix LF)
+COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Create directories for configs and secrets
+RUN mkdir -p /app/config /app/secrets
+
+# Environment variables with defaults (can be overridden)
+ENV HOST=0.0.0.0
+ENV PORT=8005
+ENV LOG_LEVEL=INFO
+
+EXPOSE 8005
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health/live')" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["python", "-m", "src.agent"]

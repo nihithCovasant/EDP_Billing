@@ -1,0 +1,82 @@
+{
+  "agent_definition": {
+    "agent_id": "60cd1418-b130-4e9a-b2ac-badfc05c096d",
+    "name": "EDP_Billing",
+    "agent_type": "PRO_CODE",
+    "version": "1.0.0",
+    "description": "This is a POC for EDP Billing MOFSL",
+    "capabilities": {
+      "streaming": true,
+      "push_notifications": false,
+      "multi_turn": true,
+      "context_aware": true
+    },
+    "provider": {
+      "organization": "CAMS",
+      "url": ""
+    },
+    "defaultInputModes": [
+      "text"
+    ],
+    "defaultOutputModes": [
+      "text"
+    ],
+    "skills": [
+      {
+        "id": "skill_1782272628702_utwpjq",
+        "name": "EDP Billing Processing",
+        "description": "Process billing requests, validate invoices, calculate charges, and retrieve billing details based on user queries such as account number, billing cycle, or product usage.",
+        "tags": [],
+        "examples": []
+      }
+    ],
+    "root_agent": true,
+    "url": "",
+    "sub_agents": []
+  },
+  "agent_config": {
+    "agent_id": "60cd1418-b130-4e9a-b2ac-badfc05c096d",
+    "agent_name": "EDP_Billing",
+    "app_name_adk": "edp-billing",
+    "instructions": "You are a knowledgeable AI assistant with access to various tools and knowledge sources.\n\nYour role is to:\n- Provide accurate, well-researched answers using retrieved information\n- Cite sources when relevant information is found\n- Clearly state when information is not available\n- Ask clarifying questions when queries are ambiguous\n- Maintain accuracy over completeness\n\nAlways prioritize factual accuracy and cite your sources when possible.",
+    "llm_config": {
+      "model": "gpt-4o",
+      "temperature": 0.3,
+      "max_tokens": "4096"
+    },
+    "llm_provider": "openai",
+    "max_steps": 10,
+    "max_iterations": 5,
+    "datastores": [],
+    "tools": [],
+    "output_key": "final_response",
+    "subagent_configs": [],
+    "domain_knowledge": {
+      "description": "Static knowledge base for the agent (customizable per use case)",
+      "categories": [],
+      "rules": [],
+      "examples": []
+    },
+    "prompts": {
+      "system": "You are a knowledgeable AI assistant.",
+      "retrieval": "",
+      "response": ""
+    },
+    "secrets": {
+      "litellm": {
+        "enabled": true,
+        "base_url": "",
+        "api_key": ""
+      },
+      "pinecone": {
+        "environment": ""
+      }
+    }
+  },
+  "dependantAgents": [],
+  "runtime_context": {
+    "tenant_id": "fdba490d-5005-45bc-8887-9f9f8751daea",
+    "user_id": "41bf0b8b-c452-4caa-a305-0d226a26b580",
+    "instance_id": "N/A"
+  }
+}
