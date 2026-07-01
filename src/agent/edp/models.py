@@ -1,0 +1,416 @@
+"""
+SQLAlchemy models for EDP Billing agent — final 3-table design.
+
+workflow_properties  — daily uploaded JSON config per (trade_date, domain)
+segment_execution    — runtime state per (trade_date, domain, segment_code)
+agent_control        — append-only START/STOP audit log
+
+No foreign-key constraints between tables (soft references only).
+All tables are append-only — no deletes.
+"""
+
+from __future__ import annotations
+
+import enum
+import uuid
+from datetime import date, datetime
+
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.types import JSON
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
+
+class SegmentStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    SKIPPED = "SKIPPED"
+    FAILED = "FAILED"
+
+
+class SegmentPhase(str, enum.Enum):
+    """
+    7-stage pipeline per segment — maps directly to CBOS API sequence:
+      HOLIDAY_CHECK       → POST file_process_status(BeginFileUpload)
+      RESERVE_PID         → POST getNewTradeProcess(PROCESSID="0")
+      AWAIT_FILE_UPLOAD   → POST file_process_status(FILEUPLOAD)   — poll until TRUE
+      TRIGGER             → POST getNewTradeProcess(PROCESSID=actual) — runs the process
+      AWAIT_BILLPOSTING   → POST file_process_status(BILLPOSTING)   — poll until TRUE
+      AWAIT_RECON         → POST file_process_status(RECON)         — poll until TRUE
+      AWAIT_CONTRACT_NOTE → POST file_process_status(CONTRACTNOTEGENERATION) — poll until TRUE
+      DONE                → terminal state
+    """
+    HOLIDAY_CHECK = "HOLIDAY_CHECK"
+    RESERVE_PID = "RESERVE_PID"
+    AWAIT_FILE_UPLOAD = "AWAIT_FILE_UPLOAD"
+    TRIGGER = "TRIGGER"
+    AWAIT_BILLPOSTING = "AWAIT_BILLPOSTING"
+    AWAIT_RECON = "AWAIT_RECON"
+    AWAIT_CONTRACT_NOTE = "AWAIT_CONTRACT_NOTE"
+    DONE = "DONE"
+
+
+class RuntimeHealth(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    STALE = "STALE"
+    RECOVERED = "RECOVERED"
+
+
+class LockState(str, enum.Enum):
+    UNLOCKED = "UNLOCKED"
+    LOCKED = "LOCKED"
+
+
+class AgentControlAction(str, enum.Enum):
+    START = "START"
+    STOP = "STOP"
+
+
+# ---------------------------------------------------------------------------
+# Table 1: workflow_properties
+# ---------------------------------------------------------------------------
+
+class WorkflowProperties(Base):
+    """
+    Daily workflow config uploaded by MOFSL ops.
+    One active row per (trade_date, domain).
+
+    On re-upload: old row is soft-superseded (is_active=False, superseded_at set)
+    and a new row is inserted. If content_hash is identical, upload is a no-op.
+
+    workflow_json shape:
+    {
+      "domain": "EDP",
+      "timezone": "Asia/Kolkata",
+      "wake_interval_seconds": 60,
+      "segments": [
+        {
+          "segment_code": "EQ",
+          "segment_name": "Cash",
+          "sequence_order": 1,
+          "login_id": "CV0001",
+          "window_start": "17:00",
+          "window_end": "18:00",
+          "window_end_next_day": false,
+          "processes": [
+            {"name": "fileupload",   "order": 1, "requires_trigger": false,
+             "poll_deadline": "18:00", "poll_deadline_next_day": false},
+            {"name": "BillPost",     "order": 2, "requires_trigger": true,
+             "poll_deadline": "18:30", "poll_deadline_next_day": false},
+            {"name": "Reconn",       "order": 3, "requires_trigger": true,
+             "poll_deadline": "19:00", "poll_deadline_next_day": false},
+            {"name": "ContractNote", "order": 4, "requires_trigger": true,
+             "poll_deadline": "19:30", "poll_deadline_next_day": false}
+          ]
+        },
+        ...7 segments...
+      ]
+    }
+    """
+
+    __tablename__ = "workflow_properties"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    trade_date: Mapped[date] = mapped_column(
+        Date, nullable=False, index=True
+    )
+    domain: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="EDP",
+        comment="EDP or SETTLEMENT — same table serves both domains"
+    )
+    workflow_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False,
+        comment="Full segment + process config for the day"
+    )
+    content_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False,
+        comment="SHA-256 of workflow_json; identical re-upload is a no-op"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True,
+        comment="Only one active row per (trade_date, domain)"
+    )
+    uploaded_by: Mapped[str] = mapped_column(
+        String(256), nullable=False, default="system"
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Set when a newer config replaces this row for same (trade_date, domain)"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Table 2: segment_execution
+# ---------------------------------------------------------------------------
+
+class SegmentExecution(Base):
+    """
+    One row per (trade_date, domain, segment_code). Unique constraint enforced.
+
+    All runtime state for the segment lives here:
+      - segment-level status, lock, timing
+      - per-process state inside processes_json (holiday_check/file_upload_ready/trigger/bill_posting/recon/contract_note)
+
+    processes_json shape (6 internal stages per segment):
+    {
+      "holiday_check": {
+        "status": "COMPLETED|SKIPPED",
+        "poll_count": 1,
+        "last_response": "FALSE",      <- BeginFileUpload returned FALSE (not holiday)
+        "checked_at": "2026-06-28T17:00:00Z"
+      },
+      "file_upload_ready": {
+        "status": "COMPLETED|POLLING|TIMED_OUT",
+        "poll_count": 15,
+        "last_response": "TRUE",
+        "ready_at": "2026-06-28T17:22:00Z"
+      },
+      "trigger": {
+        "status": "TRIGGERED|FAILED",
+        "at": "2026-06-28T17:22:30Z",
+        "process_id_used": "17658",
+        "is_runnable": true
+      },
+      "bill_posting": {
+        "status": "CONFIRMED|POLLING|TIMED_OUT",
+        "poll_count": 8,
+        "last_response": "TRUE",
+        "confirmed_at": "2026-06-28T18:30:00Z"
+      },
+      "recon": {
+        "status": "CONFIRMED|POLLING|TIMED_OUT",
+        "poll_count": 3,
+        "last_response": "TRUE",
+        "confirmed_at": "2026-06-28T19:10:00Z"
+      },
+      "contract_note": {
+        "status": "CONFIRMED|POLLING|TIMED_OUT",
+        "poll_count": 5,
+        "last_response": "TRUE",
+        "confirmed_at": "2026-06-28T19:45:00Z"
+      }
+    }
+
+    CBOS ProcessName → internal stage key mapping:
+      BeginFileUpload        → holiday_check
+      FILEUPLOAD             → file_upload_ready
+      (getNewTradeProcess)   → trigger
+      BILLPOSTING            → bill_posting
+      RECON                  → recon
+      CONTRACTNOTEGENERATION → contract_note
+
+    current_process column stores the CBOS ProcessName currently being polled
+    (e.g. "BeginFileUpload", "FILEUPLOAD", "BILLPOSTING", "RECON", "CONTRACTNOTEGENERATION")
+    or null during RESERVE_PID and TRIGGER phases.
+    """
+
+    __tablename__ = "segment_execution"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+
+    # --- Identity ---
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    domain: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="EDP",
+        comment="EDP or SETTLEMENT"
+    )
+    segment_code: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        comment="Exact CBOS API param: EQ, DR, CUR, SL, NCDEX, MCX, NSECOM, MF"
+    )
+    segment_name: Mapped[str] = mapped_column(
+        String(64), nullable=False,
+        comment="Human label: Cash, Derivative, Currency, SLB, NCDEX, MCX, NSE Commodity, MF"
+    )
+    sequence_order: Mapped[int] = mapped_column(
+        Integer, nullable=False,
+        comment="Processing order: 1=EQ, 2=DR, 3=CUR, 4=SL, 5=NCDEX, 6=MCX, 7=NSECOM, 8=MF"
+    )
+
+    # --- Soft reference to workflow_properties (no FK) ---
+    config_id_used: Mapped[str | None] = mapped_column(
+        String(36), nullable=True,
+        comment="workflow_properties.id that seeded this row — no FK constraint"
+    )
+    config_hash_used: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment="workflow_properties.content_hash at seed time — for audit"
+    )
+
+    # --- Overall segment status ---
+    segment_status: Mapped[SegmentStatus] = mapped_column(
+        Enum(SegmentStatus), nullable=False, default=SegmentStatus.PENDING
+    )
+    current_process: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment="Active CBOS ProcessName being polled: BeginFileUpload | FILEUPLOAD | BILLPOSTING | RECON | CONTRACTNOTEGENERATION"
+    )
+    current_phase: Mapped[SegmentPhase | None] = mapped_column(
+        Enum(SegmentPhase), nullable=True,
+        comment="Active phase: READINESS | RESERVE_PID | TRIGGER | CONFIRM | DONE"
+    )
+
+    # --- CBOS process_id (reserved once per segment-day via getNewTradeProcess(PROCESSID='0')) ---
+    process_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment="Reserved once per segment-day via getNewTradeProcess(PROCESSID='0'); reused for trigger"
+    )
+    process_id_reserved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="When getNewTradeProcess(PROCESSID='0') returned the process_id"
+    )
+
+    # --- Lock (prevents double-trigger across restarts/pods) ---
+    lock_state: Mapped[LockState] = mapped_column(
+        Enum(LockState), nullable=False, default=LockState.UNLOCKED
+    )
+    lock_owner: Mapped[str | None] = mapped_column(
+        String(256), nullable=True,
+        comment="Agent pod or instance that currently holds the lock"
+    )
+    lock_acquired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lock_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Lock TTL — if now() > lock_expires_at the lock is considered stale"
+    )
+
+    # --- Per-process state (all 4 processes in one JSON column) ---
+    processes_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict,
+        comment="Keys: holiday_check, file_upload_ready, trigger, bill_posting, recon, contract_note — see docstring for shape"
+    )
+
+    # --- Timing ---
+    window_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Earliest time this segment should start (from workflow_json)"
+    )
+    window_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Hard deadline — no auto triggers after this"
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="When segment moved from PENDING to IN_PROGRESS"
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Set on any terminal state: COMPLETED, FAILED, or SKIPPED"
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="Updated every orchestrator cycle while IN_PROGRESS; staleness detector"
+    )
+
+    # --- Skip / Failure reason ---
+    skip_category: Mapped[str | None] = mapped_column(
+        String(32), nullable=True,
+        comment="CBOS_SKIP | TIMEOUT | MANUAL_SKIP | HOLIDAY | DEPENDENCY_FAILED"
+    )
+    skip_reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+
+    # --- HITL / Alerts (append-only list) ---
+    hitl_json: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, default=list,
+        comment="[{type, raised_at, message, assigned_to, resolved_at}]"
+    )
+
+    # --- Agent runtime health ---
+    runtime_health: Mapped[RuntimeHealth] = mapped_column(
+        Enum(RuntimeHealth), nullable=False, default=RuntimeHealth.ACTIVE,
+        comment="ACTIVE=normal | STALE=heartbeat stopped | RECOVERED=restarted mid-segment"
+    )
+
+    # --- Audit ---
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date", "domain", "segment_code",
+            name="uq_segment_execution_per_day",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Table 3: agent_control
+# ---------------------------------------------------------------------------
+
+class AgentControl(Base):
+    """
+    Append-only audit log of agent START / STOP commands.
+
+    Never updated — only new rows are inserted.
+    Used for market holidays and maintenance windows.
+
+    snapshot_json captures the live state at the moment of STOP/START:
+    {
+      "active_segment": "EQ",
+      "active_process": "BillPost",
+      "active_phase": "CONFIRM",
+      "pending_count": 5,
+      "in_progress_count": 1,
+      "completed_count": 1
+    }
+    """
+
+    __tablename__ = "agent_control"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    action: Mapped[AgentControlAction] = mapped_column(
+        Enum(AgentControlAction), nullable=False
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    requested_by: Mapped[str] = mapped_column(
+        String(256), nullable=False, default="system"
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_state: Mapped[str] = mapped_column(
+        String(32), nullable=False,
+        comment="RUNNING or STOPPED"
+    )
+    snapshot_json: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True,
+        comment="Runtime state snapshot at time of action"
+    )

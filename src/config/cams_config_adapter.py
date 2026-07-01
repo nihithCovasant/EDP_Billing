@@ -174,7 +174,10 @@ class CAMSConfigAdapter:
             "secrets": agent_config.get("secrets", {}),
 
             # Pass through domain knowledge — all sub-fields used by response_generator
-            "domain_knowledge": agent_config.get("domain_knowledge", {})
+            "domain_knowledge": agent_config.get("domain_knowledge", {}),
+
+            # EDP Billing orchestration config
+            "edp": agent_config.get("edp", {}),
         }
         
         # Override prompts if they exist in agent_config

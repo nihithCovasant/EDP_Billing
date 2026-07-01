@@ -19,6 +19,8 @@ from a2a.types import AgentCard, AgentCapabilities, AgentProvider, AgentSkill
 from pathlib import Path
 
 from .executor import AgentExecutor
+from src.agent.edp.loop import EdpWakeLoop
+from src.agent.edp.api import router as edp_router
 from src.config.settings import settings
 from src.middleware.claims_middleware import OtelContextMiddleware
 from src.utils.health import get_health_checker
@@ -140,6 +142,9 @@ async def main():
 
     logger.info(f"Starting agent: {settings.agent_name} on {settings.host}:{settings.port}")
 
+    edp_loop = EdpWakeLoop()
+    edp_loop_enabled = os.getenv("EDP_LOOP_ENABLED", "true").lower() == "true"
+
     agent_card = create_agent_card()
     executor = AgentExecutor()
 
@@ -155,6 +160,19 @@ async def main():
     )
 
     app = a2a_app.build()
+
+    app.include_router(edp_router)
+
+    @app.on_event("startup")
+    async def _edp_startup():
+        if edp_loop_enabled:
+            await edp_loop.start()
+            logger.info("EDP 24/7 wake loop enabled")
+
+    @app.on_event("shutdown")
+    async def _edp_shutdown():
+        if edp_loop_enabled:
+            await edp_loop.stop()
 
     FastAPIInstrumentor().instrument_app(app)
 
