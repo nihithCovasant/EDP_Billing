@@ -36,6 +36,23 @@ CBOS API request / response shapes
     POST {PROCESS_URL}/v1/api/brokerage/getdropdown
     Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ","FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
     OK:   {"Status":"Success","Result":[{"_KEY":17658,"_DESC":"17658 - CV0001 - Jun 29 2026 2:19PM"}]}
+
+Post-segment MTF operations chain (v2 doc steps 12-24) — runs once per day on
+the virtual MTFOPS segment after ALL real segments complete. All 4 triggers
+below use LOGINID="G_LID" (hardcoded) and DD-MMM-YYYY dates:
+  GetCollateralValuation                  (step 13) — MARGINDATE
+  MTFTradeProcessCollateralAllocation     (step 15) — TRADEDATE
+  MTFTradeProcessFundTransfer             (step 17) — TRADEDATE
+  MTFTradeProcess                         (steps 19/20/22/24) — TRADEDATE + TYPE
+    TYPE: "BUY PROCESS" | "BUY POSTING" | "SELL PROCESS AND POSTING" | "WEEKLY AUTOCLOSURE"
+
+  Their GTG checks reuse file_process_status with ProcessName:
+    CollateralValuation (Segment=DR), CollateralAllocation (Segment=DR),
+    FundTransfer (Segment=DR), BILLPOSTING (Segment=EQ), EARLYPAYIN (Segment=EQ),
+    WEEKLYAUTOCLOSURE (Segment=EQ)
+
+NOTE: Step 26 (Corporate Action Position Change) is intentionally NOT
+implemented — it requires manual Ops file drops and was scoped out.
 """
 
 from __future__ import annotations
@@ -118,6 +135,32 @@ class ExistingProcessResult:
     raw_body: str = ""
     error: Optional[str] = None
     is_transient: bool = False
+
+
+@dataclass
+class MtfTriggerResult:
+    """
+    Result of a fire-and-forget MTF trigger call — used for:
+      GetCollateralValuation, MTFTradeProcessCollateralAllocation,
+      MTFTradeProcessFundTransfer, MTFTradeProcess (BUY/SELL/WEEKLY AUTOCLOSURE)
+
+    These endpoints return a plain success message, not structured data.
+    """
+    success: bool
+    message: str = ""
+    raw_body: str = ""
+    http_status: int = 200
+    error: Optional[str] = None
+    is_transient: bool = False
+
+
+def to_ddmmmyyyy(d: date) -> str:
+    """
+    Format a date as DD-MMM-YYYY (e.g. '19-Jun-2026'), as required by the
+    MTF trigger endpoints (GetCollateralValuation, MTFTradeProcess*).
+    Distinct from the YYYY-MM-DD format used by getNewTradeProcess.
+    """
+    return d.strftime("%d-%b-%Y")
 
 
 # =============================================================================
@@ -368,6 +411,85 @@ class CbosClient:
             )
             return ExistingProcessResult(found=False, error=str(exc), is_transient=True)
 
+    # -------------------------------------------------------------------------
+    # 6. MTF operations chain (v2 doc steps 13, 15, 17, 19/20, 22, 24)
+    #    All four use LOGINID="G_LID" (hardcoded, see utils/constants.py) and
+    #    DD-MMM-YYYY dates. Fired after GTG checks (reusing file_process_status
+    #    with process names: CollateralValuation, CollateralAllocation,
+    #    FundTransfer, EARLYPAYIN, WEEKLYAUTOCLOSURE) return TRUE.
+    # -------------------------------------------------------------------------
+
+    @otel_trace
+    async def get_collateral_valuation(self, login_id: str, margin_date: str) -> MtfTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/GetCollateralValuation (step 13)."""
+        if self.use_mock:
+            return self._mock_mtf_trigger("GetCollateralValuation")
+
+        url = f"{self.process_url}/v1/api/process/GetCollateralValuation"
+        payload = {
+            "BUTTONNAME": "COLLATERAL_VALUATION_DATEWISE",
+            "LOGINID": login_id,
+            "MARGINDATE": margin_date,
+        }
+        return await self._post_mtf_trigger(url, payload, "GetCollateralValuation")
+
+    @otel_trace
+    async def mtf_collateral_allocation(self, login_id: str, trade_date: str) -> MtfTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessCollateralAllocation (step 15)."""
+        if self.use_mock:
+            return self._mock_mtf_trigger("MTFTradeProcessCollateralAllocation")
+
+        url = f"{self.process_url}/v1/api/process/MTFTradeProcessCollateralAllocation"
+        payload = {"LOGINID": login_id, "TRADEDATE": trade_date}
+        return await self._post_mtf_trigger(url, payload, "MTFTradeProcessCollateralAllocation")
+
+    @otel_trace
+    async def mtf_fund_transfer(self, login_id: str, trade_date: str) -> MtfTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessFundTransfer (step 17)."""
+        if self.use_mock:
+            return self._mock_mtf_trigger("MTFTradeProcessFundTransfer")
+
+        url = f"{self.process_url}/v1/api/process/MTFTradeProcessFundTransfer"
+        payload = {"LOGINID": login_id, "TRADEDATE": trade_date}
+        return await self._post_mtf_trigger(url, payload, "MTFTradeProcessFundTransfer")
+
+    @otel_trace
+    async def mtf_trade_process(self, login_id: str, trade_date: str, type_: str) -> MtfTriggerResult:
+        """
+        POST {PROCESS_URL}/v1/api/process/MTFTradeProcess (steps 19, 20, 22, 24)
+        type_ one of: "BUY PROCESS" | "BUY POSTING" | "SELL PROCESS AND POSTING" | "WEEKLY AUTOCLOSURE"
+        """
+        if self.use_mock:
+            return self._mock_mtf_trigger(f"MTFTradeProcess({type_})")
+
+        url = f"{self.process_url}/v1/api/process/MTFTradeProcess"
+        payload = {"LOGINID": login_id, "TRADEDATE": trade_date, "TYPE": type_}
+        return await self._post_mtf_trigger(url, payload, f"MTFTradeProcess({type_})")
+
+    async def _post_mtf_trigger(self, url: str, payload: dict, api_name: str) -> MtfTriggerResult:
+        """Shared POST + parse logic for all fire-and-forget MTF trigger calls."""
+        logger.info(f"[CBOS] api={api_name} | POST {url}")
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload)
+                elapsed_ms = int((_time.monotonic() - t0) * 1000)
+                body = resp.text[:2000]
+                if resp.status_code != 200:
+                    logger.error(f"[CBOS] api={api_name} | HTTP {resp.status_code} elapsed_ms={elapsed_ms}")
+                    return MtfTriggerResult(
+                        success=False, raw_body=body, http_status=resp.status_code,
+                        error=f"HTTP {resp.status_code}",
+                        is_transient=resp.status_code >= 500,
+                    )
+                message = _parse_mtf_message(body)
+                logger.info(f"[CBOS] api={api_name} | message={message!r} elapsed_ms={elapsed_ms}")
+                return MtfTriggerResult(success=True, message=message, raw_body=body)
+        except Exception as exc:
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            logger.error(f"[CBOS] api={api_name} | EXCEPTION elapsed_ms={elapsed_ms} error={exc}")
+            return MtfTriggerResult(success=False, error=str(exc), is_transient=True)
+
     # =========================================================================
     # Mock implementations — used when use_mock=True
     # =========================================================================
@@ -437,6 +559,14 @@ class CbosClient:
             process_id=fake_pid,
             description=f"{fake_pid} - CV0001 - Mock Entry",
         )
+
+    def _mock_mtf_trigger(self, api_name: str) -> MtfTriggerResult:
+        """Simulates any MTF trigger call — always succeeds immediately."""
+        message = "Process completed successfully"
+        logger.info(f"[CBOS][MOCK] api={api_name} | message={message!r}")
+        return MtfTriggerResult(success=True, message=message, raw_body=_json.dumps({
+            "Status": "Success", "Result": [{"MSG": message}],
+        }))
 
     # -------------------------------------------------------------------------
     # Mock tuning helpers (useful in tests / local runs)
@@ -514,3 +644,26 @@ def _parse_new_trade_process(body: str) -> NewTradeProcessResult:
         )
     except Exception as exc:
         return NewTradeProcessResult(success=False, raw_body=body, error=str(exc))
+
+
+def _parse_mtf_message(body: str) -> str:
+    """
+    Parse the human-readable message from an MTF trigger response.
+    Handles both shapes seen in the API doc:
+      {"Status":"Success","Result":{"Table1":[{"MSG":"..."}]}}
+      {"Status":"Success","Result":[{"MSG":"..."}]}
+    """
+    try:
+        data = _json.loads(body)
+        result = data.get("Result")
+        if isinstance(result, dict):
+            rows = result.get("Table1", [])
+        elif isinstance(result, list):
+            rows = result
+        else:
+            rows = []
+        if rows and isinstance(rows[0], dict):
+            return rows[0].get("MSG") or rows[0].get("Result") or ""
+        return ""
+    except Exception:
+        return body[:200]

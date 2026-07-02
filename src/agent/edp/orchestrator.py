@@ -24,6 +24,7 @@ from .database import get_session
 from .models import SegmentPhase, SegmentStatus, RuntimeHealth
 from . import repository
 from .pipeline import advance_pipeline
+from .utils.constants import MTF_OPS_SEGMENT_CODE
 from .utils.datetime_utils import resolve_active_date, ensure_aware
 from .utils.log_fmt import edp_log, seg_log
 from src.tools.cbos_client import CbosClient
@@ -32,11 +33,17 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across all 8 trade segments.
+    Drives the daily EDP billing pipeline across all 8 trade segments, then
+    the post-segment MTF operations chain.
 
     Segments run sequentially:
-      EQ → DR → CUR → SL → NCDEX → MCX → NSECOM → MF
+      EQ → DR → CUR → SL → NCDEX → MCX → NSECOM → MF → MTFOPS (virtual)
     Segment N cannot start until N-1 is COMPLETED or SKIPPED.
+
+    MTFOPS is a virtual segment (see utils/constants.py) that only starts
+    once all 8 real segments are done — it drives Collateral Valuation,
+    Collateral Allocation, Fund Transfer, MTF Buy, MTF Sell, and Weekly Auto
+    Closure (v2 doc steps 12-24).
     """
 
     def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient):
@@ -117,6 +124,16 @@ class EdpOrchestrator:
                 count=len(created),
                 segments=[r.segment_code for r in created],
             ))
+
+        # ------ Seed the virtual MTFOPS segment (post-segment MTF chain) ----
+        if self.config.mtf_ops_enabled:
+            async with get_session() as session:
+                mtf_row = await repository.seed_mtf_ops_segment(session, workflow, active_date)
+            if mtf_row:
+                logger.info(edp_log(
+                    "Virtual MTFOPS segment seeded — runs after all real segments complete",
+                    date=active_date,
+                ))
 
         # ------ Fetch ordered segments and drive each one -------------------
         async with get_session() as session:
@@ -199,15 +216,23 @@ class EdpOrchestrator:
                 logger.error(seg_log(segment_code, active_date, "No active workflow found"))
                 return "failed"
 
-            seg_cfg = _find_segment_cfg(workflow.workflow_json, segment_code)
-            if not seg_cfg:
-                logger.error(seg_log(
-                    segment_code, active_date,
-                    "Segment code missing from workflow_json — cannot process",
-                ))
-                return "failed"
+            is_mtf_ops = segment_code == MTF_OPS_SEGMENT_CODE
+            if is_mtf_ops:
+                # Virtual segment — not listed in workflow_json.segments.
+                # GTG checks use config.cbos_login_id; the fixed G_LID login
+                # used for the actual trigger calls is hardcoded in the CBOS
+                # client (see utils/constants.py).
+                login_id = self.config.cbos_login_id
+            else:
+                seg_cfg = _find_segment_cfg(workflow.workflow_json, segment_code)
+                if not seg_cfg:
+                    logger.error(seg_log(
+                        segment_code, active_date,
+                        "Segment code missing from workflow_json — cannot process",
+                    ))
+                    return "failed"
+                login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
 
-            login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
             window_start = ensure_aware(row.window_start_at, self._tz)
             window_end = ensure_aware(row.window_end_at, self._tz)
 
@@ -250,8 +275,12 @@ class EdpOrchestrator:
                     return "blocked"
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
-                row.current_phase = SegmentPhase.HOLIDAY_CHECK
-                row.current_process = "BeginFileUpload"
+                if is_mtf_ops:
+                    row.current_phase = SegmentPhase.COLLATERAL_VALUATION
+                    row.current_process = "CollateralValuation"
+                else:
+                    row.current_phase = SegmentPhase.HOLIDAY_CHECK
+                    row.current_process = "BeginFileUpload"
                 await session.flush()
                 logger.info(seg_log(
                     segment_code, active_date,
@@ -259,7 +288,7 @@ class EdpOrchestrator:
                     started_at=now.strftime("%H:%M:%S %Z"),
                     window_start=window_start.strftime("%H:%M:%S %Z") if window_start else None,
                     window_end=window_end.strftime("%H:%M:%S %Z") if window_end else None,
-                    first_phase="HOLIDAY_CHECK",
+                    first_phase=row.current_phase.value,
                 ))
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:

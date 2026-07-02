@@ -4,7 +4,7 @@ segment_execution table — CRUD, seeding, locking, heartbeat, and queries.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -18,6 +18,11 @@ from ..models import (
     SegmentPhase,
     SegmentStatus,
     WorkflowProperties,
+)
+from ..utils.constants import (
+    MTF_OPS_SEGMENT_CODE,
+    MTF_OPS_SEGMENT_NAME,
+    MTF_OPS_SEQUENCE_ORDER,
 )
 from ..utils.datetime_utils import now_ist, parse_window_dt
 from cams_otel_lib import Logger as logger, otel_trace
@@ -130,6 +135,56 @@ async def seed_from_workflow(
             f"Seeded {len(created)} segment_execution rows for {trade_date}"
         )
     return created
+
+
+@otel_trace
+async def seed_mtf_ops_segment(
+    session: AsyncSession,
+    workflow: WorkflowProperties,
+    trade_date: date,
+    domain: str = "EDP",
+) -> Optional[SegmentExecution]:
+    """
+    Create the virtual MTFOPS segment_execution row that drives the
+    post-segment MTF operations chain (Collateral Valuation -> Collateral
+    Allocation -> Fund Transfer -> MTF Buy -> MTF Sell -> Weekly Auto
+    Closure — v2 doc steps 12-24).
+
+    Idempotent — returns None if already seeded for this date.
+
+    Given the highest sequence_order (see utils/constants.py), the normal
+    sequential loop in orchestrator.run_wake_cycle() will not touch this row
+    until every real trade segment has reached COMPLETED or SKIPPED — no
+    special-casing of the sequencing logic is needed.
+    """
+    if await get_one(session, trade_date, MTF_OPS_SEGMENT_CODE, domain):
+        return None
+
+    tz = ZoneInfo(workflow.workflow_json.get("timezone", "Asia/Kolkata"))
+    # No fixed window_start — purely gated by segment sequencing above.
+    # Generous end-of-day deadline so a slow chain isn't cut off mid-way.
+    window_end_at = datetime.combine(
+        trade_date + timedelta(days=1), dtime(23, 59, 59), tzinfo=tz
+    )
+
+    row = SegmentExecution(
+        trade_date=trade_date,
+        domain=domain,
+        segment_code=MTF_OPS_SEGMENT_CODE,
+        segment_name=MTF_OPS_SEGMENT_NAME,
+        sequence_order=MTF_OPS_SEQUENCE_ORDER,
+        config_id_used=workflow.id,
+        config_hash_used=workflow.content_hash,
+        segment_status=SegmentStatus.PENDING,
+        processes_json={},
+        window_start_at=None,
+        window_end_at=window_end_at,
+        hitl_json=[],
+    )
+    session.add(row)
+    await session.flush()
+    logger.info(f"Seeded virtual MTFOPS segment_execution row for {trade_date}")
+    return row
 
 
 # =============================================================================

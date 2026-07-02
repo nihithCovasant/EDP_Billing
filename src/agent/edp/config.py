@@ -11,6 +11,7 @@ auto-seed a workflow for today so the agent can start without a manual upload.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
@@ -44,6 +45,12 @@ class EdpBootstrapConfig:
     # when no config has been uploaded for today yet.
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Post-segment MTF operations chain (v2 doc steps 12-24) — Collateral
+    # Valuation/Allocation, Fund Transfer, MTF Buy/Sell, Weekly Auto Closure.
+    # Runs once per day on the virtual MTFOPS segment after all real trade
+    # segments complete. Set to False to disable entirely (e.g. non-MTF setups).
+    mtf_ops_enabled: bool = True
+
 
 @otel_trace
 def load_edp_config() -> EdpBootstrapConfig:
@@ -64,18 +71,36 @@ def load_edp_config() -> EdpBootstrapConfig:
     if not db_url:
         db_url = edp_raw.get("database_url", "sqlite+aiosqlite:///./edp_agent.db")
 
+    # CBOS URLs / mock toggle — env vars take priority over agent_config.json
+    # so switching between the Mock CBOS Server, the real CBOS system, or
+    # in-process mock responses is a single-place .env edit (see
+    # mock_cbos/README.md). Falls back to agent_config.json, then hardcoded
+    # defaults, if the env vars are not set.
+    cbos_status_url = os.getenv(
+        "CBOS_STATUS_URL", edp_raw.get("cbos_status_url", "http://localhost:8087")
+    )
+    cbos_process_url = os.getenv(
+        "CBOS_PROCESS_URL", edp_raw.get("cbos_process_url", "http://localhost:8003")
+    )
+    cbos_use_mock_raw = os.getenv("CBOS_USE_MOCK")
+    if cbos_use_mock_raw is not None:
+        cbos_use_mock = cbos_use_mock_raw.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        cbos_use_mock = bool(edp_raw.get("cbos_use_mock", True))
+
     return EdpBootstrapConfig(
         wake_interval_seconds=int(edp_raw.get("wake_interval_seconds", 60)),
         active_date_cutoff_hour=int(edp_raw.get("active_date_cutoff_hour", 6)),
         timezone=edp_raw.get("timezone", "Asia/Kolkata"),
-        cbos_status_url=edp_raw.get("cbos_status_url", "http://localhost:8087"),
-        cbos_process_url=edp_raw.get("cbos_process_url", "http://localhost:8003"),
-        cbos_use_mock=bool(edp_raw.get("cbos_use_mock", True)),
-        cbos_login_id=edp_raw.get("cbos_login_id", "CV0001"),
+        cbos_status_url=cbos_status_url,
+        cbos_process_url=cbos_process_url,
+        cbos_use_mock=cbos_use_mock,
+        cbos_login_id=os.getenv("CBOS_LOGIN_ID", edp_raw.get("cbos_login_id", "CV0001")),
         database_url=db_url,
         lock_ttl_seconds=int(edp_raw.get("lock_ttl_seconds", 300)),
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),
         default_segments=edp_raw.get("segments", []),
+        mtf_ops_enabled=bool(edp_raw.get("mtf_ops_enabled", True)),
     )
 
 

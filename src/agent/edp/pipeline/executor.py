@@ -20,12 +20,19 @@ from .stages import (
     handle_await_billposting,
     handle_await_recon,
     handle_await_contract_note,
+    handle_collateral_valuation,
+    handle_collateral_allocation,
+    handle_fund_transfer,
+    handle_mtf_buy,
+    handle_mtf_sell,
+    handle_weekly_auto_closure,
 )
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
 
 _PHASE_HANDLERS = {
+    # 7-stage per-segment pipeline (EQ, DR, CUR, SLB, NCDEX, MCX, NSECOM, MF)
     SegmentPhase.HOLIDAY_CHECK:         handle_holiday_check,
     SegmentPhase.RESERVE_PID:           handle_reserve_pid,
     SegmentPhase.AWAIT_FILE_UPLOAD:     handle_await_file_upload,
@@ -33,6 +40,13 @@ _PHASE_HANDLERS = {
     SegmentPhase.AWAIT_BILLPOSTING:     handle_await_billposting,
     SegmentPhase.AWAIT_RECON:           handle_await_recon,
     SegmentPhase.AWAIT_CONTRACT_NOTE:   handle_await_contract_note,
+    # 6-stage post-segment MTF operations chain (virtual MTFOPS segment)
+    SegmentPhase.COLLATERAL_VALUATION:  handle_collateral_valuation,
+    SegmentPhase.COLLATERAL_ALLOCATION: handle_collateral_allocation,
+    SegmentPhase.FUND_TRANSFER:         handle_fund_transfer,
+    SegmentPhase.MTF_BUY:               handle_mtf_buy,
+    SegmentPhase.MTF_SELL:              handle_mtf_sell,
+    SegmentPhase.WEEKLY_AUTO_CLOSURE:   handle_weekly_auto_closure,
 }
 
 _TERMINAL_SIGNALS = {StageResult.COMPLETED, StageResult.SKIPPED, StageResult.FAILED}

@@ -48,15 +48,32 @@ class SegmentStatus(str, enum.Enum):
 
 class SegmentPhase(str, enum.Enum):
     """
-    7-stage pipeline per segment — maps directly to CBOS API sequence:
-      HOLIDAY_CHECK       → POST file_process_status(BeginFileUpload)
-      RESERVE_PID         → POST getNewTradeProcess(PROCESSID="0")
-      AWAIT_FILE_UPLOAD   → POST file_process_status(FILEUPLOAD)   — poll until TRUE
-      TRIGGER             → POST getNewTradeProcess(PROCESSID=actual) — runs the process
-      AWAIT_BILLPOSTING   → POST file_process_status(BILLPOSTING)   — poll until TRUE
-      AWAIT_RECON         → POST file_process_status(RECON)         — poll until TRUE
-      AWAIT_CONTRACT_NOTE → POST file_process_status(CONTRACTNOTEGENERATION) — poll until TRUE
-      DONE                → terminal state
+    Two pipelines share this enum:
+
+    A) 7-stage per-segment pipeline (EQ, DR, CUR, SLB, NCDEX, MCX, NSECOM, MF)
+       — maps directly to CBOS API sequence (v2 doc steps 1-11):
+      HOLIDAY_CHECK       → POST file_process_status(BeginFileUpload)          [step 1]
+      RESERVE_PID         → POST getNewTradeProcess(PROCESSID="0")            [step 2]
+      AWAIT_FILE_UPLOAD   → POST file_process_status(FILEUPLOAD)   — poll     [step 7]
+      TRIGGER             → POST getNewTradeProcess(PROCESSID=actual)         [step 8]
+      AWAIT_BILLPOSTING   → POST file_process_status(BILLPOSTING)   — poll    [step 9]
+      AWAIT_RECON         → POST file_process_status(RECON)         — poll    [step 10]
+      AWAIT_CONTRACT_NOTE → POST file_process_status(CONTRACTNOTEGENERATION)  [step 11]
+
+    B) 6-stage post-segment MTF operations chain (v2 doc steps 12-24), run
+       once per day on the virtual MTFOPS segment (see utils/constants.py)
+       after ALL real segments reach COMPLETED/SKIPPED:
+      COLLATERAL_VALUATION  → GTG(DR,CollateralValuation)  + GetCollateralValuation        [12-13]
+      COLLATERAL_ALLOCATION → GTG(DR,CollateralAllocation) + MTFTradeProcessCollateralAllocation [14-15]
+      FUND_TRANSFER         → GTG(DR,FundTransfer)         + MTFTradeProcessFundTransfer   [16-17]
+      MTF_BUY                → GTG(EQ,BILLPOSTING) + MTFTradeProcess(BUY PROCESS, BUY POSTING) [18-20]
+      MTF_SELL                → GTG(EQ,EARLYPAYIN) + MTFTradeProcess(SELL PROCESS AND POSTING)  [21-22]
+      WEEKLY_AUTO_CLOSURE    → GTG(EQ,WEEKLYAUTOCLOSURE) + MTFTradeProcess(WEEKLY AUTOCLOSURE)  [23-24]
+
+    DONE — terminal state for both pipelines.
+
+    NOTE: Step 26 (Corporate Action Position Change) is intentionally NOT
+    modeled — it depends on manual Ops file drops and was scoped out.
     """
     HOLIDAY_CHECK = "HOLIDAY_CHECK"
     RESERVE_PID = "RESERVE_PID"
@@ -65,6 +82,14 @@ class SegmentPhase(str, enum.Enum):
     AWAIT_BILLPOSTING = "AWAIT_BILLPOSTING"
     AWAIT_RECON = "AWAIT_RECON"
     AWAIT_CONTRACT_NOTE = "AWAIT_CONTRACT_NOTE"
+
+    COLLATERAL_VALUATION = "COLLATERAL_VALUATION"
+    COLLATERAL_ALLOCATION = "COLLATERAL_ALLOCATION"
+    FUND_TRANSFER = "FUND_TRANSFER"
+    MTF_BUY = "MTF_BUY"
+    MTF_SELL = "MTF_SELL"
+    WEEKLY_AUTO_CLOSURE = "WEEKLY_AUTO_CLOSURE"
+
     DONE = "DONE"
 
 
@@ -214,7 +239,15 @@ class SegmentExecution(Base):
         "poll_count": 5,
         "last_response": "TRUE",
         "confirmed_at": "2026-06-28T19:45:00Z"
-      }
+      },
+
+      // --- Only present on the virtual MTFOPS segment row (see utils/constants.py) ---
+      "collateral_valuation":  {"status": "...", "poll_count": 0, "last_response": "...", "triggered_at": "..."},
+      "collateral_allocation": {"status": "...", "poll_count": 0, "last_response": "...", "triggered_at": "..."},
+      "fund_transfer":         {"status": "...", "poll_count": 0, "last_response": "...", "triggered_at": "..."},
+      "mtf_buy":               {"status": "...", "poll_count": 0, "last_response": "...", "triggered_at": "..."},
+      "mtf_sell":              {"status": "...", "poll_count": 0, "last_response": "...", "triggered_at": "..."},
+      "weekly_auto_closure":   {"status": "...", "poll_count": 0, "last_response": "...", "triggered_at": "..."}
     }
 
     CBOS ProcessName → internal stage key mapping:
@@ -224,6 +257,11 @@ class SegmentExecution(Base):
       BILLPOSTING            → bill_posting
       RECON                  → recon
       CONTRACTNOTEGENERATION → contract_note
+      CollateralValuation    → collateral_valuation   (MTFOPS only)
+      CollateralAllocation   → collateral_allocation  (MTFOPS only)
+      FundTransfer           → fund_transfer          (MTFOPS only)
+      EARLYPAYIN             → mtf_sell GTG           (MTFOPS only)
+      WEEKLYAUTOCLOSURE      → weekly_auto_closure    (MTFOPS only)
 
     current_process column stores the CBOS ProcessName currently being polled
     (e.g. "BeginFileUpload", "FILEUPLOAD", "BILLPOSTING", "RECON", "CONTRACTNOTEGENERATION")
@@ -244,7 +282,10 @@ class SegmentExecution(Base):
     )
     segment_code: Mapped[str] = mapped_column(
         String(32), nullable=False,
-        comment="Exact CBOS API param: EQ, DR, CUR, SL, NCDEX, MCX, NSECOM, MF"
+        comment=(
+            "Exact CBOS API param: EQ, DR, CUR, SL, NCDEX, MCX, NSECOM, MF, "
+            "or the virtual 'MTFOPS' post-segment chain (see utils/constants.py)"
+        )
     )
     segment_name: Mapped[str] = mapped_column(
         String(64), nullable=False,
