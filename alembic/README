@@ -1,0 +1,32 @@
+# EDP Billing — Alembic migrations
+
+Schema for `workflow_properties`, `segment_execution`, and `agent_control`.
+
+## Commands (from repo root, venv active)
+
+```powershell
+# Apply all pending migrations
+.venv\Scripts\python.exe -m alembic upgrade head
+
+# Create a new migration after changing src/agent/edp/models.py
+.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe change"
+
+# Show current revision
+.venv\Scripts\python.exe -m alembic current
+
+# Roll back one revision
+.venv\Scripts\python.exe -m alembic downgrade -1
+```
+
+Database URL is read from `.env` (`DB_*` or `DATABASE_URL`) — same as the agent.
+
+## Upgrading from pre-Alembic databases
+
+If tables were already created by `create_all` (SQLite file or PostgreSQL), stamp
+the current schema without re-running DDL:
+
+```powershell
+.venv\Scripts\python.exe -m alembic stamp head
+```
+
+The agent runs `upgrade head` automatically on startup.

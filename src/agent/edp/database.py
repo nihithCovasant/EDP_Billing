@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from .models import Base
+from .migrations import run_migrations
 from cams_otel_lib import Logger as logger, otel_trace
 
 _engine: Optional[AsyncEngine] = None
@@ -24,10 +24,9 @@ _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 @otel_trace
 async def init_database(database_url: str) -> None:
     global _engine, _session_factory
+    run_migrations()
     _engine = create_async_engine(database_url, echo=False)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
-    async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     logger.info(f"EDP database initialized: {database_url.split('://')[0]}://...")
 
 

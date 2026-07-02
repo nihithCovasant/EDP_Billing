@@ -62,40 +62,74 @@ class EdpWakeLoop:
         ))
 
     async def _run_loop(self, config: EdpBootstrapConfig) -> None:
-        while not self._stop_event.is_set():
-            self._cycle_count += 1
-            cycle_no = self._cycle_count
-            t0 = time.monotonic()
-            logger.info(edp_log(f"── Wake cycle #{cycle_no} START ──"))
+        """
+        Runs ONE wake cycle, then reschedules itself as a brand-new asyncio
+        Task for the next cycle — "async inside async" self-scheduling
+        instead of an iterative `while` loop.
 
-            try:
-                if self._orchestrator:
-                    summary = await self._orchestrator.run_wake_cycle()
-                    elapsed_ms = int((time.monotonic() - t0) * 1000)
-                    logger.info(edp_log(
-                        f"── Wake cycle #{cycle_no} END ──",
-                        elapsed_ms=elapsed_ms,
-                        date=summary.get("active_date"),
-                        state=summary.get("agent_state"),
-                        processed=summary.get("segments_processed", 0),
-                        completed=summary.get("segments_completed", 0),
-                        skipped=summary.get("segments_skipped", 0),
-                        blocked=summary.get("segments_blocked", 0),
-                        failed=summary.get("segments_failed", 0),
-                    ))
-            except Exception as exc:
+        Why this is preferable to `while True: await cycle(); await sleep()`
+        for a 24/7 background worker:
+          - Each cycle is scheduled via `asyncio.create_task(...)`, a fresh
+            Task on the event loop, rather than a recursive `await` call or
+            a loop body that keeps one long-lived stack frame alive for the
+            lifetime of the process. The call stack resets every cycle, so
+            it cannot grow unbounded no matter how many years the agent runs.
+          - `self._task` always points at "the task doing the current/next
+            cycle", so `stop()` can cancel it cleanly at any point — same
+            cancellation semantics as the while-loop version, just modeled
+            as a chain of discrete, independently-inspectable Tasks instead
+            of one monolithic loop.
+          - The event loop is never blocked: the cancellable sleep below
+            (`asyncio.wait_for` on `_stop_event`) still yields control so
+            other coroutines (e.g. incoming HTTP requests) run concurrently
+            between cycles, exactly as before.
+        """
+        if self._stop_event.is_set():
+            return
+
+        self._cycle_count += 1
+        cycle_no = self._cycle_count
+        t0 = time.monotonic()
+        logger.info(edp_log(f"── Wake cycle #{cycle_no} START ──"))
+
+        try:
+            if self._orchestrator:
+                summary = await self._orchestrator.run_wake_cycle()
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
-                logger.error(edp_log(
-                    f"── Wake cycle #{cycle_no} ERROR ──",
+                logger.info(edp_log(
+                    f"── Wake cycle #{cycle_no} END ──",
                     elapsed_ms=elapsed_ms,
-                    error=str(exc),
-                ), exc_info=True)
+                    date=summary.get("active_date"),
+                    state=summary.get("agent_state"),
+                    processed=summary.get("segments_processed", 0),
+                    completed=summary.get("segments_completed", 0),
+                    skipped=summary.get("segments_skipped", 0),
+                    blocked=summary.get("segments_blocked", 0),
+                    failed=summary.get("segments_failed", 0),
+                ))
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.error(edp_log(
+                f"── Wake cycle #{cycle_no} ERROR ──",
+                elapsed_ms=elapsed_ms,
+                error=str(exc),
+            ), exc_info=True)
 
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=config.wake_interval_seconds,
-                )
-                break
-            except asyncio.TimeoutError:
-                continue
+        if self._stop_event.is_set():
+            return
+
+        try:
+            await asyncio.wait_for(
+                self._stop_event.wait(),
+                timeout=config.wake_interval_seconds,
+            )
+            return  # stop_event was set while sleeping — don't reschedule
+        except asyncio.TimeoutError:
+            pass  # normal case — time to run the next cycle
+
+        if self._stop_event.is_set():
+            return
+
+        # Schedule the next cycle as a fresh Task (async-inside-async),
+        # rather than looping or awaiting ourselves recursively.
+        self._task = asyncio.create_task(self._run_loop(config))

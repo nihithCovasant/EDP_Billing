@@ -91,8 +91,22 @@ class EdpOrchestrator:
             ))
 
         # ------ Ensure workflow config exists for today ----------------------
+        # Ops does NOT need to upload a config every day — only when something
+        # changes (segments, windows, login IDs, etc). If nothing was uploaded
+        # specifically for today, we carry forward the most recently uploaded
+        # config (from any earlier date) and keep using it as-is.
         async with get_session() as session:
             workflow = await repository.get_active(session, active_date)
+            if not workflow:
+                workflow = await repository.get_latest_effective(session, active_date)
+                if workflow:
+                    logger.info(edp_log(
+                        "No new config uploaded for today — reusing last uploaded config",
+                        date=active_date,
+                        config_uploaded_for=workflow.trade_date,
+                        config_id=workflow.id,
+                        config_hash=workflow.content_hash[:12],
+                    ))
             if not workflow:
                 if self.config.default_segments:
                     default_wf = build_default_workflow_json(
@@ -213,6 +227,11 @@ class EdpOrchestrator:
 
             workflow = await repository.get_active(session, active_date)
             if not workflow:
+                # Same carry-forward fallback as run_wake_cycle — a config
+                # uploaded on an earlier date is still the "active" one for
+                # today until ops uploads a change.
+                workflow = await repository.get_latest_effective(session, active_date)
+            if not workflow:
                 logger.error(seg_log(segment_code, active_date, "No active workflow found"))
                 return "failed"
 
@@ -254,16 +273,25 @@ class EdpOrchestrator:
             ):
                 logger.warning(seg_log(
                     segment_code, active_date,
-                    "Segment window deadline passed without starting — marking FAILED",
+                    "Segment window deadline passed without starting — SKIPPING, "
+                    "moving on to the next segment in sequence",
                     deadline=window_end.strftime("%H:%M:%S %Z"),
                     now=now.strftime("%H:%M:%S %Z"),
                 ))
-                row.segment_status = SegmentStatus.FAILED
+                row.segment_status = SegmentStatus.SKIPPED
                 row.skip_category = "TIMEOUT"
                 row.skip_reason = f"Past deadline {window_end.isoformat()}"
+                row.current_phase = SegmentPhase.DONE
                 row.completed_at = now
+                await repository.append_alert(
+                    session, row, alert_type="SEGMENT_SKIPPED",
+                    message=(
+                        f"{segment_code} SKIPPED (TIMEOUT): never started before "
+                        f"deadline {window_end.isoformat()}"
+                    ),
+                )
                 await session.flush()
-                return "failed"
+                return "skipped"
 
             # Move PENDING → IN_PROGRESS
             if row.segment_status == SegmentStatus.PENDING:

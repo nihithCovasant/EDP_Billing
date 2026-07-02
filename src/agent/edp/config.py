@@ -14,9 +14,66 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
+from urllib.parse import quote_plus
 
 from src.config.agent_config import load_agent_config
 from cams_otel_lib import Logger as logger, otel_trace
+
+
+def _normalize_postgres_url(url: str) -> str:
+    """Ensure async SQLAlchemy driver prefix for PostgreSQL URLs."""
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> str:
+    """
+    Resolve the EDP database URL. Priority (highest first):
+      1. DATABASE_URL env var (full connection string)
+      2. DB_HOST / DB_PORT / DB_NAME / DB_USERNAME / DB_PASSWORD env vars
+      3. agent_config.json → secrets.database.postgres.connection_string
+      4. agent_config.json → edp.database_url
+      5. SQLite fallback (local dev)
+    """
+    env_url = os.getenv("DATABASE_URL", "").strip()
+    if env_url:
+        return _normalize_postgres_url(env_url)
+
+    db_host = os.getenv("DB_HOST", "").strip()
+    if db_host:
+        db_port = os.getenv("DB_PORT", "5432").strip()
+        db_name = os.getenv("DB_NAME", "postgres").strip()
+        db_user = os.getenv("DB_USERNAME", "postgres").strip()
+        db_password = os.getenv("DB_PASSWORD", "")
+        userinfo = quote_plus(db_user)
+        if db_password:
+            userinfo = f"{userinfo}:{quote_plus(db_password)}"
+        return f"postgresql+asyncpg://{userinfo}@{db_host}:{db_port}/{db_name}"
+
+    db_url = (
+        secrets.get("database", {})
+        .get("postgres", {})
+        .get("connection_string")
+    )
+    if db_url:
+        return _normalize_postgres_url(db_url)
+
+    return edp_raw.get("database_url", "sqlite+aiosqlite:///./edp_agent.db")
+
+
+def to_alembic_url(database_url: str) -> str:
+    """
+    Convert the app's async SQLAlchemy URL to a sync URL for Alembic migrations.
+    Alembic runs synchronously; the runtime app keeps using asyncpg / aiosqlite.
+    """
+    if database_url.startswith("postgresql+asyncpg://"):
+        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if database_url.startswith("sqlite+aiosqlite:"):
+        return database_url.replace("sqlite+aiosqlite:", "sqlite:", 1)
+    return database_url
 
 
 @dataclass
@@ -59,17 +116,9 @@ def load_edp_config() -> EdpBootstrapConfig:
     default_cfg = raw.get("default", {})
     edp_raw: Dict[str, Any] = default_cfg.get("edp", {})
 
-    # Database URL — prefer secrets.database.postgres, fall back to edp.database_url
+    # Database URL — env vars (DATABASE_URL or DB_*) take priority; see _resolve_database_url
     secrets = default_cfg.get("secrets", {})
-    db_url = (
-        secrets.get("database", {})
-        .get("postgres", {})
-        .get("connection_string")
-    )
-    if db_url and db_url.startswith("postgresql://"):
-        db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if not db_url:
-        db_url = edp_raw.get("database_url", "sqlite+aiosqlite:///./edp_agent.db")
+    db_url = _resolve_database_url(edp_raw, secrets)
 
     # CBOS URLs / mock toggle — env vars take priority over agent_config.json
     # so switching between the Mock CBOS Server, the real CBOS system, or

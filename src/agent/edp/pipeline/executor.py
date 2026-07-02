@@ -8,6 +8,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import repository
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
 from ..utils.datetime_utils import ensure_aware
 from ..utils.log_fmt import stage_log
@@ -72,23 +73,33 @@ async def advance_pipeline(
             and now > window_end
             and row.current_phase not in (SegmentPhase.DONE, None)
         ):
+            timed_out_phase = row.current_phase.value
             logger.warning(stage_log(
                 row.segment_code,
-                row.current_phase.value,
-                "Window deadline exceeded while IN_PROGRESS — marking TIMED_OUT",
+                timed_out_phase,
+                "Window deadline exceeded while IN_PROGRESS — SKIPPING segment, "
+                "moving on to the next segment in sequence",
                 deadline=window_end.strftime("%H:%M:%S %Z"),
                 now=now.strftime("%H:%M:%S %Z"),
-                phase=row.current_phase.value,
+                phase=timed_out_phase,
             ))
-            row.segment_status = SegmentStatus.FAILED
+            row.segment_status = SegmentStatus.SKIPPED
             row.skip_category = "TIMEOUT"
             row.skip_reason = (
                 f"Exceeded window deadline {window_end.isoformat()} "
-                f"at phase {row.current_phase.value}"
+                f"at phase {timed_out_phase}"
             )
+            row.current_phase = SegmentPhase.DONE
             row.completed_at = now
+            await repository.append_alert(
+                session, row, alert_type="SEGMENT_SKIPPED",
+                message=(
+                    f"{row.segment_code} SKIPPED (TIMEOUT): deadline "
+                    f"{window_end.isoformat()} exceeded at phase {timed_out_phase}"
+                ),
+            )
             await session.flush()
-            return "failed"
+            return "skipped"
 
         phase = row.current_phase
         handler = _PHASE_HANDLERS.get(phase)

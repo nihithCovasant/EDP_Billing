@@ -1,7 +1,13 @@
 """Repository package — re-exports all public DB operations."""
 
 from .control import get_effective_state, record_action, get_history as get_control_history
-from .workflow import get_active, upload, get_history as get_workflow_history, compute_hash
+from .workflow import (
+    get_active,
+    get_latest_effective,
+    upload,
+    get_history as get_workflow_history,
+    compute_hash,
+)
 from .segment import (
     get_one,
     get_all_for_date,
@@ -25,6 +31,7 @@ __all__ = [
     "get_control_history",
     # workflow
     "get_active",
+    "get_latest_effective",
     "upload",
     "get_workflow_history",
     "compute_hash",

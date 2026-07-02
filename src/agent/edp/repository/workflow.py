@@ -39,6 +39,38 @@ async def get_active(
 
 
 @otel_trace
+async def get_latest_effective(
+    session: AsyncSession,
+    as_of_date: date,
+    domain: str = "EDP",
+) -> Optional[WorkflowProperties]:
+    """
+    Return the most recently uploaded active config on or before `as_of_date`.
+
+    Ops does NOT need to upload a config every day — only when something
+    changes. This carries the last uploaded config forward indefinitely
+    until a newer one is uploaded (for any date, not just `as_of_date`).
+
+    Used as a fallback by the orchestrator when get_active(as_of_date) finds
+    no row uploaded specifically for today.
+    """
+    stmt = (
+        select(WorkflowProperties)
+        .where(
+            WorkflowProperties.domain == domain,
+            WorkflowProperties.is_active.is_(True),
+            WorkflowProperties.trade_date <= as_of_date,
+        )
+        .order_by(
+            WorkflowProperties.trade_date.desc(),
+            WorkflowProperties.uploaded_at.desc(),
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+@otel_trace
 async def upload(
     session: AsyncSession,
     trade_date: date,
