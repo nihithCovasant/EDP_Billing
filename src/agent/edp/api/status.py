@@ -89,11 +89,11 @@ async def retry_failed_segment(
     domain: str = Query(default="EDP"),
 ):
     """
-    Reset a FAILED segment back to PENDING so the pipeline retries it on the
-    next wake cycle.
+    Reset a FAILED or SKIPPED segment back to PENDING so the pipeline retries
+    it on the next wake cycle.
 
-    Use after a transient CBOS outage or manual data fix.
-    Only works if the segment is currently in FAILED status.
+    Use after a transient CBOS outage, a missed window, or a manual data fix.
+    Only works if the segment is currently in FAILED or SKIPPED status.
     """
     async with get_session() as session:
         row = await retry_segment(session, trade_date, segment_code, domain)
@@ -102,7 +102,7 @@ async def retry_failed_segment(
             status_code=409,
             detail=(
                 f"Cannot retry segment={segment_code} on {trade_date}: "
-                f"segment not found or not in FAILED status"
+                f"segment not found or not in FAILED/SKIPPED status"
             ),
         )
     logger.info(f"Segment {segment_code} retried on {trade_date}")

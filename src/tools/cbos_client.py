@@ -240,6 +240,18 @@ class CbosClient:
                         is_transient=resp.status_code >= 500,
                     )
                 msg = _parse_msg(body)
+                if msg.startswith("ERROR:"):
+                    logger.error(
+                        f"[CBOS] segment={segment} api=file_process_status process={process_name} "
+                        f"| CBOS rejected request status={msg} elapsed_ms={elapsed_ms}"
+                    )
+                    return FileStatusResult(
+                        response="FALSE",
+                        raw_body=body,
+                        http_status=200,
+                        error=msg,
+                        is_transient=False,
+                    )
                 logger.info(
                     f"[CBOS] segment={segment} api=file_process_status process={process_name} "
                     f"| response={msg} elapsed_ms={elapsed_ms}"
@@ -482,7 +494,12 @@ class CbosClient:
                         error=f"HTTP {resp.status_code}",
                         is_transient=resp.status_code >= 500,
                     )
-                message = _parse_mtf_message(body)
+                message, status_error = _parse_mtf_message(body)
+                if status_error:
+                    logger.error(f"[CBOS] api={api_name} | {status_error} elapsed_ms={elapsed_ms}")
+                    return MtfTriggerResult(
+                        success=False, raw_body=body, error=status_error, is_transient=False,
+                    )
                 logger.info(f"[CBOS] api={api_name} | message={message!r} elapsed_ms={elapsed_ms}")
                 return MtfTriggerResult(success=True, message=message, raw_body=body)
         except Exception as exc:
@@ -590,9 +607,17 @@ def _parse_msg(body: str) -> str:
     Parse the MSG value from a file_process_status response.
     Expected: {"Status":"Success","Data":[{"MSG":"TRUE"}]}
     Falls back to string search if JSON parsing fails.
+
+    A non-"Success" top-level Status means CBOS rejected/errored the request
+    (e.g. bad segment/process name) -- this must NOT be silently treated as
+    "not ready yet" (FALSE), since that would cause the poller to retry
+    forever instead of surfacing the error. It is reported as an explicit
+    error string so callers can flag it.
     """
     try:
         data = _json.loads(body)
+        if data.get("Status") and data.get("Status") != "Success":
+            return f"ERROR:{data.get('Status')}"
         msg = data["Data"][0]["MSG"]
         return msg.upper() if msg else "FALSE"
     except Exception:
@@ -646,15 +671,23 @@ def _parse_new_trade_process(body: str) -> NewTradeProcessResult:
         return NewTradeProcessResult(success=False, raw_body=body, error=str(exc))
 
 
-def _parse_mtf_message(body: str) -> str:
+def _parse_mtf_message(body: str) -> tuple[str, Optional[str]]:
     """
     Parse the human-readable message from an MTF trigger response.
     Handles both shapes seen in the API doc:
       {"Status":"Success","Result":{"Table1":[{"MSG":"..."}]}}
       {"Status":"Success","Result":[{"MSG":"..."}]}
+
+    Returns (message, status_error). A non-"Success" top-level Status is
+    reported as status_error rather than silently swallowed — the
+    documented FundTransfer quirk (missing MTF_RISK_UPDATE job) still
+    reports Status:Success, so it is unaffected by this check.
     """
     try:
         data = _json.loads(body)
+        status = data.get("Status")
+        if status and status != "Success":
+            return "", f"CBOS Status={status}"
         result = data.get("Result")
         if isinstance(result, dict):
             rows = result.get("Table1", [])
@@ -663,7 +696,7 @@ def _parse_mtf_message(body: str) -> str:
         else:
             rows = []
         if rows and isinstance(rows[0], dict):
-            return rows[0].get("MSG") or rows[0].get("Result") or ""
-        return ""
+            return rows[0].get("MSG") or rows[0].get("Result") or "", None
+        return "", None
     except Exception:
-        return body[:200]
+        return body[:200], None

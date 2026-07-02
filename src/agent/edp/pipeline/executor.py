@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import repository
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
-from ..utils.datetime_utils import ensure_aware
+from ..utils.datetime_utils import ensure_aware, now_ist
 from ..utils.log_fmt import stage_log
 from .stages import (
     StageResult,
@@ -66,6 +66,12 @@ async def advance_pipeline(
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
     while True:
+        # Refresh "now" every iteration — a chain of instant ADVANCE results
+        # (multiple phases completing back-to-back within one wake cycle) can
+        # otherwise run for a noticeable time against the stale timestamp
+        # captured once at the start of the wake cycle.
+        now = now_ist()
+
         # Window deadline check — catches segments that stall in long polling phases
         window_end = ensure_aware(row.window_end_at)
         if (

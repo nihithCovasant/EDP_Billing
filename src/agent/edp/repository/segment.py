@@ -95,14 +95,44 @@ async def seed_from_workflow(
 ) -> List[SegmentExecution]:
     """
     Create PENDING segment_execution rows from the active workflow config.
-    Idempotent — existing rows are left untouched.
+
+    Idempotent for rows that have already started (IN_PROGRESS/COMPLETED/
+    SKIPPED/FAILED) — those are left untouched. But if a row is still
+    PENDING (pipeline hasn't touched it yet) and a newer workflow config
+    was uploaded (different content_hash) before it started, the row is
+    reconciled in place to the latest config instead of silently running
+    with stale name/sequence/window values forever.
     """
     tz = ZoneInfo(workflow.workflow_json.get("timezone", "Asia/Kolkata"))
     created: List[SegmentExecution] = []
+    updated: List[SegmentExecution] = []
 
     for seg_cfg in workflow.workflow_json.get("segments", []):
         code = seg_cfg["segment_code"]
-        if await get_one(session, trade_date, code, domain):
+        existing = await get_one(session, trade_date, code, domain)
+        if existing:
+            if (
+                existing.segment_status == SegmentStatus.PENDING
+                and existing.config_hash_used != workflow.content_hash
+            ):
+                existing.segment_name = seg_cfg.get("segment_name", code)
+                existing.sequence_order = seg_cfg["sequence_order"]
+                existing.window_start_at = parse_window_dt(
+                    trade_date, seg_cfg["window_start"], False, tz
+                )
+                existing.window_end_at = parse_window_dt(
+                    trade_date,
+                    seg_cfg["window_end"],
+                    seg_cfg.get("window_end_next_day", False),
+                    tz,
+                )
+                existing.config_id_used = workflow.id
+                existing.config_hash_used = workflow.content_hash
+                updated.append(existing)
+                logger.info(
+                    f"[OPS] segment={code} trade_date={trade_date} | "
+                    f"Segment row updated from new config (was PENDING)"
+                )
             continue  # already seeded
 
         row = SegmentExecution(
@@ -129,10 +159,11 @@ async def seed_from_workflow(
         session.add(row)
         created.append(row)
 
-    if created:
+    if created or updated:
         await session.flush()
         logger.info(
-            f"Seeded {len(created)} segment_execution rows for {trade_date}"
+            f"Seeded {len(created)} / updated {len(updated)} segment_execution "
+            f"rows for {trade_date}"
         )
     return created
 
@@ -260,12 +291,13 @@ async def recover_stale_locks(session: AsyncSession) -> int:
     )
     rows = list((await session.execute(stmt)).scalars().all())
     for row in rows:
+        old_owner = row.lock_owner
         row.lock_state = LockState.UNLOCKED
         row.lock_owner = None
         row.runtime_health = RuntimeHealth.RECOVERED
         logger.warning(
             f"[LOCK] segment={row.segment_code} | Stale lock recovered on startup "
-            f"old_owner={row.lock_owner} expired_at={row.lock_expires_at}"
+            f"old_owner={old_owner} expired_at={row.lock_expires_at}"
         )
     if rows:
         await session.flush()
@@ -327,13 +359,18 @@ async def retry_segment(
     domain: str = "EDP",
 ) -> Optional[SegmentExecution]:
     """
-    Reset a FAILED segment back to PENDING so the pipeline can retry it.
+    Reset a FAILED or SKIPPED segment back to PENDING so the pipeline can retry it.
+
+    SKIPPED is included because timeouts and CBOS SKIP responses (e.g. a
+    holiday flag that gets corrected later, or an ops-approved manual
+    override) land a segment in SKIPPED, not FAILED — ops still needs a way
+    to re-drive it without directly touching the DB.
 
     Clears: status, phase, process_id, lock, error fields, processes_json.
-    Returns None if segment not found or not in FAILED status.
+    Returns None if segment not found or not in FAILED/SKIPPED status.
     """
     row = await get_one(session, trade_date, segment_code, domain)
-    if not row or row.segment_status != SegmentStatus.FAILED:
+    if not row or row.segment_status not in (SegmentStatus.FAILED, SegmentStatus.SKIPPED):
         return None
 
     row.segment_status = SegmentStatus.PENDING

@@ -22,6 +22,7 @@ class EdpWakeLoop:
         self._stop_event = asyncio.Event()
         self._orchestrator: Optional[EdpOrchestrator] = None
         self._cycle_count: int = 0
+        self._config: Optional[EdpBootstrapConfig] = None
 
     @otel_trace
     async def start(self) -> None:
@@ -33,9 +34,10 @@ class EdpWakeLoop:
             use_mock=config.cbos_use_mock,
         )
         self._orchestrator = EdpOrchestrator(config, cbos)
+        self._config = config
         self._stop_event.clear()
         self._cycle_count = 0
-        self._task = asyncio.create_task(self._run_loop(config))
+        self._task = asyncio.create_task(self._run_loop())
         logger.info(edp_log(
             "Wake loop started",
             interval_s=config.wake_interval_seconds,
@@ -61,11 +63,15 @@ class EdpWakeLoop:
             total_cycles=self._cycle_count,
         ))
 
-    async def _run_loop(self, config: EdpBootstrapConfig) -> None:
+    async def _run_loop(self) -> None:
         """
         Runs ONE wake cycle, then reschedules itself as a brand-new asyncio
         Task for the next cycle — "async inside async" self-scheduling
         instead of an iterative `while` loop.
+
+        Config is bootstrap-time and never changes across cycles, so it's
+        read from `self._config` (set once in `start()`) rather than being
+        re-passed as an argument through every recursive reschedule.
 
         Why this is preferable to `while True: await cycle(); await sleep()`
         for a 24/7 background worker:
@@ -121,7 +127,7 @@ class EdpWakeLoop:
         try:
             await asyncio.wait_for(
                 self._stop_event.wait(),
-                timeout=config.wake_interval_seconds,
+                timeout=self._config.wake_interval_seconds,
             )
             return  # stop_event was set while sleeping — don't reschedule
         except asyncio.TimeoutError:
@@ -132,4 +138,4 @@ class EdpWakeLoop:
 
         # Schedule the next cycle as a fresh Task (async-inside-async),
         # rather than looping or awaiting ourselves recursively.
-        self._task = asyncio.create_task(self._run_loop(config))
+        self._task = asyncio.create_task(self._run_loop())
