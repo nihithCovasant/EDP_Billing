@@ -30,7 +30,6 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .state import state, build_table2
-from .steps import ALL_STEPS
 
 app = FastAPI(
     title="Mock CBOS Server",
@@ -51,18 +50,13 @@ app.add_middleware(
 #     EDP Status API — port 8087 in real CBOS
 # =============================================================================
 
-@app.post(
-    "/api/edp/file_process_status",
-    tags=["EDP Status API"],
-    summary="Steps 1, 7, 9, 10, 11, 12, 14, 16, 18, 21, 23, 25 — Good-to-Go / status polling",
-)
+@app.post("/api/edp/file_process_status")
 async def file_process_status(payload: dict):
     """
     Generic GTG / status poll used for every ProcessName in the doc:
-      BeginFileUpload (step 1), FILEUPLOAD (step 7), BILLPOSTING (steps 9/18/25),
-      RECON (step 10), CONTRACTNOTEGENERATION (step 11), CollateralValuation
-      (step 12), CollateralAllocation (step 14), FundTransfer (step 16),
-      EARLYPAYIN (step 21), WEEKLYAUTOCLOSURE (step 23).
+      BeginFileUpload, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION,
+      CollateralValuation, CollateralAllocation, FundTransfer, EARLYPAYIN,
+      WEEKLYAUTOCLOSURE.
 
     Body: {"Segment": "EQ", "ProcessName": "BeginFileUpload", "UserID": "CV0001"}
     """
@@ -78,11 +72,7 @@ async def file_process_status(payload: dict):
 #     Main Process API — port 8003 in real CBOS
 # =============================================================================
 
-@app.post(
-    "/v1/api/process/getNewTradeProcess",
-    tags=["Main Process API"],
-    summary="Steps 2, 8, 26 — Create / execute a trade process",
-)
+@app.post("/v1/api/process/getNewTradeProcess")
 async def get_new_trade_process(payload: dict):
     """
     Body: {"GROUPNAME":"EQ","LOGINID":"CV0001","TRADEDATE":"2026-06-29","PROCESSID":"0"}
