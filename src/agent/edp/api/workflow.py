@@ -19,13 +19,17 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 router = APIRouter()
 
-_REQUIRED_SEGMENT_FIELDS = {"segment_code", "sequence_order", "window_start", "window_end"}
+_REQUIRED_SEGMENT_FIELDS = {"segment_code", "window_start", "window_end"}
 
 
 def _validate_workflow_json(workflow_json: dict) -> None:
     """
     Raise HTTPException(422) if workflow_json is missing required structure.
     Called before writing to DB so bad configs are rejected early.
+
+    Processing order is NOT part of the uploaded config — it is a fixed code
+    constant (see utils/constants.SEGMENT_ORDER) and cannot be overridden
+    per upload.
     """
     segments = workflow_json.get("segments")
     if not isinstance(segments, list) or len(segments) == 0:
@@ -45,12 +49,6 @@ def _validate_workflow_json(workflow_json: dict) -> None:
             raise HTTPException(
                 status_code=422,
                 detail=f"Segment[{i}] has an empty or invalid segment_code",
-            )
-        seq = seg.get("sequence_order")
-        if not isinstance(seq, int) or seq < 1:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Segment[{i}] ({code}) sequence_order must be a positive integer",
             )
 
 

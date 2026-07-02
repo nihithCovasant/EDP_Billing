@@ -2,10 +2,10 @@
 EDP agent bootstrap configuration loaded from agent_config.json.
 
 This config covers only agent-level settings (DB URL, CBOS URL, wake interval).
-Segment schedules and process definitions are stored in workflow_properties DB table
-and uploaded daily by ops.
+Segment schedules and process definitions are stored in the edp_properties DB
+table and uploaded daily by ops.
 
-On first run with no workflow_properties row, default_segments is used to
+On first run with no edp_properties row, default_segments is used to
 auto-seed a workflow for today so the agent can start without a manual upload.
 """
 
@@ -98,7 +98,7 @@ class EdpBootstrapConfig:
     # Unique ID for this agent pod (used as lock_owner)
     agent_instance_id: str = "agent-1"
 
-    # Default segment definitions — used to auto-seed workflow_properties
+    # Default segment definitions — used to auto-seed edp_properties
     # when no config has been uploaded for today yet.
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -164,6 +164,9 @@ def build_default_workflow_json(
     → BILLPOSTING → RECON → CONTRACTNOTEGENERATION) is fixed in the orchestrator
     and does not need to be listed per segment in the workflow_json.
     The workflow_json only carries segment identity + timing metadata.
+
+    Processing order is NOT included here — it is a fixed code constant
+    (see utils/constants.SEGMENT_ORDER), not part of the config.
     """
     built_segments = []
     for seg in segments:
@@ -171,7 +174,6 @@ def build_default_workflow_json(
         built_segments.append({
             "segment_code": seg_code,
             "segment_name": seg.get("segment_name", seg_code),
-            "sequence_order": seg.get("sequence_order", 99),
             "login_id": seg.get("login_id", "CV0001"),
             "window_start": seg.get("window_start", "17:00"),
             "window_end": seg.get("window_end", "06:00"),

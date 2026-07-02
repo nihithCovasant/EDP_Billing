@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..models import SegmentExecution
+from .constants import get_sequence_order
 
 
 def serialize_segment(row: SegmentExecution) -> dict:
@@ -13,7 +14,7 @@ def serialize_segment(row: SegmentExecution) -> dict:
         "domain": row.domain,
         "segment_code": row.segment_code,
         "segment_name": row.segment_name,
-        "sequence_order": row.sequence_order,
+        "sequence_order": get_sequence_order(row.segment_code),
         "segment_status": row.segment_status.value,
         "current_process": row.current_process,
         "current_phase": row.current_phase.value if row.current_phase else None,
@@ -32,7 +33,6 @@ def serialize_segment(row: SegmentExecution) -> dict:
         "config_id_used": row.config_id_used,
         "config_hash_used": row.config_hash_used,
         "processes_json": row.processes_json or {},
-        "hitl_json": row.hitl_json or [],
         "created_at": _dt(row.created_at),
         "updated_at": _dt(row.updated_at),
     }
@@ -43,7 +43,7 @@ def serialize_segment_summary(row: SegmentExecution) -> dict:
     return {
         "segment_code": row.segment_code,
         "segment_name": row.segment_name,
-        "sequence_order": row.sequence_order,
+        "sequence_order": get_sequence_order(row.segment_code),
         "segment_status": row.segment_status.value,
         "current_process": row.current_process,
         "current_phase": row.current_phase.value if row.current_phase else None,

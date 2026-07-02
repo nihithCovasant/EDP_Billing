@@ -86,42 +86,42 @@
       "segments": [
         {
           "segment_code": "EQ",     "segment_name": "Cash",
-          "sequence_order": 1,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "17:00",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "DR",     "segment_name": "Derivative",
-          "sequence_order": 2,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "17:15",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "CUR",    "segment_name": "Currency",
-          "sequence_order": 3,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "17:30",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "SL",     "segment_name": "SLB",
-          "sequence_order": 4,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "17:45",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "NCDEX",  "segment_name": "NCDEX Commodity",
-          "sequence_order": 5,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "18:00",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "MCX",    "segment_name": "MCX Commodity",
-          "sequence_order": 6,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "18:15",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "NSECOM", "segment_name": "NSE Commodity",
-          "sequence_order": 7,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "18:30",  "window_end": "06:00", "window_end_next_day": true
         },
         {
           "segment_code": "MF",     "segment_name": "Mutual Fund",
-          "sequence_order": 8,      "login_id": "CV0001",
+          "login_id": "CV0001",
           "window_start": "18:45",  "window_end": "06:00", "window_end_next_day": true
         }
       ]

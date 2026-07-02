@@ -52,6 +52,8 @@ class WorkflowDetailResponse(WorkflowResponse):
 class SegmentSummary(BaseModel):
     segment_code: str
     segment_name: str
+    # Computed from the fixed code constant (utils/constants.SEGMENT_ORDER),
+    # not a stored/uploaded field.
     sequence_order: int
     segment_status: str
     current_process: Optional[str] = None
@@ -91,6 +93,8 @@ class SegmentDetailResponse(BaseModel):
     domain: str
     segment_code: str
     segment_name: str
+    # Computed from the fixed code constant (utils/constants.SEGMENT_ORDER),
+    # not a stored/uploaded field.
     sequence_order: int
     segment_status: str
     current_process: Optional[str] = None
@@ -110,7 +114,6 @@ class SegmentDetailResponse(BaseModel):
     config_id_used: Optional[str] = None
     config_hash_used: Optional[str] = None
     processes_json: Dict[str, Any] = Field(default_factory=dict)
-    hitl_json: List[Any] = Field(default_factory=list)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

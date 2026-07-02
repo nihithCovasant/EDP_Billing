@@ -8,7 +8,6 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .. import repository
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
 from ..utils.datetime_utils import ensure_aware, now_ist
 from ..utils.log_fmt import stage_log
@@ -97,13 +96,6 @@ async def advance_pipeline(
             )
             row.current_phase = SegmentPhase.DONE
             row.completed_at = now
-            await repository.append_alert(
-                session, row, alert_type="SEGMENT_SKIPPED",
-                message=(
-                    f"{row.segment_code} SKIPPED (TIMEOUT): deadline "
-                    f"{window_end.isoformat()} exceeded at phase {timed_out_phase}"
-                ),
-            )
             await session.flush()
             return "skipped"
 

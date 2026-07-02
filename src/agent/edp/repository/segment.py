@@ -12,17 +12,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
+    EdpProperties,
     LockState,
     RuntimeHealth,
     SegmentExecution,
     SegmentPhase,
     SegmentStatus,
-    WorkflowProperties,
 )
 from ..utils.constants import (
     MTF_OPS_SEGMENT_CODE,
     MTF_OPS_SEGMENT_NAME,
-    MTF_OPS_SEQUENCE_ORDER,
+    get_sequence_order,
 )
 from ..utils.datetime_utils import now_ist, parse_window_dt
 from cams_otel_lib import Logger as logger, otel_trace
@@ -55,16 +55,14 @@ async def get_all_for_date(
     trade_date: date,
     domain: str = "EDP",
 ) -> List[SegmentExecution]:
-    """Return all segment rows for a date ordered by sequence_order."""
-    stmt = (
-        select(SegmentExecution)
-        .where(
-            SegmentExecution.trade_date == trade_date,
-            SegmentExecution.domain == domain,
-        )
-        .order_by(SegmentExecution.sequence_order)
+    """Return all segment rows for a date, ordered by the fixed SEGMENT_ORDER."""
+    stmt = select(SegmentExecution).where(
+        SegmentExecution.trade_date == trade_date,
+        SegmentExecution.domain == domain,
     )
-    return list((await session.execute(stmt)).scalars().all())
+    rows = list((await session.execute(stmt)).scalars().all())
+    rows.sort(key=lambda r: get_sequence_order(r.segment_code))
+    return rows
 
 
 @otel_trace
@@ -89,7 +87,7 @@ async def get_in_progress(
 @otel_trace
 async def seed_from_workflow(
     session: AsyncSession,
-    workflow: WorkflowProperties,
+    workflow: EdpProperties,
     trade_date: date,
     domain: str = "EDP",
 ) -> List[SegmentExecution]:
@@ -101,7 +99,7 @@ async def seed_from_workflow(
     PENDING (pipeline hasn't touched it yet) and a newer workflow config
     was uploaded (different content_hash) before it started, the row is
     reconciled in place to the latest config instead of silently running
-    with stale name/sequence/window values forever.
+    with stale name/window values forever.
     """
     tz = ZoneInfo(workflow.workflow_json.get("timezone", "Asia/Kolkata"))
     created: List[SegmentExecution] = []
@@ -116,7 +114,6 @@ async def seed_from_workflow(
                 and existing.config_hash_used != workflow.content_hash
             ):
                 existing.segment_name = seg_cfg.get("segment_name", code)
-                existing.sequence_order = seg_cfg["sequence_order"]
                 existing.window_start_at = parse_window_dt(
                     trade_date, seg_cfg["window_start"], False, tz
                 )
@@ -140,7 +137,6 @@ async def seed_from_workflow(
             domain=domain,
             segment_code=code,
             segment_name=seg_cfg.get("segment_name", code),
-            sequence_order=seg_cfg["sequence_order"],
             config_id_used=workflow.id,
             config_hash_used=workflow.content_hash,
             segment_status=SegmentStatus.PENDING,
@@ -154,7 +150,6 @@ async def seed_from_workflow(
                 seg_cfg.get("window_end_next_day", False),
                 tz,
             ),
-            hitl_json=[],
         )
         session.add(row)
         created.append(row)
@@ -171,7 +166,7 @@ async def seed_from_workflow(
 @otel_trace
 async def seed_mtf_ops_segment(
     session: AsyncSession,
-    workflow: WorkflowProperties,
+    workflow: EdpProperties,
     trade_date: date,
     domain: str = "EDP",
 ) -> Optional[SegmentExecution]:
@@ -183,10 +178,10 @@ async def seed_mtf_ops_segment(
 
     Idempotent — returns None if already seeded for this date.
 
-    Given the highest sequence_order (see utils/constants.py), the normal
-    sequential loop in orchestrator.run_wake_cycle() will not touch this row
-    until every real trade segment has reached COMPLETED or SKIPPED — no
-    special-casing of the sequencing logic is needed.
+    Given the highest sequence order (see utils/constants.get_sequence_order),
+    the normal sequential loop in orchestrator.run_wake_cycle() will not touch
+    this row until every real trade segment has reached COMPLETED or SKIPPED
+    — no special-casing of the sequencing logic is needed.
     """
     if await get_one(session, trade_date, MTF_OPS_SEGMENT_CODE, domain):
         return None
@@ -203,14 +198,12 @@ async def seed_mtf_ops_segment(
         domain=domain,
         segment_code=MTF_OPS_SEGMENT_CODE,
         segment_name=MTF_OPS_SEGMENT_NAME,
-        sequence_order=MTF_OPS_SEQUENCE_ORDER,
         config_id_used=workflow.id,
         config_hash_used=workflow.content_hash,
         segment_status=SegmentStatus.PENDING,
         processes_json={},
         window_start_at=None,
         window_end_at=window_end_at,
-        hitl_json=[],
     )
     session.add(row)
     await session.flush()
@@ -320,31 +313,6 @@ async def touch_heartbeat(session: AsyncSession, row: SegmentExecution) -> None:
         f"phase={row.current_phase.value if row.current_phase else 'N/A'} "
         f"at={ts.strftime('%H:%M:%S')}"
     )
-
-
-# =============================================================================
-# HITL / alerts
-# =============================================================================
-
-@otel_trace
-async def append_alert(
-    session: AsyncSession,
-    row: SegmentExecution,
-    alert_type: str,
-    message: str,
-    assigned_to: Optional[str] = None,
-) -> None:
-    """Append an alert entry to hitl_json. Used for FAILED/STALE notifications."""
-    entries = list(row.hitl_json or [])
-    entries.append({
-        "type": alert_type,
-        "raised_at": now_ist().isoformat(),
-        "message": message,
-        "assigned_to": assigned_to,
-        "resolved_at": None,
-    })
-    row.hitl_json = entries
-    await session.flush()
 
 
 # =============================================================================

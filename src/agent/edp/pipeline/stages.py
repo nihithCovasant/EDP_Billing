@@ -21,7 +21,6 @@ from enum import Enum
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
-from .. import repository
 from ..utils.constants import (
     COLLATERAL_GTG_SEGMENT,
     MTF_GTG_SEGMENT,
@@ -90,7 +89,7 @@ async def handle_holiday_check(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"BeginFileUpload error: {result.error}", now, session)
+        await _fail(row, "CBOS_ERROR", f"BeginFileUpload error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -102,7 +101,7 @@ async def handle_holiday_check(
             at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_stage_done(row, "holiday_check", result.response, now)
-        await _skip(row, "CBOS_SKIP", "BeginFileUpload returned SKIP — market holiday", now, session)
+        await _skip(row, "CBOS_SKIP", "BeginFileUpload returned SKIP — market holiday", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -169,7 +168,7 @@ async def handle_reserve_pid(
             "Failed to allocate process ID — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"getNewTradeProcess(PROCESSID=0) failed: {result.error}", now, session)
+        await _fail(row, "CBOS_ERROR", f"getNewTradeProcess(PROCESSID=0) failed: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -235,7 +234,7 @@ async def handle_await_file_upload(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"FILEUPLOAD check error: {result.error}", now, session)
+        await _fail(row, "CBOS_ERROR", f"FILEUPLOAD check error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -245,7 +244,7 @@ async def handle_await_file_upload(
             "CBOS returned SKIP for FILEUPLOAD — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", "FILEUPLOAD returned SKIP", now, session)
+        await _skip(row, "CBOS_SKIP", "FILEUPLOAD returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -315,7 +314,7 @@ async def handle_trigger(
                 "Cannot recover process_id — marking FAILED",
                 error=recovery.error,
             ))
-            await _fail(row, "CBOS_ERROR", "No process_id available for trigger", now, session)
+            await _fail(row, "CBOS_ERROR", "No process_id available for trigger", now)
             await session.flush()
             return StageResult.FAILED
 
@@ -353,7 +352,7 @@ async def handle_trigger(
         ))
         await _fail(
             row, "CBOS_ERROR",
-            f"getNewTradeProcess(PROCESSID={row.process_id}) failed: {result.error}", now, session
+            f"getNewTradeProcess(PROCESSID={row.process_id}) failed: {result.error}", now
         )
         await session.flush()
         return StageResult.FAILED
@@ -443,7 +442,7 @@ async def handle_await_contract_note(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"CONTRACTNOTEGENERATION error: {result.error}", now, session)
+        await _fail(row, "CBOS_ERROR", f"CONTRACTNOTEGENERATION error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -453,7 +452,7 @@ async def handle_await_contract_note(
             "CBOS returned SKIP for CONTRACTNOTEGENERATION — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", "CONTRACTNOTEGENERATION returned SKIP", now, session)
+        await _skip(row, "CBOS_SKIP", "CONTRACTNOTEGENERATION returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -485,7 +484,7 @@ async def handle_await_contract_note(
 #
 # Runs once per day on the virtual MTFOPS segment (see utils/constants.py),
 # which only starts once all real trade segments reach COMPLETED/SKIPPED
-# (guaranteed by giving it the highest sequence_order).
+# (guaranteed by giving it the highest sequence order — see utils/constants.py).
 #
 # Each phase = one GTG check (reusing file_process_status, hardcoded to
 # Segment=DR or Segment=EQ per the API doc) + one fire-and-forget trigger
@@ -733,7 +732,7 @@ async def _check_gtg(
             f"Permanent CBOS error on GTG({gtg_segment},{process_name}) — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"{process_name} GTG error: {result.error}", now, session)
+        await _fail(row, "CBOS_ERROR", f"{process_name} GTG error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -746,7 +745,7 @@ async def _check_gtg(
             f"CBOS returned SKIP on GTG({gtg_segment},{process_name}) — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", f"{process_name} GTG returned SKIP", now, session)
+        await _skip(row, "CBOS_SKIP", f"{process_name} GTG returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -813,7 +812,7 @@ async def _handle_mtf_failure(
         "MTF trigger FAILED — marking segment FAILED",
         error=result.error,
     ))
-    await _fail(row, "CBOS_ERROR", f"{stage_key} trigger failed: {result.error}", now, session)
+    await _fail(row, "CBOS_ERROR", f"{stage_key} trigger failed: {result.error}", now)
     await session.flush()
     return StageResult.FAILED
 
@@ -859,7 +858,7 @@ async def _poll_confirmation(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"{process_name} check error: {result.error}", now, session)
+        await _fail(row, "CBOS_ERROR", f"{process_name} check error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -869,7 +868,7 @@ async def _poll_confirmation(
             f"CBOS returned SKIP for {process_name} — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", f"{process_name} returned SKIP", now, session)
+        await _skip(row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -903,7 +902,6 @@ async def _poll_confirmation(
 
 async def _fail(
     row: SegmentExecution, category: str, reason: str, now: datetime,
-    session: AsyncSession | None = None,
 ) -> None:
     """
     Mark the segment FAILED — a permanent CBOS/system error. This HALTS the
@@ -911,6 +909,10 @@ async def _fail(
     FAILED segment), so it is reserved for real errors, not for "ran out of
     time waiting" (see _skip for that — TIMEOUT and CBOS_SKIP responses do
     NOT halt the chain, they just skip this one segment and move on).
+
+    No HITL/alert bookkeeping — MOFSL ops watches the day's status via the
+    API and handles skipped/failed segments manually; this just records the
+    outcome on the row and moves on.
     """
     logger.error(stage_log(
         row.segment_code,
@@ -924,23 +926,18 @@ async def _fail(
     row.skip_category = category
     row.skip_reason = reason
     row.completed_at = now
-    if session is not None:
-        await repository.append_alert(
-            session, row, alert_type="SEGMENT_FAILED",
-            message=f"{row.segment_code} FAILED at {row.current_phase}: {reason}",
-        )
 
 
 async def _skip(
     row: SegmentExecution, category: str, reason: str, now: datetime,
-    session: AsyncSession | None = None,
 ) -> None:
     """
     Mark the segment SKIPPED for today. Used for: holiday (CBOS_SKIP at
     HOLIDAY_CHECK), a CBOS_SKIP response at ANY later stage, and TIMEOUT
     (window deadline passed while still polling FALSE). Unlike FAILED, a
     SKIPPED segment does NOT halt the chain — the orchestrator moves on to
-    the next segment in sequence. An HITL alert is raised so ops is notified.
+    the next segment in sequence. MOFSL ops handles skipped segments
+    manually the next day; we just record the outcome and move on.
     """
     logger.info(stage_log(
         row.segment_code,
@@ -955,11 +952,6 @@ async def _skip(
     row.skip_reason = reason
     row.current_phase = SegmentPhase.DONE
     row.completed_at = now
-    if session is not None:
-        await repository.append_alert(
-            session, row, alert_type="SEGMENT_SKIPPED",
-            message=f"{row.segment_code} SKIPPED ({category}): {reason}",
-        )
 
 
 def _complete(row: SegmentExecution, now: datetime) -> None:

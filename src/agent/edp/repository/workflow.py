@@ -1,5 +1,5 @@
 """
-workflow_properties table — daily config upload and retrieval.
+edp_properties table — daily config upload and retrieval.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import WorkflowProperties
+from ..models import EdpProperties
 from ..utils.datetime_utils import now_ist
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -28,12 +28,12 @@ async def get_active(
     session: AsyncSession,
     trade_date: date,
     domain: str = "EDP",
-) -> Optional[WorkflowProperties]:
+) -> Optional[EdpProperties]:
     """Return the currently active workflow config for a given date."""
-    stmt = select(WorkflowProperties).where(
-        WorkflowProperties.trade_date == trade_date,
-        WorkflowProperties.domain == domain,
-        WorkflowProperties.is_active.is_(True),
+    stmt = select(EdpProperties).where(
+        EdpProperties.trade_date == trade_date,
+        EdpProperties.domain == domain,
+        EdpProperties.is_active.is_(True),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
 
@@ -43,7 +43,7 @@ async def get_latest_effective(
     session: AsyncSession,
     as_of_date: date,
     domain: str = "EDP",
-) -> Optional[WorkflowProperties]:
+) -> Optional[EdpProperties]:
     """
     Return the most recently uploaded active config on or before `as_of_date`.
 
@@ -55,15 +55,15 @@ async def get_latest_effective(
     no row uploaded specifically for today.
     """
     stmt = (
-        select(WorkflowProperties)
+        select(EdpProperties)
         .where(
-            WorkflowProperties.domain == domain,
-            WorkflowProperties.is_active.is_(True),
-            WorkflowProperties.trade_date <= as_of_date,
+            EdpProperties.domain == domain,
+            EdpProperties.is_active.is_(True),
+            EdpProperties.trade_date <= as_of_date,
         )
         .order_by(
-            WorkflowProperties.trade_date.desc(),
-            WorkflowProperties.uploaded_at.desc(),
+            EdpProperties.trade_date.desc(),
+            EdpProperties.uploaded_at.desc(),
         )
         .limit(1)
     )
@@ -77,7 +77,7 @@ async def upload(
     workflow_json: dict,
     uploaded_by: str = "system",
     domain: str = "EDP",
-) -> tuple[WorkflowProperties, bool]:
+) -> tuple[EdpProperties, bool]:
     """
     Insert or replace the workflow config for the day.
 
@@ -98,7 +98,7 @@ async def upload(
         existing.superseded_at = ts
         logger.info(f"Workflow superseded: id={existing.id} for {trade_date}")
 
-    new_row = WorkflowProperties(
+    new_row = EdpProperties(
         trade_date=trade_date,
         domain=domain,
         workflow_json=workflow_json,
@@ -120,14 +120,14 @@ async def get_history(
     session: AsyncSession,
     trade_date: date,
     domain: str = "EDP",
-) -> list[WorkflowProperties]:
+) -> list[EdpProperties]:
     """Return all config versions for a date (active + superseded), newest first."""
     stmt = (
-        select(WorkflowProperties)
+        select(EdpProperties)
         .where(
-            WorkflowProperties.trade_date == trade_date,
-            WorkflowProperties.domain == domain,
+            EdpProperties.trade_date == trade_date,
+            EdpProperties.domain == domain,
         )
-        .order_by(WorkflowProperties.uploaded_at.desc())
+        .order_by(EdpProperties.uploaded_at.desc())
     )
     return list((await session.execute(stmt)).scalars().all())

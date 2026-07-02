@@ -1,9 +1,9 @@
 """
 SQLAlchemy models for EDP Billing agent — final 3-table design.
 
-workflow_properties  — daily uploaded JSON config per (trade_date, domain)
-segment_execution    — runtime state per (trade_date, domain, segment_code)
-agent_control        — append-only START/STOP audit log
+edp_properties     — daily uploaded JSON config per (trade_date, domain)
+segment_execution  — runtime state per (trade_date, domain, segment_code)
+agent_control      — append-only START/STOP audit log
 
 No foreign-key constraints between tables (soft references only).
 All tables are append-only — no deletes.
@@ -20,7 +20,6 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
-    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -110,10 +109,10 @@ class AgentControlAction(str, enum.Enum):
 
 
 # ---------------------------------------------------------------------------
-# Table 1: workflow_properties
+# Table 1: edp_properties
 # ---------------------------------------------------------------------------
 
-class WorkflowProperties(Base):
+class EdpProperties(Base):
     """
     Daily workflow config uploaded by MOFSL ops.
     One active row per (trade_date, domain).
@@ -130,7 +129,6 @@ class WorkflowProperties(Base):
         {
           "segment_code": "EQ",
           "segment_name": "Cash",
-          "sequence_order": 1,
           "login_id": "CV0001",
           "window_start": "17:00",
           "window_end": "18:00",
@@ -149,9 +147,12 @@ class WorkflowProperties(Base):
         ...7 segments...
       ]
     }
+
+    NOTE: segments no longer carry sequence_order — processing order is a
+    fixed code constant (see utils/constants.SEGMENT_ORDER).
     """
 
-    __tablename__ = "workflow_properties"
+    __tablename__ = "edp_properties"
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -291,19 +292,15 @@ class SegmentExecution(Base):
         String(64), nullable=False,
         comment="Human label: Cash, Derivative, Currency, SLB, NCDEX, MCX, NSE Commodity, MF"
     )
-    sequence_order: Mapped[int] = mapped_column(
-        Integer, nullable=False,
-        comment="Processing order: 1=EQ, 2=DR, 3=CUR, 4=SL, 5=NCDEX, 6=MCX, 7=NSECOM, 8=MF"
-    )
 
-    # --- Soft reference to workflow_properties (no FK) ---
+    # --- Soft reference to edp_properties (no FK) ---
     config_id_used: Mapped[str | None] = mapped_column(
         String(36), nullable=True,
-        comment="workflow_properties.id that seeded this row — no FK constraint"
+        comment="edp_properties.id that seeded this row — no FK constraint"
     )
     config_hash_used: Mapped[str | None] = mapped_column(
         String(64), nullable=True,
-        comment="workflow_properties.content_hash at seed time — for audit"
+        comment="edp_properties.content_hash at seed time — for audit"
     )
 
     # --- Overall segment status ---
@@ -380,12 +377,6 @@ class SegmentExecution(Base):
     )
     skip_reason: Mapped[str | None] = mapped_column(
         Text, nullable=True
-    )
-
-    # --- HITL / Alerts (append-only list) ---
-    hitl_json: Mapped[list | None] = mapped_column(
-        JSON, nullable=True, default=list,
-        comment="[{type, raised_at, message, assigned_to, resolved_at}]"
     )
 
     # --- Agent runtime health ---

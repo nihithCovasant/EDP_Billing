@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from .config import EdpBootstrapConfig, build_default_workflow_json
@@ -50,6 +51,11 @@ class EdpOrchestrator:
         self.config = config
         self.cbos = cbos
         self._tz = ZoneInfo(config.timezone)
+        # Set once per wake cycle in run_wake_cycle() and read by
+        # _process_one_segment() for every segment in that cycle, instead of
+        # being re-passed as arguments on each of the (possibly many) calls.
+        self._cycle_active_date = None
+        self._cycle_now: Optional[datetime] = None
 
     # -------------------------------------------------------------------------
     # Public entry point — called by loop.py on every wake interval
@@ -61,6 +67,11 @@ class EdpOrchestrator:
         active_date = resolve_active_date(
             now, self.config.active_date_cutoff_hour, self.config.timezone
         )
+        # Snapshot for this cycle — every segment processed below shares the
+        # same active_date/now instead of each _process_one_segment() call
+        # needing them re-passed as arguments.
+        self._cycle_active_date = active_date
+        self._cycle_now = now
         summary = {
             "active_date": active_date.isoformat(),
             "agent_state": "RUNNING",
@@ -192,7 +203,7 @@ class EdpOrchestrator:
 
             summary["segments_processed"] += 1
             t0 = time.monotonic()
-            outcome = await self._process_one_segment(seg_row.segment_code, active_date, now)
+            outcome = await self._process_one_segment(seg_row.segment_code)
             elapsed_ms = int((time.monotonic() - t0) * 1000)
 
             _log_segment_outcome(seg_row.segment_code, active_date, outcome, elapsed_ms)
@@ -212,13 +223,17 @@ class EdpOrchestrator:
     async def _process_one_segment(
         self,
         segment_code: str,
-        active_date,
-        now: datetime,
     ) -> str:
         """
         Lock → run pipeline executor → release lock.
         Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
+
+        active_date/now are read from the self._cycle_* snapshot taken once
+        at the top of run_wake_cycle() — identical for every segment driven
+        within that cycle.
         """
+        active_date = self._cycle_active_date
+        now = self._cycle_now
         async with get_session() as session:
             row = await repository.get_one(session, active_date, segment_code)
             if not row:
@@ -283,13 +298,6 @@ class EdpOrchestrator:
                 row.skip_reason = f"Past deadline {window_end.isoformat()}"
                 row.current_phase = SegmentPhase.DONE
                 row.completed_at = now
-                await repository.append_alert(
-                    session, row, alert_type="SEGMENT_SKIPPED",
-                    message=(
-                        f"{segment_code} SKIPPED (TIMEOUT): never started before "
-                        f"deadline {window_end.isoformat()}"
-                    ),
-                )
                 await session.flush()
                 return "skipped"
 

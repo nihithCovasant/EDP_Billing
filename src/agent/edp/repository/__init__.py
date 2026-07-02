@@ -19,7 +19,6 @@ from .segment import (
     release_lock,
     recover_stale_locks,
     touch_heartbeat,
-    append_alert,
     retry_segment,
     skip_segment_manually,
 )
@@ -46,7 +45,6 @@ __all__ = [
     "release_lock",
     "recover_stale_locks",
     "touch_heartbeat",
-    "append_alert",
     "retry_segment",
     "skip_segment_manually",
 ]

@@ -19,12 +19,38 @@ scoped out.
 
 from __future__ import annotations
 
+# Fixed processing order for the 8 real trade segments. This used to be a
+# per-day config field (workflow_json.segments[].sequence_order) mirrored
+# onto a segment_execution DB column; it is now a code constant since the
+# regulatory sequence (EQ -> DR -> CUR -> SL -> NCDEX -> MCX -> NSECOM -> MF)
+# does not change day to day. Changing the order requires a code change.
+SEGMENT_ORDER: tuple[str, ...] = (
+    "EQ", "DR", "CUR", "SL", "NCDEX", "MCX", "NSECOM", "MF",
+)
+
 # Virtual segment representing the post-segment MTF operations chain.
-# Given the highest sequence_order so it only starts once every real
+# Given the highest sequence order so it only starts once every real
 # trade segment has reached COMPLETED or SKIPPED.
 MTF_OPS_SEGMENT_CODE = "MTFOPS"
 MTF_OPS_SEGMENT_NAME = "MTF Operations (Collateral / Fund Transfer / Buy-Sell)"
 MTF_OPS_SEQUENCE_ORDER = 900
+
+
+def get_sequence_order(segment_code: str) -> int:
+    """
+    Resolve a segment's processing order from the fixed SEGMENT_ORDER list.
+
+    Returns 1-8 for the real trade segments (index + 1), MTF_OPS_SEQUENCE_ORDER
+    for the virtual MTFOPS segment, or 999 for any unrecognized code (sorts
+    last rather than raising, so an unexpected segment_code can't crash the
+    day's ordering).
+    """
+    if segment_code == MTF_OPS_SEGMENT_CODE:
+        return MTF_OPS_SEQUENCE_ORDER
+    try:
+        return SEGMENT_ORDER.index(segment_code) + 1
+    except ValueError:
+        return 999
 
 # Trigger calls (Steps 13, 15, 17, 19, 20, 22, 24) always use this fixed
 # LOGINID per the API doc — distinct from the per-segment CV0001 login used

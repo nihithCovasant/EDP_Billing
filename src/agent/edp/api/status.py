@@ -51,7 +51,7 @@ async def get_segment_status(
     domain: str = Query(default="EDP"),
 ):
     """
-    Single segment detail — full processes_json, lock info, HITL alerts included.
+    Single segment detail — full processes_json and lock info included.
 
     Answers:
     - Which stage of a segment failed and why?
