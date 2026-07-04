@@ -5,8 +5,8 @@ database** the agent itself uses (`DATABASE_URL` / `DB_*` env vars from `.env`
 — see `src/agent/edp/config.py::load_edp_config`). Nothing is mocked at the
 database layer; only the CBOS HTTP calls are (via `src/tools/cbos_client.py`'s
 own `use_mock=True` in-process mock, plus `tests/fakes.py::FailingCbosClient`
-for failure injection). No network calls are made and `mock_cbos/` does not
-need to be running.
+/ `TransientTriggerFailureCbosClient` for failure injection). No network
+calls are made and `mock_cbos/` does not need to be running.
 
 ## Running
 
@@ -46,11 +46,12 @@ production; only the wall-clock scheduling glue is bypassed.
 | File | Purpose |
 |---|---|
 | `conftest.py` | DB engine/session fixtures, `test_date` (isolated far-future date), and wiring so `orchestrator._process_one_segment()`'s internal `database.get_session()` calls route to the test's own engine. |
-| `fakes.py` | `FailingCbosClient` — behaves like the normal CBOS mock except for one `(segment, process_name)` pair, which always returns a permanent (non-transient) error. |
+| `fakes.py` | `FailingCbosClient` — behaves like the normal CBOS mock except for one `(segment, process_name)` pair, which always returns a permanent (non-transient) error. `TransientTriggerFailureCbosClient` — fails only the first trigger-mode `getNewTradeProcess` call for one segment with a transient error, then behaves normally. |
 | `helpers.py` | `seed_day`, `drive_until_terminal`, `run_one_cycle`, `cleanup_day` — the test harness described above, plus `seed_post_trade_day`, `drive_post_trade_until_terminal`, `run_one_post_trade_cycle`, `fixed_post_trade_now_for` for the T+1 post-trade chain (driven via `orchestrator._process_one_post_trade()`, independent of the segment harness). |
 | `test_day1_all_segments_success.py` | **Scenario 1**: all 7 segments (`EQ, DR, CUR, SL, MCX, NCDEX, MTF` — `MTF` is a normal segment, not special-cased) complete successfully for one trading day. Also checks fixed sequence ordering, Step 2's get-or-reserve behavior, and that the day-summary/serializer API output has no leftover `domain`/`window_*_at` fields. |
 | `test_day2_segment_process_failure.py` | **Scenario 2**: `EQ`'s 2nd process (`BILLPOSTING`) returns a permanent CBOS error → `EQ` ends `FAILED`, every segment after it (including `MTF`) stays `PENDING` (chain halts), and a manual `retry_segment` + healthy CBOS client lets the day finish. |
 | `test_post_trade_processes.py` | **T+1 post-trade chain**: all 5 processes (`COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT`) complete successfully — run entirely independently of the 7 segments (none are even seeded); Collateral Allocation failing halts the remaining 3 (stay `PENDING`); Process 1's 02:30 IST window gate blocks/unblocks correctly. |
+| `test_trigger_double_trigger_protection.py` | **Pod-failure / double-trigger prevention**: proves the `TRIGGERING` pre-commit marker + `pipeline.stages._recover_trigger()` decision tree — (1) pod died before CBOS ever got the trigger → recovery check sees all-`PENDING`/empty `Table2` and safely re-fires it (2 total CBOS calls: check + trigger); (2) pod died after CBOS already started it → recovery check sees an `IN_PROGRESS` step and does **not** re-fire (2 total calls: check only, no second trigger); (3) end-to-end transient network error on the real trigger call leaves `processes_json["trigger"]["status"]` as `"TRIGGERING"` (never `"FAILED"`) and self-heals on the next cycle via the same decision tree. |
 
 ## Segment process ordering (for "Nth process failed" scenarios)
 

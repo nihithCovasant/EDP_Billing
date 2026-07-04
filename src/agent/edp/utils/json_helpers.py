@@ -9,6 +9,14 @@ docstring for the full shapes):
     bill_posting, recon, contract_note
   5 post-trade processes (3 stages): gtg, trigger, confirm
 
+The "trigger" stage (real segments only) has its own internal status
+progression, used for double-trigger crash protection — see
+record_trigger_attempt() / pipeline.stages.handle_trigger():
+  PID_RESERVED -> TRIGGERING -> TRIGGERED (or FAILED)
+"TRIGGERING" is written BEFORE the CBOS call is made and is the only
+status a resumed pod uses to decide it must run the recovery check instead
+of firing the trigger again.
+
 SQLAlchemy does NOT detect in-place mutations on JSON columns.
 Always use set_proc() to reassign the top-level dict so the ORM marks
 the column as modified.
@@ -87,6 +95,29 @@ def mark_stage_done(
     set_proc(row, stage_key, state)
 
 
+def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
+    """
+    Pre-commit write — double-trigger protection (see pipeline.stages.handle_trigger).
+
+    Durably records intent to call getNewTradeProcess(trigger) BEFORE the
+    CBOS call is made, so the DB always leads the CBOS call and never
+    follows it. If the pod dies anywhere between this write and the
+    eventual record_trigger()/record_trigger_failed() write, the next wake
+    cycle sees processes_json["trigger"]["status"] still "TRIGGERING" and
+    runs the recovery decision tree instead of blindly re-firing the
+    trigger — the one call that must never be repeated by accident.
+
+    Preserves process_id_source (set by Step 2's RESERVE_PID stage) like
+    record_trigger() does, since this is the same processes_json key.
+    """
+    existing = get_proc(row, "trigger")
+    set_proc(row, "trigger", {
+        "status": "TRIGGERING",
+        "attempt_started_at": now.isoformat(),
+        "process_id_source": existing.get("process_id_source"),
+    })
+
+
 def record_trigger(
     row: SegmentExecution,
     process_id: str,
@@ -111,11 +142,22 @@ def record_trigger(
 
 
 def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
-    """Record a failed getNewTradeProcess trigger attempt."""
+    """
+    Record a CONFIRMED, permanent getNewTradeProcess trigger failure.
+
+    Only called for a definitive (non-transient) failure — always paired
+    with pipeline.stages._fail(), which marks the whole segment FAILED (a
+    terminal state that stops the pipeline from ever re-entering
+    handle_trigger for this row). Transient failures deliberately do NOT
+    call this — they leave processes_json["trigger"]["status"] as
+    "TRIGGERING" so the next cycle goes through the recovery check instead.
+    """
+    existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {
         "status": "FAILED",
         "at": now.isoformat(),
         "error": error,
+        "process_id_source": existing.get("process_id_source"),
     })
 
 

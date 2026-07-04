@@ -28,6 +28,7 @@ from ..utils.json_helpers import (
     inc_poll,
     mark_stage_done,
     record_trigger,
+    record_trigger_attempt,
     record_trigger_failed,
     set_proc,
     get_proc,
@@ -330,6 +331,17 @@ async def handle_trigger(
     """
     POST getNewTradeProcess(PROCESSID=<actual>) — starts billing/calculation.
     After firing, polls BILLPOSTING from next wake cycle.
+
+    Double-trigger protection: calling this twice for the same segment-day
+    would make CBOS execute the whole billing chain twice. To prevent that,
+    "TRIGGERING" is written to processes_json BEFORE the CBOS call is made
+    — the DB always leads the CBOS call, never follows it. If the pod dies
+    at any point between that pre-commit write and the eventual
+    record_trigger()/record_trigger_failed() write (including a transient
+    network error where we simply don't know if CBOS got the call), the
+    next wake cycle re-enters this handler with processes_json["trigger"]
+    ["status"] still "TRIGGERING" and runs _recover_trigger() below instead
+    of blindly firing the trigger again.
     """
     # Safety: recover process_id if missing (crash/restart scenario)
     if not row.process_id:
@@ -361,6 +373,14 @@ async def handle_trigger(
             await session.flush()
             return StageResult.FAILED
 
+    if get_proc(row, "trigger").get("status") == "TRIGGERING":
+        return await _recover_trigger(cbos, row, session, login_id, now)
+
+    # First attempt for this segment-day — write the pre-commit marker
+    # BEFORE calling CBOS, then fire the trigger.
+    record_trigger_attempt(row, now)
+    await session.flush()
+
     logger.info(stage_log(
         row.segment_code, "TRIGGER",
         "Firing process trigger (getNewTradeProcess)",
@@ -375,17 +395,107 @@ async def handle_trigger(
         trade_date=row.trade_date,
         process_id=row.process_id,
     )
+    return await _finalize_trigger_call(row, session, result, now)
 
+
+async def _recover_trigger(
+    cbos: CbosClient,
+    row: SegmentExecution,
+    session: AsyncSession,
+    login_id: str,
+    now: datetime,
+) -> StageResult:
+    """
+    Recovery decision tree for a segment resuming with processes_json
+    ["trigger"]["status"] == "TRIGGERING" — we know we intended to fire the
+    trigger but never durably recorded whether CBOS actually received it
+    (pod crash, or an earlier transient network error on the call itself).
+
+    Ask CBOS for the current Table2 step statuses on the saved PROCESSID
+    before deciding what to do next:
+      - Any step IN_PROGRESS/SUCCESS -> CBOS already has it; do NOT
+        re-trigger — just catch the DB up to TRIGGERED.
+      - All steps PENDING (or none)  -> CBOS never received it; safe to
+        fire the trigger now.
+    """
+    logger.warning(stage_log(
+        row.segment_code, "TRIGGER",
+        "Resuming with an unconfirmed trigger attempt — checking CBOS "
+        "before deciding whether to re-trigger",
+        pid=row.process_id,
+    ))
+    check = await cbos.get_new_trade_process(
+        group_name=row.segment_code,
+        login_id=login_id,
+        trade_date=row.trade_date,
+        process_id=row.process_id,
+    )
+    if not check.success:
+        if check.is_transient:
+            logger.warning(stage_log(
+                row.segment_code, "TRIGGER",
+                "Transient CBOS error while checking recovery state — will retry next cycle",
+                pid=row.process_id,
+                error=check.error,
+            ))
+            return StageResult.BLOCKED
+        logger.error(stage_log(
+            row.segment_code, "TRIGGER",
+            "Permanent CBOS error while checking recovery state — marking FAILED",
+            pid=row.process_id,
+            error=check.error,
+        ))
+        record_trigger_failed(row, check.error or "RECOVERY_CHECK_FAILED", now)
+        await _fail(row, "CBOS_ERROR", f"Trigger recovery check failed: {check.error}", now)
+        await session.flush()
+        return StageResult.FAILED
+
+    already_running = any(
+        (step.status or "").upper() in ("IN_PROGRESS", "SUCCESS")
+        for step in check.steps
+    )
+    if already_running:
+        logger.info(stage_log(
+            row.segment_code, "TRIGGER",
+            "CBOS already received/executing the trigger — NOT re-triggering; "
+            "catching DB up to TRIGGERED",
+            pid=row.process_id,
+            steps=[f"{s.name}:{s.status}" for s in check.steps],
+        ))
+        return await _finalize_trigger_success(row, session, row.process_id, check.is_runnable, now)
+
+    logger.info(stage_log(
+        row.segment_code, "TRIGGER",
+        "CBOS never received the trigger (all steps PENDING) — safe to re-trigger",
+        pid=row.process_id,
+    ))
+    result = await cbos.get_new_trade_process(
+        group_name=row.segment_code,
+        login_id=login_id,
+        trade_date=row.trade_date,
+        process_id=row.process_id,
+    )
+    return await _finalize_trigger_call(row, session, result, now)
+
+
+async def _finalize_trigger_call(
+    row: SegmentExecution,
+    session: AsyncSession,
+    result,
+    now: datetime,
+) -> StageResult:
+    """Shared success/failure handling for a getNewTradeProcess trigger-mode call."""
     if not result.success:
-        record_trigger_failed(row, result.error or "TRIGGER_FAILED", now)
         if result.is_transient:
             logger.warning(stage_log(
                 row.segment_code, "TRIGGER",
-                "Transient CBOS error — will retry trigger next cycle",
+                "Transient CBOS error — leaving TRIGGERING; will re-check next cycle",
                 pid=row.process_id,
                 error=result.error,
             ))
-            await session.flush()
+            # Deliberately do NOT write processes_json here — it must stay
+            # "TRIGGERING" so the next cycle goes through _recover_trigger()
+            # instead of blindly re-firing.
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, "TRIGGER",
@@ -393,6 +503,7 @@ async def handle_trigger(
             pid=row.process_id,
             error=result.error,
         ))
+        record_trigger_failed(row, result.error or "TRIGGER_FAILED", now)
         await _fail(
             row, "CBOS_ERROR",
             f"getNewTradeProcess(PROCESSID={row.process_id}) failed: {result.error}", now
@@ -400,7 +511,18 @@ async def handle_trigger(
         await session.flush()
         return StageResult.FAILED
 
-    record_trigger(row, row.process_id, result.is_runnable, now)
+    return await _finalize_trigger_success(row, session, row.process_id, result.is_runnable, now)
+
+
+async def _finalize_trigger_success(
+    row: SegmentExecution,
+    session: AsyncSession,
+    process_id: str,
+    is_runnable: bool,
+    now: datetime,
+) -> StageResult:
+    """Common "trigger confirmed" bookkeeping, shared by the normal path and both recovery branches."""
+    record_trigger(row, process_id, is_runnable, now)
     row.current_phase = SegmentPhase.AWAIT_BILLPOSTING
     row.current_process = "BILLPOSTING"
     await session.flush()
@@ -408,8 +530,8 @@ async def handle_trigger(
     logger.info(stage_log(
         row.segment_code, "TRIGGER",
         "Process TRIGGERED successfully — will poll BILLPOSTING next cycle",
-        pid=row.process_id,
-        is_runnable=result.is_runnable,
+        pid=process_id,
+        is_runnable=is_runnable,
         triggered_at=now.strftime("%H:%M:%S %Z"),
     ))
     return StageResult.STOP_NEXT

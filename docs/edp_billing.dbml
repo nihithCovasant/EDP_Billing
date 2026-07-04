@@ -61,7 +61,7 @@ Table segment_execution {
   process_id varchar(64) [note: 'From getNewTradeProcess PROCESSID=0 (real segments only)']
   process_id_reserved_at timestamp
   lock_json json [not null, note: 'state owner acquired_at expires_at']
-  processes_json json [not null, note: 'Real segments: holiday_check file_upload_ready trigger bill_posting recon contract_note | Post-trade: gtg trigger confirm']
+  processes_json json [not null, note: 'Real segments: holiday_check file_upload_ready trigger bill_posting recon contract_note | Post-trade: gtg trigger confirm | Real-segment "trigger" substate is PID_RESERVED -> TRIGGERING -> TRIGGERED/FAILED; TRIGGERING is written BEFORE the CBOS trigger call (double-trigger crash protection, see pipeline.stages.handle_trigger)']
   started_at timestamp [note: 'PENDING to IN_PROGRESS']
   completed_at timestamp [note: 'COMPLETED FAILED or SKIPPED']
   last_heartbeat_at timestamp [note: 'Updated each cycle while IN_PROGRESS']

@@ -109,11 +109,18 @@ class FileStatusResult:
 
 @dataclass
 class NewTradeProcessStep:
-    """One processing step from Table2 of the getNewTradeProcess response."""
+    """
+    One processing step from Table2 of the getNewTradeProcess response.
+
+    Used by pipeline.stages._recover_trigger() to decide whether CBOS
+    already received an earlier, unconfirmed trigger call: any step with
+    status IN_PROGRESS or SUCCESS means it did (do not re-trigger); all
+    steps PENDING (or an empty Table2) means it didn't (safe to re-trigger).
+    """
     id: int
     step_no: int
     name: str
-    status: str                # "PENDING" | "SUCCESS" | "FAILED"
+    status: str                # "PENDING" | "IN_PROGRESS" | "SUCCESS" | "FAILED"
     status_desc: Optional[str]
     upload_id: int
     start_datetime: Optional[str]
@@ -204,6 +211,12 @@ class CbosClient:
         # yet, instead of always deterministically claiming "found".
         self._mock_reserved_pids: dict[tuple[str, str], str] = {}
         self._mock_pid_counter = itertools.count(17001)
+        # (segment, trade_date_iso) -> count of trigger-mode calls
+        # (PROCESSID != "0") made so far — lets the mock simulate Table2
+        # progressing from "nothing started" (1st call) to "IN_PROGRESS"
+        # (2nd+ call), so tests can exercise the TRIGGERING recovery
+        # decision tree in pipeline.stages.handle_trigger() realistically.
+        self._mock_trigger_calls: dict[tuple[str, str], int] = {}
 
     # -------------------------------------------------------------------------
     # 1. file_process_status — Good-to-Go / completion checks
@@ -598,20 +611,41 @@ class CbosClient:
         get_existing_process_id() call for the same segment+date correctly
         reports "found" — mirrors real CBOS behaviour where a PROCESSID,
         once reserved, persists for that segment+date.
+
+        process_id=<actual> (trigger / recovery-check): the 1st call for a
+        given (segment, trade_date) returns an empty Table2 (nothing has
+        started running yet — matches the state CBOS would be in right
+        after just receiving the call, or the state a recovery check would
+        see if CBOS never got a prior call at all). Every call after that
+        returns Table2 with one step IN_PROGRESS, simulating that CBOS is
+        now actively executing that PROCESSID — this is what lets tests
+        exercise both branches of the TRIGGERING recovery decision tree in
+        pipeline.stages.handle_trigger().
         """
         key = (group_name.upper(), trade_date.isoformat())
         if process_id == "0":
             if key not in self._mock_reserved_pids:
                 self._mock_reserved_pids[key] = str(next(self._mock_pid_counter))
             fake_pid = self._mock_reserved_pids[key]
+            table2 = []
         else:
             fake_pid = process_id
+            call_no = self._mock_trigger_calls.get(key, 0) + 1
+            self._mock_trigger_calls[key] = call_no
+            if call_no == 1:
+                table2 = []
+            else:
+                table2 = [{
+                    "ID": 1, "STEPNO": 1, "NAME": "TRADE_MERGER",
+                    "STATUS": "IN_PROGRESS", "STATUSDESC": None, "UPLOADID": 0,
+                    "STARTDATETIME": None, "ENDDATETIME": None,
+                }]
 
         body = _json.dumps({
             "Status": "Success",
             "Result": {
                 "Table1": [{"PROCESSID": int(fake_pid), "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
-                "Table2": [],
+                "Table2": table2,
             },
         })
         return NewTradeProcessResult(
@@ -619,6 +653,7 @@ class CbosClient:
             process_id=fake_pid,
             is_runnable=True,
             is_auto_upload=True,
+            steps=_parse_new_trade_process(body).steps,
             raw_body=body,
         )
 
@@ -661,6 +696,7 @@ class CbosClient:
         """Reset all poll counters and reserved PIDs (useful between test cases)."""
         self._mock_call_counts.clear()
         self._mock_reserved_pids.clear()
+        self._mock_trigger_calls.clear()
 
 
 # =============================================================================
