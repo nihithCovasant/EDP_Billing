@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from ..database import get_session
@@ -29,7 +29,7 @@ router = APIRouter()
 
 @router.get("/status/{trade_date}", response_model=DaySummaryResponse)
 @otel_trace
-async def get_day_status(trade_date: date, domain: str = Query(default="EDP")):
+async def get_day_status(trade_date: date):
     """
     Full day summary — all segments with their status, current process/phase,
     timing, and processes_json detail.
@@ -40,16 +40,12 @@ async def get_day_status(trade_date: date, domain: str = Query(default="EDP")):
     - What is the poll count / trigger time per stage?
     """
     async with get_session() as session:
-        return await get_day_summary(session, trade_date, domain)
+        return await get_day_summary(session, trade_date)
 
 
 @router.get("/status/{trade_date}/{segment_code}", response_model=SegmentDetailResponse)
 @otel_trace
-async def get_segment_status(
-    trade_date: date,
-    segment_code: str,
-    domain: str = Query(default="EDP"),
-):
+async def get_segment_status(trade_date: date, segment_code: str):
     """
     Single segment detail — full processes_json and lock info included.
 
@@ -60,14 +56,11 @@ async def get_segment_status(
     - Is there a stale lock (crash recovery)?
     """
     async with get_session() as session:
-        row = await get_one(session, trade_date, segment_code, domain)
+        row = await get_one(session, trade_date, segment_code)
     if not row:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"No execution record for segment={segment_code} "
-                f"date={trade_date} domain={domain}"
-            ),
+            detail=f"No execution record for segment={segment_code} date={trade_date}",
         )
     return serialize_segment(row)
 
@@ -83,11 +76,7 @@ class SkipRequest(BaseModel):
 
 @router.post("/status/{trade_date}/{segment_code}/retry")
 @otel_trace
-async def retry_failed_segment(
-    trade_date: date,
-    segment_code: str,
-    domain: str = Query(default="EDP"),
-):
+async def retry_failed_segment(trade_date: date, segment_code: str):
     """
     Reset a FAILED or SKIPPED segment back to PENDING so the pipeline retries
     it on the next wake cycle.
@@ -96,7 +85,7 @@ async def retry_failed_segment(
     Only works if the segment is currently in FAILED or SKIPPED status.
     """
     async with get_session() as session:
-        row = await retry_segment(session, trade_date, segment_code, domain)
+        row = await retry_segment(session, trade_date, segment_code)
     if not row:
         raise HTTPException(
             status_code=409,
@@ -116,12 +105,7 @@ async def retry_failed_segment(
 
 @router.post("/status/{trade_date}/{segment_code}/skip")
 @otel_trace
-async def skip_segment(
-    trade_date: date,
-    segment_code: str,
-    body: SkipRequest,
-    domain: str = Query(default="EDP"),
-):
+async def skip_segment(trade_date: date, segment_code: str, body: SkipRequest):
     """
     Manually skip a PENDING or IN_PROGRESS segment.
 
@@ -134,7 +118,6 @@ async def skip_segment(
             session, trade_date, segment_code,
             reason=body.reason,
             skipped_by=body.skipped_by,
-            domain=domain,
         )
     if not row:
         raise HTTPException(

@@ -27,12 +27,10 @@ def compute_hash(workflow_json: dict) -> str:
 async def get_active(
     session: AsyncSession,
     trade_date: date,
-    domain: str = "EDP",
 ) -> Optional[EdpProperties]:
     """Return the currently active workflow config for a given date."""
     stmt = select(EdpProperties).where(
         EdpProperties.trade_date == trade_date,
-        EdpProperties.domain == domain,
         EdpProperties.is_active.is_(True),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
@@ -42,7 +40,6 @@ async def get_active(
 async def get_latest_effective(
     session: AsyncSession,
     as_of_date: date,
-    domain: str = "EDP",
 ) -> Optional[EdpProperties]:
     """
     Return the most recently uploaded active config on or before `as_of_date`.
@@ -57,7 +54,6 @@ async def get_latest_effective(
     stmt = (
         select(EdpProperties)
         .where(
-            EdpProperties.domain == domain,
             EdpProperties.is_active.is_(True),
             EdpProperties.trade_date <= as_of_date,
         )
@@ -76,7 +72,6 @@ async def upload(
     trade_date: date,
     workflow_json: dict,
     uploaded_by: str = "system",
-    domain: str = "EDP",
 ) -> tuple[EdpProperties, bool]:
     """
     Insert or replace the workflow config for the day.
@@ -86,7 +81,7 @@ async def upload(
       is_new = True  → new config row created (old row superseded if present).
     """
     new_hash = compute_hash(workflow_json)
-    existing = await get_active(session, trade_date, domain)
+    existing = await get_active(session, trade_date)
 
     if existing and existing.content_hash == new_hash:
         logger.info(f"Workflow upload: identical hash — no change for {trade_date}")
@@ -100,7 +95,6 @@ async def upload(
 
     new_row = EdpProperties(
         trade_date=trade_date,
-        domain=domain,
         workflow_json=workflow_json,
         content_hash=new_hash,
         is_active=True,
@@ -119,14 +113,12 @@ async def upload(
 async def get_history(
     session: AsyncSession,
     trade_date: date,
-    domain: str = "EDP",
 ) -> list[EdpProperties]:
     """Return all config versions for a date (active + superseded), newest first."""
     stmt = (
         select(EdpProperties)
         .where(
             EdpProperties.trade_date == trade_date,
-            EdpProperties.domain == domain,
         )
         .order_by(EdpProperties.uploaded_at.desc())
     )

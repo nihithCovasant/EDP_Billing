@@ -8,7 +8,7 @@ so they can be built directly from SQLAlchemy ORM rows via model_validate().
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +21,6 @@ class WorkflowUploadRequest(BaseModel):
     trade_date: date
     workflow_json: Dict[str, Any]
     uploaded_by: str = "ops"
-    domain: Literal["EDP", "SETTLEMENT"] = "EDP"
 
 
 class WorkflowResponse(BaseModel):
@@ -29,7 +28,6 @@ class WorkflowResponse(BaseModel):
 
     id: str
     trade_date: date
-    domain: str
     content_hash: str
     is_active: bool
     uploaded_by: str
@@ -62,18 +60,16 @@ class SegmentSummary(BaseModel):
     process_id_reserved_at: Optional[str] = None
     skip_category: Optional[str] = None
     skip_reason: Optional[str] = None
-    window_start_at: Optional[str] = None
-    window_end_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     last_heartbeat_at: Optional[str] = None
+    # Computed live (not stored) — see utils/serializers._runtime_health().
     runtime_health: str = "ACTIVE"
     processes_json: Dict[str, Any] = Field(default_factory=dict)
 
 
 class DaySummaryResponse(BaseModel):
     trade_date: str
-    domain: str
     total: int
     pending: int
     in_progress: int
@@ -90,7 +86,6 @@ class DaySummaryResponse(BaseModel):
 class SegmentDetailResponse(BaseModel):
     id: str
     trade_date: str
-    domain: str
     segment_code: str
     segment_name: str
     # Computed from the fixed code constant (utils/constants.SEGMENT_ORDER),
@@ -103,11 +98,10 @@ class SegmentDetailResponse(BaseModel):
     process_id_reserved_at: Optional[str] = None
     skip_category: Optional[str] = None
     skip_reason: Optional[str] = None
-    window_start_at: Optional[str] = None
-    window_end_at: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     last_heartbeat_at: Optional[str] = None
+    # Computed live (not stored) — see utils/serializers._runtime_health().
     runtime_health: str = "ACTIVE"
     lock_state: str = "UNLOCKED"
     lock_owner: Optional[str] = None

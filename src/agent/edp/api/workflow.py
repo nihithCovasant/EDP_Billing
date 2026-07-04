@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 
 from ..database import get_session
 from ..repository import upload, get_active, get_workflow_history
@@ -68,7 +68,6 @@ async def upload_workflow(body: WorkflowUploadRequest):
             body.trade_date,
             body.workflow_json,
             uploaded_by=body.uploaded_by,
-            domain=body.domain,
         )
     logger.info(
         f"POST /workflow/upload: date={body.trade_date} is_new={is_new} "
@@ -77,7 +76,6 @@ async def upload_workflow(body: WorkflowUploadRequest):
     return {
         "id": row.id,
         "trade_date": row.trade_date,
-        "domain": row.domain,
         "content_hash": row.content_hash,
         "is_active": row.is_active,
         "is_new": is_new,
@@ -89,19 +87,18 @@ async def upload_workflow(body: WorkflowUploadRequest):
 
 @router.get("/workflow/{trade_date}", response_model=WorkflowDetailResponse)
 @otel_trace
-async def get_workflow(trade_date: date, domain: str = Query(default="EDP")):
+async def get_workflow(trade_date: date):
     """Get the currently active workflow config for a given trading date."""
     async with get_session() as session:
-        row = await get_active(session, trade_date, domain)
+        row = await get_active(session, trade_date)
     if not row:
         raise HTTPException(
             status_code=404,
-            detail=f"No active workflow config for {trade_date} domain={domain}",
+            detail=f"No active workflow config for {trade_date}",
         )
     return {
         "id": row.id,
         "trade_date": row.trade_date,
-        "domain": row.domain,
         "content_hash": row.content_hash,
         "is_active": row.is_active,
         "uploaded_by": row.uploaded_by,
@@ -113,21 +110,17 @@ async def get_workflow(trade_date: date, domain: str = Query(default="EDP")):
 
 @router.get("/workflow/{trade_date}/history")
 @otel_trace
-async def get_workflow_history_endpoint(
-    trade_date: date,
-    domain: str = Query(default="EDP"),
-):
+async def get_workflow_history_endpoint(trade_date: date):
     """
     All workflow config versions for a date (newest first).
     Useful for auditing config changes.
     """
     async with get_session() as session:
-        rows = await get_workflow_history(session, trade_date, domain)
+        rows = await get_workflow_history(session, trade_date)
     return [
         {
             "id": r.id,
             "trade_date": r.trade_date.isoformat(),
-            "domain": r.domain,
             "content_hash": r.content_hash,
             "is_active": r.is_active,
             "uploaded_by": r.uploaded_by,

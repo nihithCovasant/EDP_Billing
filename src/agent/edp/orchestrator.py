@@ -16,17 +16,18 @@ All helper utilities live in utils.*
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
-from .models import SegmentPhase, SegmentStatus, RuntimeHealth
+from .models import SegmentPhase, SegmentStatus
 from . import repository
 from .pipeline import advance_pipeline
-from .utils.constants import MTF_OPS_SEGMENT_CODE
-from .utils.datetime_utils import resolve_active_date, ensure_aware
+from .utils.constants import MTF_OPS_SEGMENT_CODE, STALE_HEARTBEAT_THRESHOLD
+from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
+from .utils.locking import lock_owner
 from .utils.log_fmt import edp_log, seg_log
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger, otel_trace
@@ -164,27 +165,24 @@ class EdpOrchestrator:
         async with get_session() as session:
             segments = await repository.get_all_for_date(session, active_date)
 
-        # ------ Mark stale heartbeats before processing ----------------------
-        STALE_THRESHOLD = timedelta(minutes=10)
-        async with get_session() as session:
-            all_segs = await repository.get_all_for_date(session, active_date)
-            for seg in all_segs:
-                if (
-                    seg.segment_status == SegmentStatus.IN_PROGRESS
-                    and seg.last_heartbeat_at
-                    and (now - ensure_aware(seg.last_heartbeat_at, self._tz)) > STALE_THRESHOLD
-                    and seg.runtime_health != RuntimeHealth.STALE
-                ):
-                    seg.runtime_health = RuntimeHealth.STALE
-                    logger.warning(seg_log(
-                        seg.segment_code, active_date,
-                        "Segment heartbeat STALE",
-                        phase=seg.current_phase.value if seg.current_phase else None,
-                        last_heartbeat=seg.last_heartbeat_at.isoformat()
-                        if seg.last_heartbeat_at else None,
-                        threshold=str(STALE_THRESHOLD),
-                    ))
-            await session.flush()
+        # ------ Log any stale heartbeats — diagnostic only, nothing persisted.
+        # (runtime_health used to be a column written here; it's now computed
+        # live at read time in utils/serializers.py, so this is just a log
+        # signal for ops and reuses the `segments` list already fetched
+        # above instead of an extra DB round trip.)
+        for seg in segments:
+            if (
+                seg.segment_status == SegmentStatus.IN_PROGRESS
+                and seg.last_heartbeat_at
+                and (now - ensure_aware(seg.last_heartbeat_at, self._tz)) > STALE_HEARTBEAT_THRESHOLD
+            ):
+                logger.warning(seg_log(
+                    seg.segment_code, active_date,
+                    "Segment heartbeat STALE",
+                    phase=seg.current_phase.value if seg.current_phase else None,
+                    last_heartbeat=seg.last_heartbeat_at.isoformat(),
+                    threshold=str(STALE_HEARTBEAT_THRESHOLD),
+                ))
 
         # ------ Drive each segment in sequence ------------------------------
         for seg_row in segments:
@@ -267,8 +265,9 @@ class EdpOrchestrator:
                     return "failed"
                 login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
 
-            window_start = ensure_aware(row.window_start_at, self._tz)
-            window_end = ensure_aware(row.window_end_at, self._tz)
+            window_start, window_end = _resolve_window(
+                segment_code, workflow.workflow_json, active_date, self._tz
+            )
 
             # Window not yet open
             if window_start and now < window_start:
@@ -335,7 +334,7 @@ class EdpOrchestrator:
                     logger.info(seg_log(
                         segment_code, active_date,
                         "Lock not acquired (held by another instance) — blocked",
-                        owner=row.lock_owner,
+                        owner=lock_owner(row),
                     ))
                     return "blocked"
                 logger.info(seg_log(
@@ -355,6 +354,7 @@ class EdpOrchestrator:
                     session=session,
                     login_id=login_id,
                     now=now,
+                    window_end=window_end,
                 )
             finally:
                 terminal = row.segment_status in (
@@ -376,6 +376,41 @@ def _find_segment_cfg(workflow_json: dict, segment_code: str) -> dict | None:
         if seg.get("segment_code") == segment_code:
             return seg
     return None
+
+
+def _resolve_window(
+    segment_code: str,
+    workflow_json: dict,
+    trade_date: date,
+    tz: ZoneInfo,
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Resolve (window_start, window_end) for a segment on demand.
+
+    This used to be two columns (window_start_at/window_end_at) computed
+    once at seed time; they were a pure function of
+    (segment_code, workflow_json, trade_date, tz) the whole time, so
+    resolving them here means a config re-upload takes effect immediately
+    instead of only for segments that haven't been seeded yet.
+    """
+    if segment_code == MTF_OPS_SEGMENT_CODE:
+        # No fixed window_start — gated purely by segment sequencing (the
+        # virtual MTFOPS segment only starts once every real segment is
+        # COMPLETED/SKIPPED). Generous end-of-day deadline so a slow chain
+        # isn't cut off mid-way.
+        window_end = datetime.combine(
+            trade_date + timedelta(days=1), dtime(23, 59, 59), tzinfo=tz
+        )
+        return None, window_end
+
+    seg_cfg = _find_segment_cfg(workflow_json, segment_code)
+    if not seg_cfg:
+        return None, None
+    window_start = parse_window_dt(trade_date, seg_cfg["window_start"], False, tz)
+    window_end = parse_window_dt(
+        trade_date, seg_cfg["window_end"], seg_cfg.get("window_end_next_day", False), tz
+    )
+    return window_start, window_end
 
 
 def _log_segment_outcome(

@@ -19,6 +19,8 @@ scoped out.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 # Fixed processing order for the 8 real trade segments. This used to be a
 # per-day config field (workflow_json.segments[].sequence_order) mirrored
 # onto a segment_execution DB column; it is now a code constant since the
@@ -28,12 +30,31 @@ SEGMENT_ORDER: tuple[str, ...] = (
     "EQ", "DR", "CUR", "SL", "NCDEX", "MCX", "NSECOM", "MF",
 )
 
+# Human display labels — also used to be a per-day config field
+# (workflow_json.segments[].segment_name) mirrored onto a segment_execution
+# DB column; folded into a code constant for the same reason as SEGMENT_ORDER.
+SEGMENT_NAMES: dict[str, str] = {
+    "EQ": "Cash",
+    "DR": "Derivative",
+    "CUR": "Currency",
+    "SL": "SLB",
+    "NCDEX": "NCDEX Commodity",
+    "MCX": "MCX Commodity",
+    "NSECOM": "NSE Commodity",
+    "MF": "Mutual Fund",
+}
+
 # Virtual segment representing the post-segment MTF operations chain.
 # Given the highest sequence order so it only starts once every real
 # trade segment has reached COMPLETED or SKIPPED.
 MTF_OPS_SEGMENT_CODE = "MTFOPS"
 MTF_OPS_SEGMENT_NAME = "MTF Operations (Collateral / Fund Transfer / Buy-Sell)"
 MTF_OPS_SEQUENCE_ORDER = 900
+
+# Heartbeat staleness threshold — a segment is considered STALE (for display
+# purposes only, not persisted) if it's IN_PROGRESS but hasn't had a
+# heartbeat in this long. Purely diagnostic; does not affect control flow.
+STALE_HEARTBEAT_THRESHOLD = timedelta(minutes=10)
 
 
 def get_sequence_order(segment_code: str) -> int:
@@ -51,6 +72,14 @@ def get_sequence_order(segment_code: str) -> int:
         return SEGMENT_ORDER.index(segment_code) + 1
     except ValueError:
         return 999
+
+
+def get_segment_name(segment_code: str) -> str:
+    """Resolve a segment's human display label from the fixed SEGMENT_NAMES map."""
+    if segment_code == MTF_OPS_SEGMENT_CODE:
+        return MTF_OPS_SEGMENT_NAME
+    return SEGMENT_NAMES.get(segment_code, segment_code)
+
 
 # Trigger calls (Steps 13, 15, 17, 19, 20, 22, 24) always use this fixed
 # LOGINID per the API doc — distinct from the per-segment CV0001 login used

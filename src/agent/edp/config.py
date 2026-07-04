@@ -156,7 +156,6 @@ def load_edp_config() -> EdpBootstrapConfig:
 def build_default_workflow_json(
     segments: List[Dict[str, Any]],
     timezone: str = "Asia/Kolkata",
-    domain: str = "EDP",
 ) -> dict:
     """
     Build a workflow_json from the default_segments list in bootstrap config.
@@ -165,15 +164,16 @@ def build_default_workflow_json(
     and does not need to be listed per segment in the workflow_json.
     The workflow_json only carries segment identity + timing metadata.
 
-    Processing order is NOT included here — it is a fixed code constant
-    (see utils/constants.SEGMENT_ORDER), not part of the config.
+    Processing order and display name are NOT included here — both are fixed
+    code constants resolved from segment_code (see utils/constants.py), not
+    part of the config. This system is also EDP-only, so there's no domain
+    field to carry either.
     """
     built_segments = []
     for seg in segments:
         seg_code = seg.get("segment_code", "")
         built_segments.append({
             "segment_code": seg_code,
-            "segment_name": seg.get("segment_name", seg_code),
             "login_id": seg.get("login_id", "CV0001"),
             "window_start": seg.get("window_start", "17:00"),
             "window_end": seg.get("window_end", "06:00"),
@@ -181,7 +181,6 @@ def build_default_workflow_json(
         })
 
     return {
-        "domain": domain,
         "timezone": timezone,
         "wake_interval_seconds": 60,
         "segments": built_segments,

@@ -1,0 +1,16 @@
+{% if severity -%}
+[{{ severity.label }}]
+
+{% endif -%}
+{% if title -%}
+{{ title }}
+
+{% endif -%}
+{% if summary -%}
+{{ summary }}
+
+{% endif -%}
+{{ text_table }}
+
+Generated {{ generated_at }}
+-- automated notification from the EDP Billing global email service --

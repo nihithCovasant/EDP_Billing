@@ -58,12 +58,17 @@ async def advance_pipeline(
     session: AsyncSession,
     login_id: str,
     now: datetime,
+    window_end: datetime | None = None,
 ) -> str:
     """
     Execute pipeline stages for a segment until it blocks, completes, or fails.
 
+    window_end is resolved by the caller (orchestrator._resolve_window) from
+    workflow_json — it's no longer a stored column, just passed through.
+
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
+    window_end = ensure_aware(window_end)
     while True:
         # Refresh "now" every iteration — a chain of instant ADVANCE results
         # (multiple phases completing back-to-back within one wake cycle) can
@@ -72,7 +77,6 @@ async def advance_pipeline(
         now = now_ist()
 
         # Window deadline check — catches segments that stall in long polling phases
-        window_end = ensure_aware(row.window_end_at)
         if (
             window_end
             and now > window_end

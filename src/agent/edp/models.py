@@ -1,12 +1,16 @@
 """
 SQLAlchemy models for EDP Billing agent — final 3-table design.
 
-edp_properties     — daily uploaded JSON config per (trade_date, domain)
-segment_execution  — runtime state per (trade_date, domain, segment_code)
+edp_properties     — daily uploaded JSON config per trade_date
+segment_execution  — runtime state per (trade_date, segment_code)
 agent_control      — append-only START/STOP audit log
 
 No foreign-key constraints between tables (soft references only).
 All tables are append-only — no deletes.
+
+NOTE: this system is EDP-only (no multi-domain/SETTLEMENT support) — the
+domain column that used to exist on both tables was dropped since it was
+never anything but "EDP" in practice.
 """
 
 from __future__ import annotations
@@ -92,13 +96,13 @@ class SegmentPhase(str, enum.Enum):
     DONE = "DONE"
 
 
-class RuntimeHealth(str, enum.Enum):
-    ACTIVE = "ACTIVE"
-    STALE = "STALE"
-    RECOVERED = "RECOVERED"
-
-
 class LockState(str, enum.Enum):
+    """
+    Values used inside the lock_json column (not a mapped Enum column —
+    lock_state/lock_owner/lock_acquired_at/lock_expires_at were consolidated
+    into one JSON field; this enum just gives the two valid "state" values
+    a name in Python code).
+    """
     UNLOCKED = "UNLOCKED"
     LOCKED = "LOCKED"
 
@@ -115,20 +119,18 @@ class AgentControlAction(str, enum.Enum):
 class EdpProperties(Base):
     """
     Daily workflow config uploaded by MOFSL ops.
-    One active row per (trade_date, domain).
+    One active row per trade_date.
 
     On re-upload: old row is soft-superseded (is_active=False, superseded_at set)
     and a new row is inserted. If content_hash is identical, upload is a no-op.
 
     workflow_json shape:
     {
-      "domain": "EDP",
       "timezone": "Asia/Kolkata",
       "wake_interval_seconds": 60,
       "segments": [
         {
           "segment_code": "EQ",
-          "segment_name": "Cash",
           "login_id": "CV0001",
           "window_start": "17:00",
           "window_end": "18:00",
@@ -148,8 +150,8 @@ class EdpProperties(Base):
       ]
     }
 
-    NOTE: segments no longer carry sequence_order — processing order is a
-    fixed code constant (see utils/constants.SEGMENT_ORDER).
+    NOTE: segments no longer carry sequence_order or segment_name — both are
+    fixed code constants resolved from segment_code (see utils/constants.py).
     """
 
     __tablename__ = "edp_properties"
@@ -159,10 +161,6 @@ class EdpProperties(Base):
     )
     trade_date: Mapped[date] = mapped_column(
         Date, nullable=False, index=True
-    )
-    domain: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="EDP",
-        comment="EDP or SETTLEMENT — same table serves both domains"
     )
     workflow_json: Mapped[dict] = mapped_column(
         JSON, nullable=False,
@@ -174,7 +172,7 @@ class EdpProperties(Base):
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True,
-        comment="Only one active row per (trade_date, domain)"
+        comment="Only one active row per trade_date"
     )
     uploaded_by: Mapped[str] = mapped_column(
         String(256), nullable=False, default="system"
@@ -184,7 +182,7 @@ class EdpProperties(Base):
     )
     superseded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
-        comment="Set when a newer config replaces this row for same (trade_date, domain)"
+        comment="Set when a newer config replaces this row for the same trade_date"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -197,7 +195,7 @@ class EdpProperties(Base):
 
 class SegmentExecution(Base):
     """
-    One row per (trade_date, domain, segment_code). Unique constraint enforced.
+    One row per (trade_date, segment_code). Unique constraint enforced.
 
     All runtime state for the segment lives here:
       - segment-level status, lock, timing
@@ -277,20 +275,15 @@ class SegmentExecution(Base):
 
     # --- Identity ---
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
-    domain: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="EDP",
-        comment="EDP or SETTLEMENT"
-    )
     segment_code: Mapped[str] = mapped_column(
         String(32), nullable=False,
         comment=(
             "Exact CBOS API param: EQ, DR, CUR, SL, NCDEX, MCX, NSECOM, MF, "
-            "or the virtual 'MTFOPS' post-segment chain (see utils/constants.py)"
+            "or the virtual 'MTFOPS' post-segment chain (see utils/constants.py). "
+            "Human display name and processing order are both resolved from this "
+            "code via utils/constants.get_segment_name()/get_sequence_order() —"
+            " not stored."
         )
-    )
-    segment_name: Mapped[str] = mapped_column(
-        String(64), nullable=False,
-        comment="Human label: Cash, Derivative, Currency, SLB, NCDEX, MCX, NSE Commodity, MF"
     )
 
     # --- Soft reference to edp_properties (no FK) ---
@@ -327,19 +320,16 @@ class SegmentExecution(Base):
     )
 
     # --- Lock (prevents double-trigger across restarts/pods) ---
-    lock_state: Mapped[LockState] = mapped_column(
-        Enum(LockState), nullable=False, default=LockState.UNLOCKED
-    )
-    lock_owner: Mapped[str | None] = mapped_column(
-        String(256), nullable=True,
-        comment="Agent pod or instance that currently holds the lock"
-    )
-    lock_acquired_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    lock_expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
-        comment="Lock TTL — if now() > lock_expires_at the lock is considered stale"
+    # Consolidated from 4 columns (lock_state/lock_owner/lock_acquired_at/
+    # lock_expires_at) into one JSON blob — always read/written as a unit,
+    # never queried by more than one field, and the one place that used to
+    # filter on lock_state+lock_expires_at (recover_stale_locks) scans the
+    # whole table anyway since it's small (<=9 rows/day).
+    # Shape: {"state": "LOCKED"|"UNLOCKED", "owner": str|None,
+    #         "acquired_at": iso str|None, "expires_at": iso str|None}
+    lock_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict,
+        comment="Lock state — see utils/locking.py for read/write helpers"
     )
 
     # --- Per-process state (all 4 processes in one JSON column) ---
@@ -349,14 +339,12 @@ class SegmentExecution(Base):
     )
 
     # --- Timing ---
-    window_start_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
-        comment="Earliest time this segment should start (from workflow_json)"
-    )
-    window_end_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
-        comment="Hard deadline — no auto triggers after this"
-    )
+    # window_start_at / window_end_at used to be columns computed once at
+    # seed time from workflow_json. They're pure functions of
+    # (workflow_json, trade_date, timezone) so they're now resolved on
+    # demand via orchestrator._resolve_window() instead of stored — this
+    # also means a config re-upload takes effect immediately instead of
+    # only for not-yet-started (PENDING) segments.
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
         comment="When segment moved from PENDING to IN_PROGRESS"
@@ -378,12 +366,11 @@ class SegmentExecution(Base):
     skip_reason: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )
-
-    # --- Agent runtime health ---
-    runtime_health: Mapped[RuntimeHealth] = mapped_column(
-        Enum(RuntimeHealth), nullable=False, default=RuntimeHealth.ACTIVE,
-        comment="ACTIVE=normal | STALE=heartbeat stopped | RECOVERED=restarted mid-segment"
-    )
+    # NOTE: "AGENT_RESTART" is a skip_category value — if the agent process
+    # crashes/restarts while a segment is IN_PROGRESS, recover_stale_locks()
+    # marks it SKIPPED (not resumed) with this category. There is no
+    # "runtime_health"/RECOVERED column anymore; a STALE heartbeat is
+    # computed live at read time (see utils/serializers.py), not persisted.
 
     # --- Audit ---
     created_at: Mapped[datetime] = mapped_column(
@@ -395,7 +382,7 @@ class SegmentExecution(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "trade_date", "domain", "segment_code",
+            "trade_date", "segment_code",
             name="uq_segment_execution_per_day",
         ),
     )

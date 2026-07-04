@@ -1,0 +1,45 @@
+{# Autoescaped HTML email body. #}
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#212529;max-width:960px;">
+
+{% if severity %}
+  <div style="background:{{ severity.background }};color:{{ severity.text_color }};
+              padding:10px 16px;border-radius:4px;font-weight:bold;font-size:13px;
+              letter-spacing:0.3px;margin-bottom:14px;">
+    {{ severity.label }}
+  </div>
+{% endif %}
+
+{% if title %}
+  <h2 style="margin:0 0 6px;font-size:18px;">{{ title }}</h2>
+{% endif %}
+
+{% if summary %}
+  <p style="margin:0 0 14px;line-height:1.5;white-space:pre-wrap;">{{ summary }}</p>
+{% endif %}
+
+<table style="border-collapse:collapse;width:100%;font-family:Arial,Helvetica,sans-serif;
+              font-size:13px;margin-top:4px;">
+  <thead>
+    <tr>
+      {% for col in columns %}
+      <th style="padding:8px 12px;border:1px solid #ccc;background:#343a40;
+                 color:#ffffff;text-align:left;white-space:nowrap;">{{ col }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in table_rows %}
+    <tr style="background-color:{{ row.background }};color:{{ row.text_color }};">
+      {% for cell in row.cells %}
+      <td style="padding:8px 12px;border:1px solid #ccc;vertical-align:top;">{{ cell }}</td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p style="margin-top:18px;font-size:11px;color:#6c757d;">
+  Generated {{ generated_at }} — this is an automated notification from the EDP Billing global email service.
+</p>
+
+</div>
