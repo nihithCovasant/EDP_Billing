@@ -81,6 +81,7 @@
       "cbos_use_mock": true,
       "database_url": "sqlite+aiosqlite:///./edp_agent.db",
       "cbos_login_id": "CV0001",
+      "post_trade_login_id": "G_LID",
       "lock_ttl_seconds": 300,
       "agent_instance_id": "edp-agent-1",
       "segments": [

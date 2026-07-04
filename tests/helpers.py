@@ -21,7 +21,7 @@ sequencing/halt-on-FAILED rules) is exercised exactly as in production.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
 
 from sqlalchemy import delete
 
@@ -29,11 +29,12 @@ from src.agent.edp import repository
 from src.agent.edp.config import EdpBootstrapConfig, build_default_workflow_json
 from src.agent.edp.models import EdpProperties, SegmentExecution, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
-from src.agent.edp.utils.constants import SEGMENT_ORDER
+from src.agent.edp.utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER
 
 TERMINAL_STATES = {SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED}
 
 ALL_SEGMENT_CODES = list(SEGMENT_ORDER)
+ALL_POST_TRADE_CODES = list(POST_TRADE_ORDER)
 
 
 def build_all_day_open_workflow_json(timezone: str = "Asia/Kolkata") -> dict:
@@ -69,6 +70,17 @@ def fixed_now_for(trade_date: date, tz) -> datetime:
     return datetime.combine(trade_date, dtime(12, 0), tzinfo=tz)
 
 
+def fixed_post_trade_now_for(trade_date: date, tz) -> datetime:
+    """
+    A stable "now" for driving the 5 post-trade processes, anchored to
+    trade_date+1 03:00 — inside Process 1's (COLVAL) 02:30-06:00 IST window
+    (see utils/constants.POST_TRADE_FIRST_WINDOW_START), which is resolved
+    from trade_date+1, not trade_date, so this must match that anchoring
+    (see orchestrator._resolve_post_trade_window()).
+    """
+    return datetime.combine(trade_date + timedelta(days=1), dtime(3, 0), tzinfo=tz)
+
+
 async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -> None:
     """Upload an all-day-open workflow config and seed all segment rows —
     mirrors the setup steps orchestrator.run_wake_cycle() performs before
@@ -84,9 +96,24 @@ async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -
         await session.commit()
 
 
+async def seed_post_trade_day(session_factory, trade_date: date) -> None:
+    """Seed the 5 fixed post-trade process rows for trade_date — mirrors the
+    unconditional seeding orchestrator.run_wake_cycle() performs every cycle
+    via _process_post_trade_chain(), independent of the 7 segments' config."""
+    async with session_factory() as session:
+        await repository.seed_post_trade_processes(session, trade_date)
+        await session.commit()
+
+
 async def get_rows(session_factory, trade_date: date) -> list[SegmentExecution]:
     async with session_factory() as session:
         return await repository.get_all_for_date(session, trade_date)
+
+
+async def get_post_trade_rows(session_factory, trade_date: date) -> list[SegmentExecution]:
+    rows = await get_rows(session_factory, trade_date)
+    by_code = {r.segment_code: r for r in rows if r.segment_code in POST_TRADE_ORDER}
+    return [by_code[code] for code in POST_TRADE_ORDER if code in by_code]
 
 
 async def cleanup_day(session_factory, trade_date: date) -> None:
@@ -163,4 +190,58 @@ async def drive_until_terminal(
 
     raise TimeoutError(
         f"Day {trade_date} did not reach a terminal state within {max_cycles} cycles"
+    )
+
+
+async def run_one_post_trade_cycle(
+    orchestrator: EdpOrchestrator, session_factory, trade_date: date,
+) -> dict:
+    """
+    One pass over the day's 5 post-trade processes in POST_TRADE_ORDER —
+    mirrors orchestrator._process_post_trade_chain(), anchored to a fixed
+    "now" inside Process 1's window instead of real wall-clock time (see
+    fixed_post_trade_now_for()). Independent of the 7 real segments' status
+    by design (see orchestrator.EdpOrchestrator class docstring).
+    """
+    rows = await get_post_trade_rows(session_factory, trade_date)
+
+    orchestrator._cycle_active_date = trade_date
+    orchestrator._cycle_now = fixed_post_trade_now_for(trade_date, orchestrator._tz)
+
+    processed = 0
+    halted_on_failure = False
+    for row in rows:
+        status = row.segment_status
+        if status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
+            continue
+        if status == SegmentStatus.FAILED:
+            halted_on_failure = True
+            break
+
+        processed += 1
+        outcome = await orchestrator._process_one_post_trade(row.segment_code)
+        if outcome not in ("completed", "skipped"):
+            break
+
+    return {"processed": processed, "halted_on_failure": halted_on_failure}
+
+
+async def drive_post_trade_until_terminal(
+    orchestrator: EdpOrchestrator,
+    session_factory,
+    trade_date: date,
+    max_cycles: int = 150,
+) -> list[SegmentExecution]:
+    """Post-trade equivalent of drive_until_terminal() — see that docstring."""
+    for _ in range(max_cycles):
+        result = await run_one_post_trade_cycle(orchestrator, session_factory, trade_date)
+        rows = await get_post_trade_rows(session_factory, trade_date)
+
+        if result["halted_on_failure"]:
+            return rows
+        if all(r.segment_status in TERMINAL_STATES for r in rows):
+            return rows
+
+    raise TimeoutError(
+        f"Post-trade chain for {trade_date} did not reach a terminal state within {max_cycles} cycles"
     )

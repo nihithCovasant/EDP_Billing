@@ -89,6 +89,11 @@ class EdpBootstrapConfig:
     cbos_use_mock: bool = True
     cbos_login_id: str = "CV0001"
 
+    # LOGINID used for the 5 T+1 post-trade trigger calls (GetCollateralValuation,
+    # MTFTradeProcessCollateralAllocation/FundTransfer, DailyMarginReporting/
+    # Statements) — a distinct login ID from cbos_login_id, per spec ("G_LID").
+    post_trade_login_id: str = "G_LID"
+
     # Database
     database_url: str = "sqlite+aiosqlite:///./edp_agent.db"
 
@@ -139,6 +144,9 @@ def load_edp_config() -> EdpBootstrapConfig:
         cbos_process_url=cbos_process_url,
         cbos_use_mock=cbos_use_mock,
         cbos_login_id=os.getenv("CBOS_LOGIN_ID", edp_raw.get("cbos_login_id", "CV0001")),
+        post_trade_login_id=os.getenv(
+            "POST_TRADE_LOGIN_ID", edp_raw.get("post_trade_login_id", "G_LID")
+        ),
         database_url=db_url,
         lock_ttl_seconds=int(edp_raw.get("lock_ttl_seconds", 300)),
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),

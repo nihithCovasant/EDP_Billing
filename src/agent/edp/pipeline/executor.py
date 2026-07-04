@@ -1,7 +1,13 @@
 """
-Pipeline executor — drives a single segment through its 7-step state machine.
-Identical for all 7 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX,
-MTF); MTF is not special-cased.
+Pipeline executor — drives a single segment_execution row through its state
+machine. Shared by both pipelines that live in this table:
+  - the 7-step pipeline for the 7 real segments (CASH/EQ, F&O/DR, CD/CUR,
+    SLBM/SL, MCX, NCDEX, MTF) — MTF is not special-cased.
+  - the 3-step pipeline for the 5 T+1 post-trade processes (COLVAL, COLALLOC,
+    MTFFT, DMRPT, DMSTMT).
+The two are distinguished purely by which phase_handlers dict is passed in —
+the loop mechanics (window deadline check, terminal signals, ADVANCE chaining)
+are identical either way.
 """
 
 from __future__ import annotations
@@ -23,6 +29,11 @@ from .stages import (
     handle_await_recon,
     handle_await_contract_note,
 )
+from .post_trade_stages import (
+    handle_await_gtg,
+    handle_trigger_job,
+    handle_await_confirm,
+)
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
@@ -38,6 +49,14 @@ _PHASE_HANDLERS = {
     SegmentPhase.AWAIT_CONTRACT_NOTE:   handle_await_contract_note,
 }
 
+_POST_TRADE_PHASE_HANDLERS = {
+    # 3-step pipeline — shared by all 5 T+1 post-trade processes
+    # (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT)
+    SegmentPhase.AWAIT_GTG:      handle_await_gtg,
+    SegmentPhase.TRIGGER_JOB:    handle_trigger_job,
+    SegmentPhase.AWAIT_CONFIRM:  handle_await_confirm,
+}
+
 _TERMINAL_SIGNALS = {StageResult.COMPLETED, StageResult.SKIPPED, StageResult.FAILED}
 
 
@@ -48,15 +67,23 @@ async def advance_pipeline(
     login_id: str,
     now: datetime,
     window_end: datetime | None = None,
+    phase_handlers: dict | None = None,
 ) -> str:
     """
-    Execute pipeline stages for a segment until it blocks, completes, or fails.
+    Execute pipeline stages for a segment_execution row until it blocks,
+    completes, or fails.
+
+    phase_handlers selects which pipeline drives this row — defaults to the
+    7-step real-segment pipeline; pass _POST_TRADE_PHASE_HANDLERS (via
+    pipeline.POST_TRADE_PHASE_HANDLERS) for the 5 post-trade processes.
 
     window_end is resolved by the caller (orchestrator._resolve_window) from
     workflow_json — it's no longer a stored column, just passed through.
+    None for post-trade rows (no deadline, see orchestrator._resolve_post_trade_window).
 
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
+    handlers = phase_handlers if phase_handlers is not None else _PHASE_HANDLERS
     window_end = ensure_aware(window_end)
     while True:
         # Refresh "now" every iteration — a chain of instant ADVANCE results
@@ -93,7 +120,7 @@ async def advance_pipeline(
             return "skipped"
 
         phase = row.current_phase
-        handler = _PHASE_HANDLERS.get(phase)
+        handler = handlers.get(phase)
 
         if handler is None:
             if phase == SegmentPhase.DONE:

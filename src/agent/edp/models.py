@@ -7,10 +7,6 @@ agent_control      — append-only START/STOP audit log
 
 No foreign-key constraints between tables (soft references only).
 All tables are append-only — no deletes.
-
-NOTE: this system is EDP-only (no multi-domain/SETTLEMENT support) — the
-domain column that used to exist on both tables was dropped since it was
-never anything but "EDP" in practice.
 """
 
 from __future__ import annotations
@@ -51,9 +47,14 @@ class SegmentStatus(str, enum.Enum):
 
 class SegmentPhase(str, enum.Enum):
     """
-    One generic 7-step pipeline, shared by all 7 segments (CASH/EQ, F&O/DR,
-    CD/CUR, SLBM/SL, MCX, NCDEX, MTF) — MTF is not special-cased, it runs
-    through the exact same phases as every other segment:
+    Two pipelines share this single enum/DB column, distinguished by which
+    segment_code the row belongs to (see utils/constants.SEGMENT_ORDER vs
+    POST_TRADE_ORDER) — a row is only ever in phases from ONE of the two
+    lists below, never a mix:
+
+    (1) The generic 7-step pipeline, shared by all 7 real segments (CASH/EQ,
+        F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF) — MTF is not special-cased,
+        it runs through the exact same phases as every other segment:
 
       HOLIDAY_CHECK       → POST file_process_status(BeginFileUpload)           [step 1]
       RESERVE_PID         → POST getdropdown(EXISTINGPROCESSID); if not found,
@@ -64,7 +65,17 @@ class SegmentPhase(str, enum.Enum):
       AWAIT_RECON         → POST file_process_status(RECON)         — poll      [step 6]
       AWAIT_CONTRACT_NOTE → POST file_process_status(CONTRACTNOTEGENERATION)    [step 7]
 
-    DONE — terminal state.
+    (2) The generic 3-step pipeline shared by all 5 T+1 post-trade processes
+        (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT) — run once per trade_date,
+        sequentially, after (but independent of) the 7 real segments:
+
+      AWAIT_GTG     → POST file_process_status(<process-specific ProcessName>) — poll
+      TRIGGER_JOB   → POST <process-specific trigger endpoint>, e.g.
+                       GetCollateralValuation / MTFTradeProcessFundTransfer /
+                       DailyMarginReporting / DailyMarginStatements
+      AWAIT_CONFIRM → POST file_process_status(<same ProcessName>) — poll again
+
+    DONE — terminal state, shared by both pipelines.
     """
     HOLIDAY_CHECK = "HOLIDAY_CHECK"
     RESERVE_PID = "RESERVE_PID"
@@ -73,6 +84,10 @@ class SegmentPhase(str, enum.Enum):
     AWAIT_BILLPOSTING = "AWAIT_BILLPOSTING"
     AWAIT_RECON = "AWAIT_RECON"
     AWAIT_CONTRACT_NOTE = "AWAIT_CONTRACT_NOTE"
+
+    AWAIT_GTG = "AWAIT_GTG"
+    TRIGGER_JOB = "TRIGGER_JOB"
+    AWAIT_CONFIRM = "AWAIT_CONFIRM"
 
     DONE = "DONE"
 
@@ -177,13 +192,19 @@ class EdpProperties(Base):
 class SegmentExecution(Base):
     """
     One row per (trade_date, segment_code). Unique constraint enforced.
+    segment_code is either one of the 7 real trade segments (utils/constants.
+    SEGMENT_ORDER) or one of the 5 T+1 post-trade processes (utils/constants.
+    POST_TRADE_ORDER) — both kinds of rows live in this same table, sharing
+    all status/lock/heartbeat machinery; only the processes_json shape and
+    current_phase values differ between the two.
 
     All runtime state for the segment lives here:
       - segment-level status, lock, timing
-      - per-process state inside processes_json (holiday_check/file_upload_ready/trigger/bill_posting/recon/contract_note)
+      - per-process state inside processes_json (shape depends on which
+        pipeline the row belongs to — see below)
 
-    processes_json shape (6 internal stages per segment — identical for all
-    7 segments, MTF included; there is no separate MTF-only shape anymore):
+    processes_json shape for the 7 real segments (6 internal stages —
+    identical for all 7, MTF included; there is no separate MTF-only shape):
     {
       "holiday_check": {
         "status": "COMPLETED|SKIPPED",
@@ -224,7 +245,7 @@ class SegmentExecution(Base):
       }
     }
 
-    CBOS ProcessName → internal stage key mapping:
+    CBOS ProcessName → internal stage key mapping (7 real segments):
       BeginFileUpload        → holiday_check
       FILEUPLOAD             → file_upload_ready
       (getdropdown / getNewTradeProcess) → trigger
@@ -232,9 +253,33 @@ class SegmentExecution(Base):
       RECON                  → recon
       CONTRACTNOTEGENERATION → contract_note
 
+    processes_json shape for the 5 post-trade processes (3 internal stages):
+    {
+      "gtg": {
+        "status": "COMPLETED|POLLING",
+        "poll_count": 2,
+        "last_response": "TRUE",
+        "ready_at": "2026-06-29T02:35:00Z"
+      },
+      "trigger": {
+        "status": "TRIGGERED|FAILED",
+        "at": "2026-06-29T02:35:10Z",
+        "message": "Process started successfully"
+      },
+      "confirm": {
+        "status": "CONFIRMED|POLLING",
+        "poll_count": 4,
+        "last_response": "TRUE",
+        "confirmed_at": "2026-06-29T03:10:00Z"
+      }
+    }
+
     current_process column stores the CBOS ProcessName currently being polled
-    (e.g. "BeginFileUpload", "FILEUPLOAD", "BILLPOSTING", "RECON", "CONTRACTNOTEGENERATION")
-    or null during RESERVE_PID and TRIGGER phases.
+    — for the 7 real segments: "BeginFileUpload", "FILEUPLOAD", "BILLPOSTING",
+    "RECON", "CONTRACTNOTEGENERATION" (null during RESERVE_PID/TRIGGER); for
+    the 5 post-trade processes: the process-specific GTG ProcessName (e.g.
+    "CollateralValuation") for both AWAIT_GTG and AWAIT_CONFIRM (null during
+    TRIGGER_JOB).
     """
 
     __tablename__ = "segment_execution"
@@ -248,8 +293,10 @@ class SegmentExecution(Base):
     segment_code: Mapped[str] = mapped_column(
         String(32), nullable=False,
         comment=(
-            "Exact CBOS API param: EQ, DR, CUR, SL, MCX, NCDEX, or MTF "
-            "(see utils/constants.SEGMENT_ORDER). Human display name and "
+            "Exact CBOS API param: either a real segment — EQ, DR, CUR, SL, "
+            "MCX, NCDEX, MTF (see utils/constants.SEGMENT_ORDER) — or a T+1 "
+            "post-trade process — COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT "
+            "(see utils/constants.POST_TRADE_ORDER). Human display name and "
             "processing order are both resolved from this code via "
             "utils/constants.get_segment_name()/get_sequence_order() — not stored."
         )

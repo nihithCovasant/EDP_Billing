@@ -7,8 +7,11 @@ Responsibilities:
   3. Iterate segments in sequence order, skipping past terminals.
   4. Acquire the per-segment lock, delegate to the pipeline executor,
      then release the lock and update the heartbeat.
+  5. Independently seed and drive the 5 T+1 post-trade processes for the
+     same active_date — NOT gated on the 7 segments' status (they run on
+     their own fixed wall-clock window; see _process_post_trade_chain()).
 
-All pipeline logic lives in pipeline.executor / pipeline.stages.
+All pipeline logic lives in pipeline.executor / pipeline.stages / pipeline.post_trade_stages.
 All DB operations live in repository.*
 All helper utilities live in utils.*
 """
@@ -24,8 +27,14 @@ from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
 from .models import SegmentPhase, SegmentStatus
 from . import repository
-from .pipeline import advance_pipeline
-from .utils.constants import STALE_HEARTBEAT_THRESHOLD
+from .pipeline import advance_pipeline, POST_TRADE_PHASE_HANDLERS
+from .utils.constants import (
+    STALE_HEARTBEAT_THRESHOLD,
+    SEGMENT_ORDER,
+    POST_TRADE_ORDER,
+    POST_TRADE_GTG_PROCESS_NAME,
+    POST_TRADE_FIRST_WINDOW_START,
+)
 from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
 from .utils.locking import lock_owner
 from .utils.log_fmt import edp_log, seg_log
@@ -35,13 +44,20 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across all 7 trade segments.
+    Drives the daily EDP billing pipeline across all 7 trade segments, then
+    the 5 T+1 post-trade processes.
 
     Segments run sequentially, in this fixed order (see utils/constants.py):
       CASH/EQ → F&O/DR → CD/CUR → SLBM/SL → MCX → NCDEX → MTF
     Segment N cannot start until N-1 is COMPLETED or SKIPPED. MTF is not
     special-cased — it runs through the exact same generic 7-step pipeline
     as every other segment.
+
+    Independently of that chain, the 5 post-trade processes (COLVAL →
+    COLALLOC → MTFFT → DMRPT → DMSTMT) are seeded and driven every cycle too
+    — they are sequential among themselves (process N waits for N-1) but are
+    NOT gated on the 7 segments' completion, only on their own fixed
+    wall-clock window (see _process_post_trade_chain()).
     """
 
     def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient):
@@ -78,6 +94,12 @@ class EdpOrchestrator:
             "segments_completed": 0,
             "segments_skipped": 0,
             "segments_failed": 0,
+            "post_trade_processed": 0,
+            "post_trade_advanced": 0,
+            "post_trade_blocked": 0,
+            "post_trade_completed": 0,
+            "post_trade_skipped": 0,
+            "post_trade_failed": 0,
         }
 
         # ------ Check agent RUNNING / STOPPED state -------------------------
@@ -148,8 +170,14 @@ class EdpOrchestrator:
             ))
 
         # ------ Fetch ordered segments and drive each one -------------------
+        # get_all_for_date() returns EVERY segment_execution row for the date
+        # — including the 5 post-trade pseudo-segments once they've been
+        # seeded by a previous cycle's _process_post_trade_chain() — so this
+        # loop must filter down to just the 7 real segments; post-trade rows
+        # are driven separately below, independent of this loop entirely.
         async with get_session() as session:
             segments = await repository.get_all_for_date(session, active_date)
+        segments = [s for s in segments if s.segment_code in SEGMENT_ORDER]
 
         # ------ Log any stale heartbeats — diagnostic only, nothing persisted.
         # (runtime_health used to be a column written here; it's now computed
@@ -196,6 +224,11 @@ class EdpOrchestrator:
             # Stop the chain if this segment didn't finish
             if outcome not in ("completed", "skipped"):
                 break
+
+        # ------ Drive the 5 T+1 post-trade processes — independent of the ---
+        # 7 segments' status above (see class docstring); gated only by
+        # their own fixed wall-clock window (Process 1 @ 02:30 IST T+1).
+        await self._process_post_trade_chain(summary)
 
         return summary
 
@@ -340,6 +373,154 @@ class EdpOrchestrator:
 
         return result
 
+    # -------------------------------------------------------------------------
+    # Post-trade (T+1) orchestration — 5 processes, independent of segments
+    # -------------------------------------------------------------------------
+
+    @otel_trace
+    async def _process_post_trade_chain(self, summary: dict) -> None:
+        """
+        Seed (if needed) and drive the 5 T+1 post-trade processes for the
+        current cycle's active_date, in fixed POST_TRADE_ORDER, halting the
+        post-trade chain (not the whole wake cycle) on the first FAILED one.
+
+        Deliberately NOT gated on the 7 real segments' status — see class
+        docstring. Only Process 1 (COLVAL) has its own wall-clock window
+        gate (see _resolve_post_trade_window()); mutates `summary` in place
+        with post_trade_* counters.
+        """
+        active_date = self._cycle_active_date
+
+        async with get_session() as session:
+            created = await repository.seed_post_trade_processes(session, active_date)
+        if created:
+            logger.info(edp_log(
+                "Post-trade process rows seeded",
+                date=active_date,
+                count=len(created),
+                processes=[r.segment_code for r in created],
+            ))
+
+        async with get_session() as session:
+            all_rows = await repository.get_all_for_date(session, active_date)
+        post_trade_rows = [r for r in all_rows if r.segment_code in POST_TRADE_ORDER]
+        post_trade_rows.sort(key=lambda r: POST_TRADE_ORDER.index(r.segment_code))
+
+        for row in post_trade_rows:
+            status = row.segment_status
+
+            if status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
+                continue
+
+            if status == SegmentStatus.FAILED:
+                logger.warning(seg_log(
+                    row.segment_code, active_date,
+                    "Post-trade process FAILED — halting remaining post-trade chain",
+                    reason=row.skip_reason,
+                ))
+                break
+
+            summary["post_trade_processed"] += 1
+            t0 = time.monotonic()
+            outcome = await self._process_one_post_trade(row.segment_code)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+            _log_segment_outcome(row.segment_code, active_date, outcome, elapsed_ms)
+            summary[f"post_trade_{outcome}"] = summary.get(f"post_trade_{outcome}", 0) + 1
+
+            if outcome not in ("completed", "skipped"):
+                break
+
+    @otel_trace
+    async def _process_one_post_trade(self, segment_code: str) -> str:
+        """
+        Lock → run pipeline executor (post-trade phase handlers) → release lock.
+        Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
+
+        Mirrors _process_one_segment(), minus the workflow_json lookup (post-
+        trade processes aren't part of the ops-uploaded config — login_id and
+        window come from fixed bootstrap config / code constants instead).
+        """
+        active_date = self._cycle_active_date
+        now = self._cycle_now
+        async with get_session() as session:
+            row = await repository.get_one(session, active_date, segment_code)
+            if not row:
+                logger.error(seg_log(segment_code, active_date, "Post-trade process row not found in DB"))
+                return "failed"
+
+            login_id = self.config.post_trade_login_id
+            window_start = _resolve_post_trade_window(segment_code, active_date, self._tz)
+
+            if window_start and now < window_start:
+                logger.info(seg_log(
+                    segment_code, active_date,
+                    "Post-trade process window not yet open — skipping this cycle",
+                    window_opens=window_start.strftime("%H:%M:%S %Z"),
+                    now=now.strftime("%H:%M:%S %Z"),
+                ))
+                return "blocked"
+
+            if row.segment_status == SegmentStatus.PENDING:
+                acquired = await repository.acquire_lock(
+                    session, row, self.config.agent_instance_id, self.config.lock_ttl_seconds
+                )
+                if not acquired:
+                    logger.info(seg_log(segment_code, active_date, "Lock not acquired — blocked"))
+                    return "blocked"
+                row.segment_status = SegmentStatus.IN_PROGRESS
+                row.started_at = now
+                row.current_phase = SegmentPhase.AWAIT_GTG
+                row.current_process = POST_TRADE_GTG_PROCESS_NAME[segment_code]
+                await session.flush()
+                logger.info(seg_log(
+                    segment_code, active_date,
+                    "Post-trade process STARTED",
+                    started_at=now.strftime("%H:%M:%S %Z"),
+                    window_opens=window_start.strftime("%H:%M:%S %Z") if window_start else None,
+                    first_phase=row.current_phase.value,
+                ))
+
+            elif row.segment_status == SegmentStatus.IN_PROGRESS:
+                acquired = await repository.acquire_lock(
+                    session, row, self.config.agent_instance_id, self.config.lock_ttl_seconds
+                )
+                if not acquired:
+                    logger.info(seg_log(
+                        segment_code, active_date,
+                        "Lock not acquired (held by another instance) — blocked",
+                        owner=lock_owner(row),
+                    ))
+                    return "blocked"
+                logger.info(seg_log(
+                    segment_code, active_date,
+                    "Resuming IN_PROGRESS post-trade process",
+                    phase=row.current_phase.value if row.current_phase else None,
+                    process=row.current_process,
+                ))
+            else:
+                return "blocked"
+
+            try:
+                result = await advance_pipeline(
+                    cbos=self.cbos,
+                    row=row,
+                    session=session,
+                    login_id=login_id,
+                    now=now,
+                    window_end=None,
+                    phase_handlers=POST_TRADE_PHASE_HANDLERS,
+                )
+            finally:
+                terminal = row.segment_status in (
+                    SegmentStatus.COMPLETED, SegmentStatus.FAILED, SegmentStatus.SKIPPED
+                )
+                if not terminal:
+                    await repository.touch_heartbeat(session, row)
+                await repository.release_lock(session, row)
+
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -375,6 +556,25 @@ def _resolve_window(
         trade_date, seg_cfg["window_end"], seg_cfg.get("window_end_next_day", False), tz
     )
     return window_start, window_end
+
+
+def _resolve_post_trade_window(
+    segment_code: str,
+    trade_date: date,
+    tz: ZoneInfo,
+) -> Optional[datetime]:
+    """
+    Only the first post-trade process (COLVAL, per POST_TRADE_ORDER[0]) has
+    an explicit opening gate — 02:30 IST on trade_date+1, per the spec's
+    "T+1, 2:30am-6am window" (the +1 day matches how the 7 segments' own
+    windows already run past midnight into trade_date+1, up to the 06:00
+    active_date cutoff — see config.py's active_date_cutoff_hour). The
+    remaining 4 processes simply start as soon as the previous one in the
+    chain completes; there's no window_end deadline for any of them.
+    """
+    if segment_code != POST_TRADE_ORDER[0]:
+        return None
+    return parse_window_dt(trade_date, POST_TRADE_FIRST_WINDOW_START, True, tz)
 
 
 def _log_segment_outcome(

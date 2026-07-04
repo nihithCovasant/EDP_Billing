@@ -5,7 +5,8 @@ Mock CBOS Server
 Standalone FastAPI app that simulates the CBOS endpoints used by the EDP
 Billing segment execution flow (holiday check, get-or-reserve process ID,
 file upload poll, single trigger, bill posting/recon/contract note polls —
-identical for all 7 segments), so the EDP agent can be fully tested without
+identical for all 7 segments) plus the 5 T+1 post-trade processes (GTG poll
+-> trigger -> confirm poll), so the EDP agent can be fully tested without
 VPN/VDI access to the real MOFSL CBOS system.
 
 Run standalone:
@@ -59,6 +60,12 @@ async def file_process_status(payload: dict):
     identical for all 7 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX,
     NCDEX, MTF):
       BeginFileUpload, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION.
+
+    Also reused as-is for the 5 T+1 post-trade processes' GTG/confirm polls
+    (Segment=COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT, ProcessName=CollateralValuation/
+    CollateralAllocation/FundTransfer/DailyMarginReporting/DailyMarginStatements)
+    — same stateful poll-count-based TRUE/FALSE logic, just a different
+    (segment, process_name) key.
 
     Body: {"Segment": "EQ", "ProcessName": "BeginFileUpload", "UserID": "CV0001"}
     """
@@ -130,6 +137,50 @@ async def getdropdown(payload: dict):
 
     desc = f"{pid} - {login_id} - {datetime.now().strftime('%b %d %Y %I:%M%p')}"
     return {"Status": "Success", "Result": [{"_KEY": int(pid), "_DESC": desc}]}
+
+
+# =============================================================================
+# T+1 post-trade triggers — Collateral Valuation/Allocation, MTF Fund
+#     Transfer, Daily Margin Reporting/Statements (Processes 1-5)
+#     Main Process API — port 8003 in real CBOS
+# =============================================================================
+
+@app.post("/v1/api/process/GetCollateralValuation")
+async def get_collateral_valuation(payload: dict):
+    """
+    Post-trade Process 1 trigger.
+    Body: {"BUTTONNAME":"COLLATERAL_VALUATION_DATEWISE","LOGINID":"G_LID","MARGINDATE":"29-Jun-2026"}
+    """
+    state.mark_post_trade_triggered("COLVAL")
+    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
+
+
+@app.post("/v1/api/process/MTFTradeProcessCollateralAllocation")
+async def mtf_trade_process_collateral_allocation(payload: dict):
+    """Post-trade Process 2 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
+    state.mark_post_trade_triggered("COLALLOC")
+    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
+
+
+@app.post("/v1/api/process/MTFTradeProcessFundTransfer")
+async def mtf_trade_process_fund_transfer(payload: dict):
+    """Post-trade Process 3 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
+    state.mark_post_trade_triggered("MTFFT")
+    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
+
+
+@app.post("/v1/api/process/DailyMarginReporting")
+async def daily_margin_reporting(payload: dict):
+    """Post-trade Process 4 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
+    state.mark_post_trade_triggered("DMRPT")
+    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
+
+
+@app.post("/v1/api/process/DailyMarginStatements")
+async def daily_margin_statements(payload: dict):
+    """Post-trade Process 5 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
+    state.mark_post_trade_triggered("DMSTMT")
+    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
 # =============================================================================

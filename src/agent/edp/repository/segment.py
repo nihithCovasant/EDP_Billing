@@ -16,7 +16,7 @@ from ..models import (
     SegmentPhase,
     SegmentStatus,
 )
-from ..utils.constants import get_sequence_order
+from ..utils.constants import get_sequence_order, POST_TRADE_ORDER
 from ..utils.datetime_utils import now_ist
 from ..utils.locking import (
     lock_expires_at,
@@ -126,6 +126,43 @@ async def seed_from_workflow(
     if created:
         await session.flush()
         logger.info(f"Seeded {len(created)} segment_execution rows for {trade_date}")
+    return created
+
+
+@otel_trace
+async def seed_post_trade_processes(
+    session: AsyncSession,
+    trade_date: date,
+) -> List[SegmentExecution]:
+    """
+    Create PENDING segment_execution rows for the 5 fixed T+1 post-trade
+    processes (utils/constants.POST_TRADE_ORDER) for a given trade_date.
+
+    Unlike seed_from_workflow(), these are NOT part of the ops-uploaded
+    workflow_json — there's no per-day login_id/window to configure for
+    them, so they're seeded unconditionally from the fixed code constant,
+    same as the 7 real segments' processing order. Idempotent: rows that
+    already exist (any status) are left untouched.
+    """
+    created: List[SegmentExecution] = []
+
+    for code in POST_TRADE_ORDER:
+        existing = await get_one(session, trade_date, code)
+        if existing:
+            continue
+
+        row = SegmentExecution(
+            trade_date=trade_date,
+            segment_code=code,
+            segment_status=SegmentStatus.PENDING,
+            processes_json={},
+        )
+        session.add(row)
+        created.append(row)
+
+    if created:
+        await session.flush()
+        logger.info(f"Seeded {len(created)} post-trade process rows for {trade_date}")
     return created
 
 

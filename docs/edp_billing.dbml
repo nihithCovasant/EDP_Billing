@@ -22,8 +22,14 @@ Enum segment_phase {
   AWAIT_BILLPOSTING
   AWAIT_RECON
   AWAIT_CONTRACT_NOTE
+  AWAIT_GTG
+  TRIGGER_JOB
+  AWAIT_CONFIRM
   DONE
 }
+// HOLIDAY_CHECK..AWAIT_CONTRACT_NOTE: 7-segment pipeline (EQ,DR,CUR,SL,MCX,NCDEX,MTF)
+// AWAIT_GTG..AWAIT_CONFIRM: 5 post-trade process pipeline (COLVAL,COLALLOC,MTFFT,DMRPT,DMSTMT)
+// DONE is shared terminal state for both
 
 Enum agent_control_action {
   START
@@ -46,16 +52,16 @@ Table edp_properties {
 Table segment_execution {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null]
-  segment_code varchar(32) [not null, note: 'EQ DR CUR SL MCX NCDEX MTF']
-  config_id_used varchar(36) [note: 'Soft ref to edp_properties.id']
-  config_hash_used varchar(64) [note: 'content_hash at seed time']
+  segment_code varchar(32) [not null, note: 'Real segment: EQ DR CUR SL MCX NCDEX MTF | Post-trade: COLVAL COLALLOC MTFFT DMRPT DMSTMT']
+  config_id_used varchar(36) [note: 'Soft ref to edp_properties.id (real segments only)']
+  config_hash_used varchar(64) [note: 'content_hash at seed time (real segments only)']
   status segment_status [not null, default: 'PENDING']
-  current_process varchar(64) [note: 'CBOS ProcessName e.g. BILLPOSTING']
-  current_phase segment_phase [note: 'Active pipeline stage']
-  process_id varchar(64) [note: 'From getNewTradeProcess PROCESSID=0']
+  current_process varchar(64) [note: 'CBOS ProcessName e.g. BILLPOSTING or CollateralValuation']
+  current_phase segment_phase [note: 'Active pipeline stage — see segment_phase enum note']
+  process_id varchar(64) [note: 'From getNewTradeProcess PROCESSID=0 (real segments only)']
   process_id_reserved_at timestamp
   lock_json json [not null, note: 'state owner acquired_at expires_at']
-  processes_json json [not null, note: 'holiday_check file_upload_ready trigger bill_posting recon contract_note']
+  processes_json json [not null, note: 'Real segments: holiday_check file_upload_ready trigger bill_posting recon contract_note | Post-trade: gtg trigger confirm']
   started_at timestamp [note: 'PENDING to IN_PROGRESS']
   completed_at timestamp [note: 'COMPLETED FAILED or SKIPPED']
   last_heartbeat_at timestamp [note: 'Updated each cycle while IN_PROGRESS']
@@ -67,7 +73,7 @@ Table segment_execution {
     (trade_date, segment_code) [unique, name: 'uq_segment_execution_per_day']
     trade_date
   }
-  Note: 'Up to 7 rows per day. segment_name sequence_order runtime_health window times are computed at read time not stored.'
+  Note: 'Up to 12 rows per day (7 real segments + 5 T+1 post-trade processes). segment_name sequence_order runtime_health window times are computed at read time not stored.'
 }
 
 Table agent_control {

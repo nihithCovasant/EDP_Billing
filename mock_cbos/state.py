@@ -4,9 +4,11 @@ In-memory state for the Mock CBOS server.
 Simulates the stateful behaviour real CBOS exhibits across the polling
 sequence (BeginFileUpload -> FILEUPLOAD -> BILLPOSTING -> RECON ->
 CONTRACTNOTEGENERATION), identical for all 7 segments (CASH/EQ, F&O/DR,
-CD/CUR, SLBM/SL, MCX, NCDEX, MTF), without any external dependency — pure
-Python dict, reset on server restart or via the /mock/reset control
-endpoint.
+CD/CUR, SLBM/SL, MCX, NCDEX, MTF), plus the 5 T+1 post-trade processes
+(COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT — GTG/confirm polling reuses the
+same file_status() method as the segments, keyed by their own ProcessName),
+without any external dependency — pure Python dict, reset on server restart
+or via the /mock/reset control endpoint.
 """
 
 from __future__ import annotations
@@ -39,6 +41,12 @@ class MockCbosState:
 
     # (segment, process_name) pairs pinned to always return TRUE immediately
     force_ready_keys: set = field(default_factory=set)
+
+    # Post-trade processes (COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT) that have
+    # had their trigger endpoint called at least once — purely informational
+    # (used by /mock/state for debugging), the file_status() poll counters
+    # above are what actually drive GTG/confirm poll behaviour.
+    post_trade_triggered: set = field(default_factory=set)
 
     _pid_counter: itertools.count = field(default_factory=lambda: itertools.count(17001))
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -88,6 +96,18 @@ class MockCbosState:
         return self.reserved_pids.get((group_name.upper(), trade_date))
 
     # -------------------------------------------------------------------------
+    # Post-trade (T+1) triggers — Collateral Valuation/Allocation, MTF Fund
+    # Transfer, Daily Margin Reporting/Statements
+    # -------------------------------------------------------------------------
+
+    def mark_post_trade_triggered(self, segment: str) -> None:
+        with self._lock:
+            self.post_trade_triggered.add(segment.upper())
+
+    def is_post_trade_triggered(self, segment: str) -> bool:
+        return segment.upper() in self.post_trade_triggered
+
+    # -------------------------------------------------------------------------
     # Admin / control helpers (used by /mock/* endpoints)
     # -------------------------------------------------------------------------
 
@@ -99,6 +119,7 @@ class MockCbosState:
             self.holiday_segments.clear()
             self.stuck_keys.clear()
             self.force_ready_keys.clear()
+            self.post_trade_triggered.clear()
             self._pid_counter = itertools.count(17001)
 
     def set_ready_after(self, n: int) -> None:
@@ -139,6 +160,7 @@ class MockCbosState:
                 "holiday_segments": sorted(self.holiday_segments),
                 "stuck_keys": [f"{k[0]}::{k[1]}" for k in self.stuck_keys],
                 "force_ready_keys": [f"{k[0]}::{k[1]}" for k in self.force_ready_keys],
+                "post_trade_triggered": sorted(self.post_trade_triggered),
             }
 
 

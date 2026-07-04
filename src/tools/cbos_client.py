@@ -5,8 +5,9 @@ Two separate base URLs:
   STATUS_URL  (port 8087) — Good-to-Go / completion checks via file_process_status
   PROCESS_URL (port 8003) — process management (get-or-reserve PID, trigger)
 
-Pipeline — identical for all 7 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL,
-MCX, NCDEX, MTF); MTF is not special-cased, it runs through the same 7 steps:
+Segment pipeline — identical for all 7 segments (CASH/EQ, F&O/DR, CD/CUR,
+SLBM/SL, MCX, NCDEX, MTF); MTF is not special-cased, it runs through the same
+7 steps:
   1. file_process_status(BeginFileUpload)        → holiday check
   2. getdropdown(EXISTINGPROCESSID); if not found,
      get_new_trade_process(PROCESSID="0")        → get-or-reserve process_id
@@ -16,12 +17,23 @@ MCX, NCDEX, MTF); MTF is not special-cased, it runs through the same 7 steps:
   6. file_process_status(RECON)                  → poll until reconciliation done
   7. file_process_status(CONTRACTNOTEGENERATION) → poll until contract notes done
 
-ProcessName values for file_process_status:
+ProcessName values for file_process_status (segment pipeline):
   BeginFileUpload        — holiday gate (SKIP = holiday, TRUE = go, FALSE = not open yet)
   FILEUPLOAD             — all exchange files received gate
   BILLPOSTING            — billing calculations complete
   RECON                  — reconciliation complete
   CONTRACTNOTEGENERATION — contract note generation complete
+
+Post-trade pipeline (T+1) — 5 processes, run once per trade_date after all 7
+segments, each through the same 3-step GTG → trigger → confirm pattern:
+  1. Collateral Valuation   (COLVAL)   → trigger_collateral_valuation()
+  2. Collateral Allocation  (COLALLOC) → trigger_collateral_allocation()
+  3. MTF Fund Transfer      (MTFFT)    → trigger_mtf_fund_transfer()
+  4. Daily Margin Reporting (DMRPT)    → trigger_daily_margin_reporting()
+  5. Daily Margin Statements(DMSTMT)   → trigger_daily_margin_statements()
+Each uses file_process_status(Segment=<code>, ProcessName=<see
+utils/constants.POST_TRADE_GTG_PROCESS_NAME>) for both the pre-trigger GTG
+poll and the post-trigger confirm poll.
 
 CBOS API request / response shapes
   file_process_status
@@ -39,6 +51,16 @@ CBOS API request / response shapes
     POST {PROCESS_URL}/v1/api/process/getNewTradeProcess
     Body: {"GROUPNAME":"EQ","LOGINID":"CV0001","TRADEDATE":"2026-06-29","PROCESSID":"0"}
     OK:   {"Status":"Success","Result":{"Table1":[{"PROCESSID":17658,"ISRUNNABLE":true,...}],"Table2":[...]}}
+
+  Post-trade triggers (DD-Mon-YYYY date format, e.g. "29-Jun-2026")
+    POST {PROCESS_URL}/v1/api/process/GetCollateralValuation
+      Body: {"BUTTONNAME":"COLLATERAL_VALUATION_DATEWISE","LOGINID":"G_LID","MARGINDATE":"29-Jun-2026"}
+    POST {PROCESS_URL}/v1/api/process/MTFTradeProcessCollateralAllocation
+    POST {PROCESS_URL}/v1/api/process/MTFTradeProcessFundTransfer
+    POST {PROCESS_URL}/v1/api/process/DailyMarginReporting
+    POST {PROCESS_URL}/v1/api/process/DailyMarginStatements
+      Body (last 4): {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}
+    OK: {"Status":"Success","Data":[{"MSG":"Process started successfully"}]}
 """
 
 from __future__ import annotations
@@ -125,6 +147,28 @@ class ExistingProcessResult:
     raw_body: str = ""
     error: Optional[str] = None
     is_transient: bool = False
+
+
+@dataclass
+class PostTradeTriggerResult:
+    """
+    Result of one of the 5 T+1 post-trade trigger calls (GetCollateralValuation
+    / MTFTradeProcessCollateralAllocation / MTFTradeProcessFundTransfer /
+    DailyMarginReporting / DailyMarginStatements). Unlike the segment trigger
+    (getNewTradeProcess), there's no process_id involved — just an
+    acknowledgement message that the job was started.
+    """
+    success: bool
+    message: str = ""
+    raw_body: str = ""
+    http_status: int = 200
+    error: Optional[str] = None
+    is_transient: bool = False
+
+
+def to_ddmmmyyyy(d: date) -> str:
+    """Format a date as CBOS expects for post-trade trigger calls, e.g. '29-Jun-2026'."""
+    return d.strftime("%d-%b-%Y")
 
 
 # =============================================================================
@@ -398,6 +442,122 @@ class CbosClient:
             )
             return ExistingProcessResult(found=False, error=str(exc), is_transient=True)
 
+    # -------------------------------------------------------------------------
+    # 5. Post-trade (T+1) triggers — Collateral Valuation / Allocation,
+    #    MTF Fund Transfer, Daily Margin Reporting / Statements
+    # -------------------------------------------------------------------------
+
+    @otel_trace
+    async def trigger_collateral_valuation(
+        self, login_id: str, margin_date: date,
+    ) -> PostTradeTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/GetCollateralValuation — post-trade Process 1."""
+        payload = {
+            "BUTTONNAME": "COLLATERAL_VALUATION_DATEWISE",
+            "LOGINID": login_id,
+            "MARGINDATE": to_ddmmmyyyy(margin_date),
+        }
+        return await self._post_trade_trigger(
+            "GetCollateralValuation", payload, segment="COLVAL",
+        )
+
+    @otel_trace
+    async def trigger_collateral_allocation(
+        self, login_id: str, trade_date: date,
+    ) -> PostTradeTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessCollateralAllocation — post-trade Process 2."""
+        return await self._trigger_post_trade_job(
+            "MTFTradeProcessCollateralAllocation", login_id, trade_date, segment="COLALLOC",
+        )
+
+    @otel_trace
+    async def trigger_mtf_fund_transfer(
+        self, login_id: str, trade_date: date,
+    ) -> PostTradeTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessFundTransfer — post-trade Process 3."""
+        return await self._trigger_post_trade_job(
+            "MTFTradeProcessFundTransfer", login_id, trade_date, segment="MTFFT",
+        )
+
+    @otel_trace
+    async def trigger_daily_margin_reporting(
+        self, login_id: str, trade_date: date,
+    ) -> PostTradeTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/DailyMarginReporting — post-trade Process 4."""
+        return await self._trigger_post_trade_job(
+            "DailyMarginReporting", login_id, trade_date, segment="DMRPT",
+        )
+
+    @otel_trace
+    async def trigger_daily_margin_statements(
+        self, login_id: str, trade_date: date,
+    ) -> PostTradeTriggerResult:
+        """POST {PROCESS_URL}/v1/api/process/DailyMarginStatements — post-trade Process 5."""
+        return await self._trigger_post_trade_job(
+            "DailyMarginStatements", login_id, trade_date, segment="DMSTMT",
+        )
+
+    async def _trigger_post_trade_job(
+        self, endpoint_name: str, login_id: str, trade_date: date, segment: str,
+    ) -> PostTradeTriggerResult:
+        """Shared body shape for the 4 post-trade endpoints that take {LOGINID, TRADEDATE}."""
+        payload = {"LOGINID": login_id, "TRADEDATE": to_ddmmmyyyy(trade_date)}
+        return await self._post_trade_trigger(endpoint_name, payload, segment=segment)
+
+    async def _post_trade_trigger(
+        self, endpoint_name: str, payload: dict, segment: str,
+    ) -> PostTradeTriggerResult:
+        if self.use_mock:
+            result = self._mock_post_trade_trigger()
+            logger.info(
+                f"[CBOS][MOCK] segment={segment} api={endpoint_name} "
+                f"| success={result.success} message={result.message}"
+            )
+            return result
+
+        url = f"{self.process_url}/v1/api/process/{endpoint_name}"
+        logger.info(f"[CBOS] segment={segment} api={endpoint_name} | POST {url}")
+
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload)
+                elapsed_ms = int((_time.monotonic() - t0) * 1000)
+                body = resp.text[:2000]
+                if resp.status_code != 200:
+                    logger.error(
+                        f"[CBOS] segment={segment} api={endpoint_name} "
+                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
+                    )
+                    return PostTradeTriggerResult(
+                        success=False,
+                        raw_body=body,
+                        http_status=resp.status_code,
+                        error=f"HTTP {resp.status_code}",
+                        is_transient=resp.status_code >= 500,
+                    )
+                success, message = _parse_post_trade_trigger(body)
+                if not success:
+                    logger.error(
+                        f"[CBOS] segment={segment} api={endpoint_name} "
+                        f"| CBOS rejected request message={message} elapsed_ms={elapsed_ms}"
+                    )
+                    return PostTradeTriggerResult(
+                        success=False, message=message, raw_body=body, error=message,
+                    )
+                logger.info(
+                    f"[CBOS] segment={segment} api={endpoint_name} "
+                    f"| message={message} elapsed_ms={elapsed_ms}"
+                )
+                return PostTradeTriggerResult(success=True, message=message, raw_body=body)
+        except Exception as exc:
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            logger.error(
+                f"[CBOS] segment={segment} api={endpoint_name} "
+                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+            )
+            return PostTradeTriggerResult(success=False, error=str(exc), is_transient=True)
+
     # =========================================================================
     # Mock implementations — used when use_mock=True
     # =========================================================================
@@ -481,6 +641,14 @@ class CbosClient:
             description=f"{pid} - CV0001 - Mock Entry",
         )
 
+    def _mock_post_trade_trigger(self) -> PostTradeTriggerResult:
+        """Post-trade triggers always succeed deterministically in mock mode."""
+        return PostTradeTriggerResult(
+            success=True,
+            message="Process started successfully",
+            raw_body='{"Status":"Success","Data":[{"MSG":"Process started successfully"}]}',
+        )
+
     # -------------------------------------------------------------------------
     # Mock tuning helpers (useful in tests / local runs)
     # -------------------------------------------------------------------------
@@ -523,6 +691,31 @@ def _parse_msg(body: str) -> str:
             if val in upper:
                 return val
         return "FALSE"
+
+
+def _parse_post_trade_trigger(body: str) -> tuple[bool, str]:
+    """
+    Parse a post-trade trigger response body. Expected shape:
+      {"Status":"Success","Data":[{"MSG":"Process started successfully"}]}
+    A non-"Success" top-level Status means CBOS rejected the request.
+    Falls back to treating any unparsable-but-200 body as success (some of
+    these endpoints — e.g. MTF Fund Transfer — just "return a job execution
+    result" per the spec, with no guaranteed JSON shape).
+    """
+    try:
+        data = _json.loads(body)
+        status = data.get("Status")
+        if status and status != "Success":
+            return False, f"CBOS Status={status}"
+        msg = None
+        items = data.get("Data")
+        if isinstance(items, list) and items:
+            msg = items[0].get("MSG")
+        if not msg:
+            msg = data.get("MSG") or data.get("Message")
+        return True, msg or "Process started successfully"
+    except Exception:
+        return True, (body[:200] if body else "Process started successfully")
 
 
 def _parse_new_trade_process(body: str) -> NewTradeProcessResult:

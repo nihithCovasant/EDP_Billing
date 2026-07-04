@@ -1,13 +1,13 @@
 """
 processes_json read/write helpers.
 
-processes_json stores the 6-stage execution state for a segment:
-  holiday_check    — BeginFileUpload status check result
-  file_upload_ready — FILEUPLOAD poll result
-  trigger          — getNewTradeProcess trigger record
-  bill_posting     — BILLPOSTING poll result
-  recon            — RECON poll result
-  contract_note    — CONTRACTNOTEGENERATION poll result
+processes_json stores the per-stage execution state for a segment_execution
+row. Two shapes exist, depending on segment_code (see models.SegmentExecution
+docstring for the full shapes):
+
+  7 real segments (6 stages): holiday_check, file_upload_ready, trigger,
+    bill_posting, recon, contract_note
+  5 post-trade processes (3 stages): gtg, trigger, confirm
 
 SQLAlchemy does NOT detect in-place mutations on JSON columns.
 Always use set_proc() to reassign the top-level dict so the ORM marks
@@ -22,9 +22,9 @@ from typing import Any
 from ..models import SegmentExecution
 
 # Stages that end with a "confirmed_at" timestamp
-_CONFIRM_STAGES = {"bill_posting", "recon", "contract_note"}
+_CONFIRM_STAGES = {"bill_posting", "recon", "contract_note", "confirm"}
 # Stages that end with a "ready_at" timestamp
-_READY_STAGES = {"file_upload_ready"}
+_READY_STAGES = {"file_upload_ready", "gtg"}
 # All others get "checked_at"
 
 
@@ -112,6 +112,24 @@ def record_trigger(
 
 def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
     """Record a failed getNewTradeProcess trigger attempt."""
+    set_proc(row, "trigger", {
+        "status": "FAILED",
+        "at": now.isoformat(),
+        "error": error,
+    })
+
+
+def record_post_trade_trigger(row: SegmentExecution, message: str, now: datetime) -> None:
+    """Record a successful post-trade trigger call (no process_id involved)."""
+    set_proc(row, "trigger", {
+        "status": "TRIGGERED",
+        "at": now.isoformat(),
+        "message": message,
+    })
+
+
+def record_post_trade_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
+    """Record a failed post-trade trigger attempt."""
     set_proc(row, "trigger", {
         "status": "FAILED",
         "at": now.isoformat(),
