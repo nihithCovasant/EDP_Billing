@@ -6,9 +6,10 @@ per the process ordering documented in models.EdpProperties) returns a
 permanent CBOS error. Expect:
   - EQ ends FAILED (not SKIPPED — a permanent CBOS error halts the day,
     unlike TIMEOUT/CBOS_SKIP which just skip that one segment and move on).
-  - Every segment after EQ in sequence order, plus the virtual MTFOPS chain,
-    stays untouched at PENDING — the orchestrator halts the sequential
-    chain at the first FAILED segment (orchestrator.run_wake_cycle).
+  - Every segment after EQ in sequence order (including MTF, which is just
+    a normal segment now) stays untouched at PENDING — the orchestrator
+    halts the sequential chain at the first FAILED segment
+    (orchestrator.run_wake_cycle).
   - Ops can recover via repository.retry_segment (the same operation the
     POST /edp/status/{date}/{segment}/retry endpoint performs) and the day
     can then finish end to end once the underlying CBOS issue is fixed.
@@ -20,7 +21,7 @@ from src.agent.edp import repository
 from src.agent.edp.models import SegmentPhase, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.repository import get_day_summary
-from src.agent.edp.utils.constants import MTF_OPS_SEGMENT_CODE, SEGMENT_ORDER
+from src.agent.edp.utils.constants import SEGMENT_ORDER
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
@@ -55,8 +56,9 @@ async def test_second_process_failure_halts_the_day(cfg, session_factory, test_d
 
     # --- Everything after EQ in sequence order must be untouched ---
     idx = SEGMENT_ORDER.index(FAILING_SEGMENT)
-    untouched_codes = list(SEGMENT_ORDER[idx + 1:]) + [MTF_OPS_SEGMENT_CODE]
-    assert untouched_codes, "test assumes EQ is not the last real segment"
+    untouched_codes = list(SEGMENT_ORDER[idx + 1:])
+    assert untouched_codes, "test assumes EQ is not the last segment"
+    assert "MTF" in untouched_codes, "MTF must be gated by the halted chain like any other segment"
     for code in untouched_codes:
         row = by_code[code]
         assert row.segment_status == SegmentStatus.PENDING, (
@@ -70,9 +72,9 @@ async def test_second_process_failure_halts_the_day(cfg, session_factory, test_d
     # --- Day summary must reflect exactly one FAILED, rest PENDING ---
     async with session_factory() as session:
         summary = await get_day_summary(session, test_date)
-    assert summary["total"] == 9
+    assert summary["total"] == 7
     assert summary["failed"] == 1
-    assert summary["pending"] == 8
+    assert summary["pending"] == 6
     assert summary["completed"] == 0
     assert summary["in_progress"] == 0
     assert summary["skipped"] == 0
@@ -115,7 +117,7 @@ async def test_manual_retry_then_day_completes(cfg, session_factory, test_date):
 
     rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
     by_code = {r.segment_code: r for r in rows}
-    for code in list(SEGMENT_ORDER) + [MTF_OPS_SEGMENT_CODE]:
+    for code in SEGMENT_ORDER:
         assert by_code[code].segment_status == SegmentStatus.COMPLETED, (
             f"segment {code} expected COMPLETED after retry, got {by_code[code].segment_status}"
         )

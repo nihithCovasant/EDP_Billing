@@ -29,11 +29,11 @@ from src.agent.edp import repository
 from src.agent.edp.config import EdpBootstrapConfig, build_default_workflow_json
 from src.agent.edp.models import EdpProperties, SegmentExecution, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
-from src.agent.edp.utils.constants import MTF_OPS_SEGMENT_CODE, SEGMENT_ORDER
+from src.agent.edp.utils.constants import SEGMENT_ORDER
 
 TERMINAL_STATES = {SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED}
 
-ALL_SEGMENT_CODES = list(SEGMENT_ORDER) + [MTF_OPS_SEGMENT_CODE]
+ALL_SEGMENT_CODES = list(SEGMENT_ORDER)
 
 
 def build_all_day_open_workflow_json(timezone: str = "Asia/Kolkata") -> dict:
@@ -81,7 +81,6 @@ async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -
     async with session_factory() as session:
         workflow = await repository.get_active(session, trade_date)
         await repository.seed_from_workflow(session, workflow, trade_date)
-        await repository.seed_mtf_ops_segment(session, workflow, trade_date)
         await session.commit()
 
 

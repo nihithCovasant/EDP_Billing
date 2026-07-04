@@ -1,14 +1,17 @@
 """
-7-stage pipeline stage handlers.
+7-step pipeline stage handlers — identical for all 7 segments (CASH/EQ,
+F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF). MTF is not special-cased; it is
+driven through the exact same handlers as every other segment.
 
-Each handler performs exactly one CBOS API call, updates processes_json,
-mutates the row phase/process fields, and returns a StageResult.
+Each handler performs exactly one CBOS API call (Step 2/RESERVE_PID makes
+two — get-or-reserve), updates processes_json, mutates the row phase/process
+fields, and returns a StageResult.
 
 StageResult values:
   ADVANCE    — stage done; move to next phase in the same cycle
   BLOCKED    — CBOS returned FALSE (not ready) or transient error; come back next cycle
   STOP_NEXT  — trigger fired; start polling on next cycle
-  COMPLETED  — all 7 stages done; segment is COMPLETED
+  COMPLETED  — all 7 steps done; segment is COMPLETED
   SKIPPED    — holiday gate returned SKIP
   FAILED     — permanent error; segment is FAILED
 """
@@ -21,11 +24,6 @@ from enum import Enum
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
-from ..utils.constants import (
-    COLLATERAL_GTG_SEGMENT,
-    MTF_GTG_SEGMENT,
-    MTF_TRIGGER_LOGIN_ID,
-)
 from ..utils.json_helpers import (
     inc_poll,
     mark_stage_done,
@@ -35,7 +33,7 @@ from ..utils.json_helpers import (
     get_proc,
 )
 from ..utils.log_fmt import stage_log
-from src.tools.cbos_client import CbosClient, MtfTriggerResult, to_ddmmmyyyy
+from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
 
@@ -129,7 +127,7 @@ async def handle_holiday_check(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 — Reserve Process ID
+# Stage 2 — Get or Reserve Process ID
 # ---------------------------------------------------------------------------
 
 async def handle_reserve_pid(
@@ -140,11 +138,47 @@ async def handle_reserve_pid(
     now: datetime,
 ) -> StageResult:
     """
-    POST getNewTradeProcess(PROCESSID="0") — allocates a new PROCESSID from CBOS.
+    Step 2 of the pipeline: always check first whether a Process ID already
+    exists for today's segment+date (RPA may have already reserved one), and
+    only reserve a new one if none exists yet.
+
+    1. POST getdropdown(EXISTINGPROCESSID) — check for an existing PID.
+       - Found  → reuse it, skip straight to AWAIT_FILE_UPLOAD.
+       - Not found → fall through to step 2.
+    2. POST getNewTradeProcess(PROCESSID="0") — reserve a new PID from CBOS.
     """
     logger.info(stage_log(
         row.segment_code, "RESERVE_PID",
-        "Reserving process ID from CBOS (PROCESSID=0)",
+        "Checking for an existing process ID (getdropdown EXISTINGPROCESSID)",
+        trade_date=str(row.trade_date),
+    ))
+
+    existing = await cbos.get_existing_process_id(
+        segment=row.segment_code,
+        login_id=login_id,
+        trade_date=row.trade_date,
+    )
+
+    if existing.found and existing.process_id:
+        logger.info(stage_log(
+            row.segment_code, "RESERVE_PID",
+            "Existing process ID found — reusing it, skipping reservation",
+            pid=existing.process_id,
+            desc=existing.description,
+        ))
+        return await _pid_resolved(row, session, existing.process_id, "EXISTING", now)
+
+    if existing.error and existing.is_transient:
+        logger.warning(stage_log(
+            row.segment_code, "RESERVE_PID",
+            "Transient CBOS error on getdropdown(EXISTINGPROCESSID) — will retry next cycle",
+            error=existing.error,
+        ))
+        return StageResult.BLOCKED
+
+    logger.info(stage_log(
+        row.segment_code, "RESERVE_PID",
+        "No existing process ID — reserving a new one (PROCESSID=0)",
         trade_date=str(row.trade_date),
     ))
 
@@ -172,14 +206,24 @@ async def handle_reserve_pid(
         await session.flush()
         return StageResult.FAILED
 
-    row.process_id = result.process_id
+    return await _pid_resolved(row, session, result.process_id, "RESERVED_NEW", now)
+
+
+async def _pid_resolved(
+    row: SegmentExecution,
+    session: AsyncSession,
+    process_id: str,
+    source: str,
+    now: datetime,
+) -> StageResult:
+    """Shared bookkeeping once Step 2 resolves a process_id, either way."""
+    row.process_id = process_id
     row.process_id_reserved_at = now
     set_proc(row, "trigger", {
         "status": "PID_RESERVED",
-        "process_id_reserved": result.process_id,
+        "process_id_reserved": process_id,
+        "process_id_source": source,
         "reserved_at": now.isoformat(),
-        "is_runnable": result.is_runnable,
-        "is_auto_upload": result.is_auto_upload,
     })
     row.current_phase = SegmentPhase.AWAIT_FILE_UPLOAD
     row.current_process = "FILEUPLOAD"
@@ -187,11 +231,10 @@ async def handle_reserve_pid(
 
     logger.info(stage_log(
         row.segment_code, "RESERVE_PID",
-        "Process ID reserved — proceeding to AWAIT_FILE_UPLOAD",
-        pid=result.process_id,
-        is_runnable=result.is_runnable,
-        is_auto_upload=result.is_auto_upload,
-        reserved_at=now.strftime("%H:%M:%S %Z"),
+        f"Process ID resolved ({source}) — proceeding to AWAIT_FILE_UPLOAD",
+        pid=process_id,
+        source=source,
+        resolved_at=now.strftime("%H:%M:%S %Z"),
     ))
     return StageResult.ADVANCE
 
@@ -477,344 +520,6 @@ async def handle_await_contract_note(
     _complete(row, now)
     await session.flush()
     return StageResult.COMPLETED
-
-
-# ---------------------------------------------------------------------------
-# Post-segment MTF operations chain (v2 doc steps 12-24)
-#
-# Runs once per day on the virtual MTFOPS segment (see utils/constants.py),
-# which only starts once all real trade segments reach COMPLETED/SKIPPED
-# (guaranteed by giving it the highest sequence order — see utils/constants.py).
-#
-# Each phase = one GTG check (reusing file_process_status, hardcoded to
-# Segment=DR or Segment=EQ per the API doc) + one fire-and-forget trigger
-# call using LOGINID="G_LID" and DD-MMM-YYYY dates.
-# ---------------------------------------------------------------------------
-
-async def handle_collateral_valuation(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    login_id: str,
-    now: datetime,
-) -> StageResult:
-    """GTG(DR, CollateralValuation) + GetCollateralValuation trigger. [steps 12-13]"""
-    gtg = await _check_gtg(
-        cbos, row, session, "collateral_valuation",
-        COLLATERAL_GTG_SEGMENT, "CollateralValuation", login_id, now,
-    )
-    if gtg is not None:
-        return gtg
-
-    logger.info(stage_log(
-        row.segment_code, "COLLATERAL_VALUATION",
-        "GTG passed — triggering GetCollateralValuation",
-        margin_date=to_ddmmmyyyy(row.trade_date),
-    ))
-    result = await cbos.get_collateral_valuation(
-        MTF_TRIGGER_LOGIN_ID, to_ddmmmyyyy(row.trade_date)
-    )
-    return await _finish_mtf_trigger(
-        row, session, now, "collateral_valuation", "COLLATERAL_VALUATION", result,
-        next_phase=SegmentPhase.COLLATERAL_ALLOCATION,
-        next_process="CollateralAllocation",
-    )
-
-
-async def handle_collateral_allocation(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    login_id: str,
-    now: datetime,
-) -> StageResult:
-    """GTG(DR, CollateralAllocation) + MTFTradeProcessCollateralAllocation trigger. [steps 14-15]"""
-    gtg = await _check_gtg(
-        cbos, row, session, "collateral_allocation",
-        COLLATERAL_GTG_SEGMENT, "CollateralAllocation", login_id, now,
-    )
-    if gtg is not None:
-        return gtg
-
-    logger.info(stage_log(
-        row.segment_code, "COLLATERAL_ALLOCATION",
-        "GTG passed — triggering MTFTradeProcessCollateralAllocation",
-    ))
-    result = await cbos.mtf_collateral_allocation(
-        MTF_TRIGGER_LOGIN_ID, to_ddmmmyyyy(row.trade_date)
-    )
-    return await _finish_mtf_trigger(
-        row, session, now, "collateral_allocation", "COLLATERAL_ALLOCATION", result,
-        next_phase=SegmentPhase.FUND_TRANSFER,
-        next_process="FundTransfer",
-    )
-
-
-async def handle_fund_transfer(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    login_id: str,
-    now: datetime,
-) -> StageResult:
-    """GTG(DR, FundTransfer) + MTFTradeProcessFundTransfer trigger. [steps 16-17]"""
-    gtg = await _check_gtg(
-        cbos, row, session, "fund_transfer",
-        COLLATERAL_GTG_SEGMENT, "FundTransfer", login_id, now,
-    )
-    if gtg is not None:
-        return gtg
-
-    logger.info(stage_log(
-        row.segment_code, "FUND_TRANSFER",
-        "GTG passed — triggering MTFTradeProcessFundTransfer",
-    ))
-    result = await cbos.mtf_fund_transfer(
-        MTF_TRIGGER_LOGIN_ID, to_ddmmmyyyy(row.trade_date)
-    )
-    return await _finish_mtf_trigger(
-        row, session, now, "fund_transfer", "FUND_TRANSFER", result,
-        next_phase=SegmentPhase.MTF_BUY,
-        next_process="BILLPOSTING",
-    )
-
-
-async def handle_mtf_buy(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    login_id: str,
-    now: datetime,
-) -> StageResult:
-    """GTG(EQ, BILLPOSTING) + MTFTradeProcess(BUY PROCESS) then (BUY POSTING). [steps 18-20]"""
-    gtg = await _check_gtg(
-        cbos, row, session, "mtf_buy",
-        MTF_GTG_SEGMENT, "BILLPOSTING", login_id, now,
-    )
-    if gtg is not None:
-        return gtg
-
-    trade_date = to_ddmmmyyyy(row.trade_date)
-    logger.info(stage_log(
-        row.segment_code, "MTF_BUY", "GTG passed — triggering MTF Buy Trade Process",
-    ))
-    process_result = await cbos.mtf_trade_process(MTF_TRIGGER_LOGIN_ID, trade_date, "BUY PROCESS")
-    if not process_result.success:
-        return await _handle_mtf_failure(row, session, "mtf_buy", "MTF_BUY", process_result, now)
-
-    logger.info(stage_log(row.segment_code, "MTF_BUY", "Buy Process OK — triggering Buy Posting"))
-    posting_result = await cbos.mtf_trade_process(MTF_TRIGGER_LOGIN_ID, trade_date, "BUY POSTING")
-    if not posting_result.success:
-        return await _handle_mtf_failure(row, session, "mtf_buy", "MTF_BUY", posting_result, now)
-
-    set_proc(row, "mtf_buy", {
-        "status": "TRIGGERED",
-        "buy_process_message": process_result.message,
-        "buy_posting_message": posting_result.message,
-        "triggered_at": now.isoformat(),
-    })
-    row.current_phase = SegmentPhase.MTF_SELL
-    row.current_process = "EARLYPAYIN"
-    await session.flush()
-    logger.info(stage_log(
-        row.segment_code, "MTF_BUY",
-        "MTF Buy Process + Posting COMPLETED — advancing to MTF_SELL",
-    ))
-    return StageResult.STOP_NEXT
-
-
-async def handle_mtf_sell(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    login_id: str,
-    now: datetime,
-) -> StageResult:
-    """GTG(EQ, EARLYPAYIN) + MTFTradeProcess(SELL PROCESS AND POSTING). [steps 21-22]"""
-    gtg = await _check_gtg(
-        cbos, row, session, "mtf_sell",
-        MTF_GTG_SEGMENT, "EARLYPAYIN", login_id, now,
-    )
-    if gtg is not None:
-        return gtg
-
-    logger.info(stage_log(
-        row.segment_code, "MTF_SELL",
-        "GTG passed — triggering MTF Sell Process & Posting",
-    ))
-    result = await cbos.mtf_trade_process(
-        MTF_TRIGGER_LOGIN_ID, to_ddmmmyyyy(row.trade_date), "SELL PROCESS AND POSTING"
-    )
-    return await _finish_mtf_trigger(
-        row, session, now, "mtf_sell", "MTF_SELL", result,
-        next_phase=SegmentPhase.WEEKLY_AUTO_CLOSURE,
-        next_process="WEEKLYAUTOCLOSURE",
-    )
-
-
-async def handle_weekly_auto_closure(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    login_id: str,
-    now: datetime,
-) -> StageResult:
-    """
-    GTG(EQ, WEEKLYAUTOCLOSURE) + MTFTradeProcess(WEEKLY AUTOCLOSURE). [steps 23-24]
-    Per the API doc this runs independently at 4:00 PM on trading days — the
-    GTG check naturally returns FALSE outside that window, so no separate
-    time-of-day gate is needed here. Final phase — completes the MTFOPS chain.
-    """
-    gtg = await _check_gtg(
-        cbos, row, session, "weekly_auto_closure",
-        MTF_GTG_SEGMENT, "WEEKLYAUTOCLOSURE", login_id, now,
-    )
-    if gtg is not None:
-        return gtg
-
-    logger.info(stage_log(
-        row.segment_code, "WEEKLY_AUTO_CLOSURE",
-        "GTG passed — triggering Weekly Auto Closure",
-    ))
-    result = await cbos.mtf_trade_process(
-        MTF_TRIGGER_LOGIN_ID, to_ddmmmyyyy(row.trade_date), "WEEKLY AUTOCLOSURE"
-    )
-    if not result.success:
-        return await _handle_mtf_failure(row, session, "weekly_auto_closure", "WEEKLY_AUTO_CLOSURE", result, now)
-
-    set_proc(row, "weekly_auto_closure", {
-        "status": "TRIGGERED",
-        "message": result.message,
-        "triggered_at": now.isoformat(),
-    })
-    _complete(row, now)
-    await session.flush()
-    logger.info(stage_log(
-        row.segment_code, "WEEKLY_AUTO_CLOSURE",
-        "MTF operations chain COMPLETED for the day",
-    ))
-    return StageResult.COMPLETED
-
-
-async def _check_gtg(
-    cbos: CbosClient,
-    row: SegmentExecution,
-    session: AsyncSession,
-    stage_key: str,
-    gtg_segment: str,
-    process_name: str,
-    login_id: str,
-    now: datetime,
-) -> StageResult | None:
-    """
-    Shared "good to go" poll for the MTF chain. Returns None when the GTG
-    check passed (caller should proceed to fire the trigger); otherwise
-    returns the StageResult the phase handler should return immediately.
-    """
-    poll_state = get_proc(row, stage_key)
-    poll_count = poll_state.get("poll_count", 0) + 1
-    phase_name = row.current_phase.value if row.current_phase else stage_key.upper()
-
-    result = await cbos.file_process_status(
-        segment=gtg_segment, process_name=process_name, user_id=login_id,
-    )
-
-    if result.is_error:
-        if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, phase_name,
-                f"Transient CBOS error on GTG({gtg_segment},{process_name}) — will retry next cycle",
-                error=result.error, poll=poll_count,
-            ))
-            return StageResult.BLOCKED
-        logger.error(stage_log(
-            row.segment_code, phase_name,
-            f"Permanent CBOS error on GTG({gtg_segment},{process_name}) — marking FAILED",
-            error=result.error,
-        ))
-        await _fail(row, "CBOS_ERROR", f"{process_name} GTG error: {result.error}", now)
-        await session.flush()
-        return StageResult.FAILED
-
-    inc_poll(row, stage_key, result.response)
-    await session.flush()
-
-    if result.is_skip:
-        logger.info(stage_log(
-            row.segment_code, phase_name,
-            f"CBOS returned SKIP on GTG({gtg_segment},{process_name}) — segment will be SKIPPED",
-            response=result.response, poll=poll_count,
-        ))
-        await _skip(row, "CBOS_SKIP", f"{process_name} GTG returned SKIP", now)
-        await session.flush()
-        return StageResult.SKIPPED
-
-    if result.is_pending:
-        if poll_count == 1 or poll_count % 5 == 0:
-            logger.info(stage_log(
-                row.segment_code, phase_name,
-                f"GTG({gtg_segment},{process_name}) not ready — waiting",
-                response=result.response, poll=poll_count,
-            ))
-        return StageResult.BLOCKED
-
-    return None  # ready — proceed to trigger
-
-
-async def _finish_mtf_trigger(
-    row: SegmentExecution,
-    session: AsyncSession,
-    now: datetime,
-    stage_key: str,
-    phase_name: str,
-    result: MtfTriggerResult,
-    next_phase: SegmentPhase,
-    next_process: str,
-) -> StageResult:
-    """Shared success/failure bookkeeping for a fire-and-forget MTF trigger call."""
-    if not result.success:
-        return await _handle_mtf_failure(row, session, stage_key, phase_name, result, now)
-
-    set_proc(row, stage_key, {
-        "status": "TRIGGERED",
-        "message": result.message,
-        "triggered_at": now.isoformat(),
-    })
-    row.current_phase = next_phase
-    row.current_process = next_process
-    await session.flush()
-    logger.info(stage_log(
-        row.segment_code, phase_name,
-        f"Trigger COMPLETED — advancing to {next_phase.value}",
-        cbos_message=result.message,
-    ))
-    return StageResult.STOP_NEXT
-
-
-async def _handle_mtf_failure(
-    row: SegmentExecution,
-    session: AsyncSession,
-    stage_key: str,
-    phase_name: str,
-    result: MtfTriggerResult,
-    now: datetime,
-) -> StageResult:
-    """Shared failure handling for MTF trigger calls."""
-    if result.is_transient:
-        logger.warning(stage_log(
-            row.segment_code, phase_name,
-            "Transient CBOS error on MTF trigger — will retry next cycle",
-            error=result.error,
-        ))
-        return StageResult.BLOCKED
-    logger.error(stage_log(
-        row.segment_code, phase_name,
-        "MTF trigger FAILED — marking segment FAILED",
-        error=result.error,
-    ))
-    await _fail(row, "CBOS_ERROR", f"{stage_key} trigger failed: {result.error}", now)
-    await session.flush()
-    return StageResult.FAILED
 
 
 # ---------------------------------------------------------------------------

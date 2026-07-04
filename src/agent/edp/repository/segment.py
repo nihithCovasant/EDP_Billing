@@ -16,10 +16,7 @@ from ..models import (
     SegmentPhase,
     SegmentStatus,
 )
-from ..utils.constants import (
-    MTF_OPS_SEGMENT_CODE,
-    get_sequence_order,
-)
+from ..utils.constants import get_sequence_order
 from ..utils.datetime_utils import now_ist
 from ..utils.locking import (
     lock_expires_at,
@@ -130,42 +127,6 @@ async def seed_from_workflow(
         await session.flush()
         logger.info(f"Seeded {len(created)} segment_execution rows for {trade_date}")
     return created
-
-
-@otel_trace
-async def seed_mtf_ops_segment(
-    session: AsyncSession,
-    workflow: EdpProperties,
-    trade_date: date,
-) -> Optional[SegmentExecution]:
-    """
-    Create the virtual MTFOPS segment_execution row that drives the
-    post-segment MTF operations chain (Collateral Valuation -> Collateral
-    Allocation -> Fund Transfer -> MTF Buy -> MTF Sell -> Weekly Auto
-    Closure — v2 doc steps 12-24).
-
-    Idempotent — returns None if already seeded for this date.
-
-    Given the highest sequence order (see utils/constants.get_sequence_order),
-    the normal sequential loop in orchestrator.run_wake_cycle() will not touch
-    this row until every real trade segment has reached COMPLETED or SKIPPED
-    — no special-casing of the sequencing logic is needed.
-    """
-    if await get_one(session, trade_date, MTF_OPS_SEGMENT_CODE):
-        return None
-
-    row = SegmentExecution(
-        trade_date=trade_date,
-        segment_code=MTF_OPS_SEGMENT_CODE,
-        config_id_used=workflow.id,
-        config_hash_used=workflow.content_hash,
-        segment_status=SegmentStatus.PENDING,
-        processes_json={},
-    )
-    session.add(row)
-    await session.flush()
-    logger.info(f"Seeded virtual MTFOPS segment_execution row for {trade_date}")
-    return row
 
 
 # =============================================================================

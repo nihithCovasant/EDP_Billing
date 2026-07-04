@@ -1,7 +1,7 @@
 # Mock CBOS Server
 
-A standalone, self-contained simulator for every CBOS API referenced in
-`EDP_Trade_Process_API_v2.docx`. Use it to test the EDP agent end-to-end
+A standalone, self-contained simulator for the CBOS APIs used by the EDP
+Billing segment execution flow. Use it to test the EDP agent end-to-end
 without VPN/VDI access to the real MOFSL CBOS system.
 
 ## Design goals (per requirements)
@@ -15,22 +15,18 @@ without VPN/VDI access to the real MOFSL CBOS system.
 
 ## What it implements
 
-All endpoints from the API doc, on a single port (they all have distinct
-paths, so one mock server process can stand in for both real CBOS base
-URLs — `EDP Status API` port 8087 and `Main Process API` port 8003):
+The 7-step segment execution flow — identical for all 7 segments (CASH/EQ,
+F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF; MTF is not special-cased) — on a
+single port (both real CBOS base URLs, `EDP Status API` port 8087 and `Main
+Process API` port 8003, have distinct paths so one mock server process can
+stand in for both):
 
 | Step(s) | Endpoint | Purpose |
 |---|---|---|
-| 1, 7, 9, 10, 11 | `POST /api/edp/file_process_status` | Holiday check / FILEUPLOAD / BILLPOSTING / RECON / CONTRACTNOTEGENERATION GTG polls |
-| 2, 8 | `POST /v1/api/process/getNewTradeProcess` | Reserve PROCESSID (`PROCESSID:"0"`) / execute (`PROCESSID:<actual>`) |
-| 5 | `POST /v1/api/brokerage/getdropdown` | `EXISTINGPROCESSID` crash-recovery lookup |
-| 12, 14, 16, 18, 21, 23, 25 | `POST /api/edp/file_process_status` | MTF chain GTG polls (`CollateralValuation`, `CollateralAllocation`, `FundTransfer`, `EARLYPAYIN`, `WEEKLYAUTOCLOSURE`, and `BILLPOSTING` re-checks) |
-| 13 | `POST /v1/api/process/GetCollateralValuation` | Collateral Valuation trigger |
-| 15 | `POST /v1/api/process/MTFTradeProcessCollateralAllocation` | Collateral Allocation trigger |
-| 17 | `POST /v1/api/process/MTFTradeProcessFundTransfer` | Fund Transfer trigger |
-| 19, 20, 22, 24 | `POST /v1/api/process/MTFTradeProcess` | MTF Buy/Sell/Weekly Auto Closure (`TYPE` field distinguishes) |
-| 3, 4, 6 | Upload stubs | Kept for completeness — the EDP agent never calls these (RPA's job) |
-| 26 | *not implemented* | Requires manual Ops file drops — out of scope |
+| 1, 3, 5, 6, 7 | `POST /api/edp/file_process_status` | Holiday check / FILEUPLOAD / BILLPOSTING / RECON / CONTRACTNOTEGENERATION GTG polls |
+| 2 | `POST /v1/api/brokerage/getdropdown` | `EXISTINGPROCESSID` — check for an existing process ID before reserving |
+| 2, 4 | `POST /v1/api/process/getNewTradeProcess` | Reserve PROCESSID (`PROCESSID:"0"`, only if not found via getdropdown) / execute (`PROCESSID:<actual>`) |
+| — | Upload stubs | Kept for completeness — the EDP agent never calls these (RPA's job) |
 
 Plus admin/control endpoints (`/mock/*`) to script test scenarios (holiday
 simulation, forcing a stage to stay pending, forcing instant readiness,
@@ -92,9 +88,10 @@ No agent code changes needed either way.
   PID (starting at `17001`) per `(GROUPNAME, TRADEDATE)`.
 - `getNewTradeProcess` with a real PROCESSID always returns success (`Table2`
   all `SUCCESS`).
-- All MTF trigger endpoints (`GetCollateralValuation`,
-  `MTFTradeProcessCollateralAllocation`, `MTFTradeProcessFundTransfer`,
-  `MTFTradeProcess`) always return a success message immediately.
+- `getdropdown(EXISTINGPROCESSID)` only reports a process ID as "found" once
+  it has actually been reserved via `getNewTradeProcess(PROCESSID="0")` for
+  that `(segment, trade_date)` — before that it correctly returns an empty
+  `Result`, exercising the "reserve a new one" branch of Step 2.
 
 ## Scripting test scenarios
 
@@ -122,12 +119,6 @@ curl -X POST http://localhost:9100/mock/scenario/force_ready \
 
 # Inspect current in-memory state (poll counts, reserved PIDs, overrides)
 curl http://localhost:9100/mock/state
-
-# Replay the documented "@job_name ('MTF_RISK_UPDATE') does not exist" quirk
-# for MTFTradeProcessFundTransfer (step 17) — still HTTP 200/Success, so the
-# agent should treat it as a fired trigger and advance anyway
-curl -X POST http://localhost:9100/mock/scenario/fund_transfer_quirk \
-     -H "Content-Type: application/json" -d '{"enabled": true}'
 ```
 
 ## Notes

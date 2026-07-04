@@ -3,13 +3,15 @@ CBOS HTTP client — exact MOFSL API contract.
 
 Two separate base URLs:
   STATUS_URL  (port 8087) — Good-to-Go / completion checks via file_process_status
-  PROCESS_URL (port 8003) — process management (reserve PID, trigger, crash-recovery)
+  PROCESS_URL (port 8003) — process management (get-or-reserve PID, trigger)
 
-Pipeline per segment (7 stages):
-  1. file_process_status(BeginFileUpload)       → holiday check
-  2. get_new_trade_process(PROCESSID="0")        → reserve process_id from CBOS
+Pipeline — identical for all 7 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL,
+MCX, NCDEX, MTF); MTF is not special-cased, it runs through the same 7 steps:
+  1. file_process_status(BeginFileUpload)        → holiday check
+  2. getdropdown(EXISTINGPROCESSID); if not found,
+     get_new_trade_process(PROCESSID="0")        → get-or-reserve process_id
   3. file_process_status(FILEUPLOAD)             → poll until exchange files uploaded
-  4. get_new_trade_process(PROCESSID=<actual>)   → trigger billing processing
+  4. get_new_trade_process(PROCESSID=<actual>)   → trigger billing processing (once)
   5. file_process_status(BILLPOSTING)            → poll until bill posting done
   6. file_process_status(RECON)                  → poll until reconciliation done
   7. file_process_status(CONTRACTNOTEGENERATION) → poll until contract notes done
@@ -27,37 +29,21 @@ CBOS API request / response shapes
     Body: {"Segment":"EQ","ProcessName":"BeginFileUpload","UserID":"CV0001"}
     OK:   {"Status":"Success","Data":[{"MSG":"TRUE|FALSE|SKIP"}]}
 
+  getdropdown EXISTINGPROCESSID  (Step 2 — check before reserving)
+    POST {PROCESS_URL}/v1/api/brokerage/getdropdown
+    Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ","FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
+    OK:   {"Status":"Success","Result":[{"_KEY":17658,"_DESC":"17658 - CV0001 - Jun 29 2026 2:19PM"}]}
+    Empty Result → no process ID exists yet; reserve a new one.
+
   getNewTradeProcess  (reserve → PROCESSID="0", trigger → PROCESSID=actual)
     POST {PROCESS_URL}/v1/api/process/getNewTradeProcess
     Body: {"GROUPNAME":"EQ","LOGINID":"CV0001","TRADEDATE":"2026-06-29","PROCESSID":"0"}
     OK:   {"Status":"Success","Result":{"Table1":[{"PROCESSID":17658,"ISRUNNABLE":true,...}],"Table2":[...]}}
-
-  getdropdown EXISTINGPROCESSID  (crash recovery)
-    POST {PROCESS_URL}/v1/api/brokerage/getdropdown
-    Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ","FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
-    OK:   {"Status":"Success","Result":[{"_KEY":17658,"_DESC":"17658 - CV0001 - Jun 29 2026 2:19PM"}]}
-
-Post-segment MTF operations chain (v2 doc steps 12-24) — runs once per day on
-the virtual MTFOPS segment after ALL real segments complete. All 4 triggers
-below use LOGINID="G_LID" (hardcoded) and DD-MMM-YYYY dates:
-  GetCollateralValuation                  (step 13) — MARGINDATE
-  MTFTradeProcessCollateralAllocation     (step 15) — TRADEDATE
-  MTFTradeProcessFundTransfer             (step 17) — TRADEDATE
-  MTFTradeProcess                         (steps 19/20/22/24) — TRADEDATE + TYPE
-    TYPE: "BUY PROCESS" | "BUY POSTING" | "SELL PROCESS AND POSTING" | "WEEKLY AUTOCLOSURE"
-
-  Their GTG checks reuse file_process_status with ProcessName:
-    CollateralValuation (Segment=DR), CollateralAllocation (Segment=DR),
-    FundTransfer (Segment=DR), BILLPOSTING (Segment=EQ), EARLYPAYIN (Segment=EQ),
-    WEEKLYAUTOCLOSURE (Segment=EQ)
-
-NOTE: Step 26 (Corporate Action Position Change) is intentionally NOT
-implemented — it requires manual Ops file drops and was scoped out.
 """
 
 from __future__ import annotations
 
-import hashlib
+import itertools
 import json as _json
 import time as _time
 from dataclasses import dataclass, field
@@ -128,39 +114,17 @@ class NewTradeProcessResult:
 
 @dataclass
 class ExistingProcessResult:
-    """Result of a getdropdown EXISTINGPROCESSID call — used for crash recovery."""
+    """
+    Result of a getdropdown EXISTINGPROCESSID call — used for Step 2
+    (get-or-reserve process_id) on every segment, and doubles as the
+    crash-recovery lookup if process_id was lost from the DB row.
+    """
     found: bool
     process_id: Optional[str] = None
     description: Optional[str] = None
     raw_body: str = ""
     error: Optional[str] = None
     is_transient: bool = False
-
-
-@dataclass
-class MtfTriggerResult:
-    """
-    Result of a fire-and-forget MTF trigger call — used for:
-      GetCollateralValuation, MTFTradeProcessCollateralAllocation,
-      MTFTradeProcessFundTransfer, MTFTradeProcess (BUY/SELL/WEEKLY AUTOCLOSURE)
-
-    These endpoints return a plain success message, not structured data.
-    """
-    success: bool
-    message: str = ""
-    raw_body: str = ""
-    http_status: int = 200
-    error: Optional[str] = None
-    is_transient: bool = False
-
-
-def to_ddmmmyyyy(d: date) -> str:
-    """
-    Format a date as DD-MMM-YYYY (e.g. '19-Jun-2026'), as required by the
-    MTF trigger endpoints (GetCollateralValuation, MTFTradeProcess*).
-    Distinct from the YYYY-MM-DD format used by getNewTradeProcess.
-    """
-    return d.strftime("%d-%b-%Y")
 
 
 # =============================================================================
@@ -190,6 +154,12 @@ class CbosClient:
         # Mock state — controls when polls "become ready"
         self._mock_ready_after: int = 2
         self._mock_call_counts: dict[str, int] = {}
+        # (segment, trade_date_iso) -> reserved PROCESSID — lets the mock
+        # correctly answer Step 2's "does a process ID already exist?"
+        # check (getdropdown) based on whether one was actually reserved
+        # yet, instead of always deterministically claiming "found".
+        self._mock_reserved_pids: dict[tuple[str, str], str] = {}
+        self._mock_pid_counter = itertools.count(17001)
 
     # -------------------------------------------------------------------------
     # 1. file_process_status — Good-to-Go / completion checks
@@ -285,7 +255,7 @@ class CbosClient:
           2. process_id="<actual>" → CBOS starts running all billing/calc steps
         """
         if self.use_mock:
-            result = self._mock_new_trade_process(group_name, process_id)
+            result = self._mock_new_trade_process(group_name, trade_date, process_id)
             mode = "reserve_pid" if process_id == "0" else f"trigger(pid={process_id})"
             logger.info(
                 f"[CBOS][MOCK] segment={group_name} api=getNewTradeProcess mode={mode} "
@@ -340,7 +310,7 @@ class CbosClient:
             return NewTradeProcessResult(success=False, error=str(exc), is_transient=True)
 
     # -------------------------------------------------------------------------
-    # 5. get_existing_process_id — crash recovery lookup
+    # 3. get_existing_process_id — Step 2 "get-or-reserve" check
     # -------------------------------------------------------------------------
 
     @otel_trace
@@ -352,11 +322,16 @@ class CbosClient:
     ) -> ExistingProcessResult:
         """
         POST {PROCESS_URL}/v1/api/brokerage/getdropdown
-        Retrieves the most recently reserved PROCESSID for a segment+date.
-        Used to recover after an agent crash between stages 2 and 4.
+
+        Step 2 of the segment pipeline: always called first, before deciding
+        whether to reserve a new process_id. If a PROCESSID already exists
+        for this segment+date (e.g. RPA reserved one already, or the agent
+        itself reserved one on an earlier cycle), it is reused as-is instead
+        of reserving a second one. Also doubles as the crash-recovery lookup
+        if process_id was somehow lost from the DB row before TRIGGER.
         """
         if self.use_mock:
-            result = self._mock_existing_pid(segment)
+            result = self._mock_existing_pid(segment, trade_date)
             logger.info(
                 f"[CBOS][MOCK] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
                 f"| found={result.found} pid={result.process_id}"
@@ -423,90 +398,6 @@ class CbosClient:
             )
             return ExistingProcessResult(found=False, error=str(exc), is_transient=True)
 
-    # -------------------------------------------------------------------------
-    # 6. MTF operations chain (v2 doc steps 13, 15, 17, 19/20, 22, 24)
-    #    All four use LOGINID="G_LID" (hardcoded, see utils/constants.py) and
-    #    DD-MMM-YYYY dates. Fired after GTG checks (reusing file_process_status
-    #    with process names: CollateralValuation, CollateralAllocation,
-    #    FundTransfer, EARLYPAYIN, WEEKLYAUTOCLOSURE) return TRUE.
-    # -------------------------------------------------------------------------
-
-    @otel_trace
-    async def get_collateral_valuation(self, login_id: str, margin_date: str) -> MtfTriggerResult:
-        """POST {PROCESS_URL}/v1/api/process/GetCollateralValuation (step 13)."""
-        if self.use_mock:
-            return self._mock_mtf_trigger("GetCollateralValuation")
-
-        url = f"{self.process_url}/v1/api/process/GetCollateralValuation"
-        payload = {
-            "BUTTONNAME": "COLLATERAL_VALUATION_DATEWISE",
-            "LOGINID": login_id,
-            "MARGINDATE": margin_date,
-        }
-        return await self._post_mtf_trigger(url, payload, "GetCollateralValuation")
-
-    @otel_trace
-    async def mtf_collateral_allocation(self, login_id: str, trade_date: str) -> MtfTriggerResult:
-        """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessCollateralAllocation (step 15)."""
-        if self.use_mock:
-            return self._mock_mtf_trigger("MTFTradeProcessCollateralAllocation")
-
-        url = f"{self.process_url}/v1/api/process/MTFTradeProcessCollateralAllocation"
-        payload = {"LOGINID": login_id, "TRADEDATE": trade_date}
-        return await self._post_mtf_trigger(url, payload, "MTFTradeProcessCollateralAllocation")
-
-    @otel_trace
-    async def mtf_fund_transfer(self, login_id: str, trade_date: str) -> MtfTriggerResult:
-        """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessFundTransfer (step 17)."""
-        if self.use_mock:
-            return self._mock_mtf_trigger("MTFTradeProcessFundTransfer")
-
-        url = f"{self.process_url}/v1/api/process/MTFTradeProcessFundTransfer"
-        payload = {"LOGINID": login_id, "TRADEDATE": trade_date}
-        return await self._post_mtf_trigger(url, payload, "MTFTradeProcessFundTransfer")
-
-    @otel_trace
-    async def mtf_trade_process(self, login_id: str, trade_date: str, type_: str) -> MtfTriggerResult:
-        """
-        POST {PROCESS_URL}/v1/api/process/MTFTradeProcess (steps 19, 20, 22, 24)
-        type_ one of: "BUY PROCESS" | "BUY POSTING" | "SELL PROCESS AND POSTING" | "WEEKLY AUTOCLOSURE"
-        """
-        if self.use_mock:
-            return self._mock_mtf_trigger(f"MTFTradeProcess({type_})")
-
-        url = f"{self.process_url}/v1/api/process/MTFTradeProcess"
-        payload = {"LOGINID": login_id, "TRADEDATE": trade_date, "TYPE": type_}
-        return await self._post_mtf_trigger(url, payload, f"MTFTradeProcess({type_})")
-
-    async def _post_mtf_trigger(self, url: str, payload: dict, api_name: str) -> MtfTriggerResult:
-        """Shared POST + parse logic for all fire-and-forget MTF trigger calls."""
-        logger.info(f"[CBOS] api={api_name} | POST {url}")
-        t0 = _time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
-                elapsed_ms = int((_time.monotonic() - t0) * 1000)
-                body = resp.text[:2000]
-                if resp.status_code != 200:
-                    logger.error(f"[CBOS] api={api_name} | HTTP {resp.status_code} elapsed_ms={elapsed_ms}")
-                    return MtfTriggerResult(
-                        success=False, raw_body=body, http_status=resp.status_code,
-                        error=f"HTTP {resp.status_code}",
-                        is_transient=resp.status_code >= 500,
-                    )
-                message, status_error = _parse_mtf_message(body)
-                if status_error:
-                    logger.error(f"[CBOS] api={api_name} | {status_error} elapsed_ms={elapsed_ms}")
-                    return MtfTriggerResult(
-                        success=False, raw_body=body, error=status_error, is_transient=False,
-                    )
-                logger.info(f"[CBOS] api={api_name} | message={message!r} elapsed_ms={elapsed_ms}")
-                return MtfTriggerResult(success=True, message=message, raw_body=body)
-        except Exception as exc:
-            elapsed_ms = int((_time.monotonic() - t0) * 1000)
-            logger.error(f"[CBOS] api={api_name} | EXCEPTION elapsed_ms={elapsed_ms} error={exc}")
-            return MtfTriggerResult(success=False, error=str(exc), is_transient=True)
-
     # =========================================================================
     # Mock implementations — used when use_mock=True
     # =========================================================================
@@ -537,17 +428,22 @@ class CbosClient:
         )
 
     def _mock_new_trade_process(
-        self, group_name: str, process_id: str
+        self, group_name: str, trade_date: date, process_id: str
     ) -> NewTradeProcessResult:
         """
         Simulates getNewTradeProcess.
-        Derives a stable fake PROCESSID from the segment name so the same
-        segment always gets the same ID within a test run.
+
+        process_id="0" (reserve): allocates the next incrementing fake PID
+        and records it keyed by (segment, trade_date) so a subsequent
+        get_existing_process_id() call for the same segment+date correctly
+        reports "found" — mirrors real CBOS behaviour where a PROCESSID,
+        once reserved, persists for that segment+date.
         """
+        key = (group_name.upper(), trade_date.isoformat())
         if process_id == "0":
-            fake_pid = str(
-                int(hashlib.md5(group_name.encode()).hexdigest()[:6], 16) % 90000 + 10000
-            )
+            if key not in self._mock_reserved_pids:
+                self._mock_reserved_pids[key] = str(next(self._mock_pid_counter))
+            fake_pid = self._mock_reserved_pids[key]
         else:
             fake_pid = process_id
 
@@ -566,24 +462,24 @@ class CbosClient:
             raw_body=body,
         )
 
-    def _mock_existing_pid(self, segment: str) -> ExistingProcessResult:
-        """Simulates getdropdown EXISTINGPROCESSID — returns the same fake PID."""
-        fake_pid = str(
-            int(hashlib.md5(segment.encode()).hexdigest()[:6], 16) % 90000 + 10000
-        )
+    def _mock_existing_pid(self, segment: str, trade_date: date) -> ExistingProcessResult:
+        """
+        Simulates getdropdown EXISTINGPROCESSID.
+
+        Only reports "found" if a PID has actually been reserved for this
+        (segment, trade_date) via _mock_new_trade_process — before that, it
+        correctly reports not-found (empty Result), same as real CBOS, so
+        Step 2's get-or-reserve branch is faithfully exercised in mock mode.
+        """
+        key = (segment.upper(), trade_date.isoformat())
+        pid = self._mock_reserved_pids.get(key)
+        if not pid:
+            return ExistingProcessResult(found=False, raw_body='{"Status":"Success","Result":[]}')
         return ExistingProcessResult(
             found=True,
-            process_id=fake_pid,
-            description=f"{fake_pid} - CV0001 - Mock Entry",
+            process_id=pid,
+            description=f"{pid} - CV0001 - Mock Entry",
         )
-
-    def _mock_mtf_trigger(self, api_name: str) -> MtfTriggerResult:
-        """Simulates any MTF trigger call — always succeeds immediately."""
-        message = "Process completed successfully"
-        logger.info(f"[CBOS][MOCK] api={api_name} | message={message!r}")
-        return MtfTriggerResult(success=True, message=message, raw_body=_json.dumps({
-            "Status": "Success", "Result": [{"MSG": message}],
-        }))
 
     # -------------------------------------------------------------------------
     # Mock tuning helpers (useful in tests / local runs)
@@ -594,8 +490,9 @@ class CbosClient:
         self._mock_ready_after = n
 
     def mock_reset_counts(self) -> None:
-        """Reset all poll counters (useful between test cases)."""
+        """Reset all poll counters and reserved PIDs (useful between test cases)."""
         self._mock_call_counts.clear()
+        self._mock_reserved_pids.clear()
 
 
 # =============================================================================
@@ -669,34 +566,3 @@ def _parse_new_trade_process(body: str) -> NewTradeProcessResult:
         )
     except Exception as exc:
         return NewTradeProcessResult(success=False, raw_body=body, error=str(exc))
-
-
-def _parse_mtf_message(body: str) -> tuple[str, Optional[str]]:
-    """
-    Parse the human-readable message from an MTF trigger response.
-    Handles both shapes seen in the API doc:
-      {"Status":"Success","Result":{"Table1":[{"MSG":"..."}]}}
-      {"Status":"Success","Result":[{"MSG":"..."}]}
-
-    Returns (message, status_error). A non-"Success" top-level Status is
-    reported as status_error rather than silently swallowed — the
-    documented FundTransfer quirk (missing MTF_RISK_UPDATE job) still
-    reports Status:Success, so it is unaffected by this check.
-    """
-    try:
-        data = _json.loads(body)
-        status = data.get("Status")
-        if status and status != "Success":
-            return "", f"CBOS Status={status}"
-        result = data.get("Result")
-        if isinstance(result, dict):
-            rows = result.get("Table1", [])
-        elif isinstance(result, list):
-            rows = result
-        else:
-            rows = []
-        if rows and isinstance(rows[0], dict):
-            return rows[0].get("MSG") or rows[0].get("Result") or "", None
-        return "", None
-    except Exception:
-        return body[:200], None

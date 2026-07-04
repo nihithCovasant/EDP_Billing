@@ -93,11 +93,19 @@ def record_trigger(
     is_runnable: bool,
     now: datetime,
 ) -> None:
-    """Record a successful getNewTradeProcess trigger call."""
+    """
+    Record a successful getNewTradeProcess trigger call.
+
+    Preserves process_id_source (set by Step 2's RESERVE_PID stage —
+    "EXISTING" or "RESERVED_NEW") instead of overwriting the whole
+    "trigger" state, since this is the same processes_json key.
+    """
+    existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {
         "status": "TRIGGERED",
         "at": now.isoformat(),
         "process_id_used": process_id,
+        "process_id_source": existing.get("process_id_source"),
         "is_runnable": is_runnable,
     })
 

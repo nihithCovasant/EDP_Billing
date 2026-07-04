@@ -102,12 +102,6 @@ class EdpBootstrapConfig:
     # when no config has been uploaded for today yet.
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
 
-    # Post-segment MTF operations chain (v2 doc steps 12-24) — Collateral
-    # Valuation/Allocation, Fund Transfer, MTF Buy/Sell, Weekly Auto Closure.
-    # Runs once per day on the virtual MTFOPS segment after all real trade
-    # segments complete. Set to False to disable entirely (e.g. non-MTF setups).
-    mtf_ops_enabled: bool = True
-
 
 @otel_trace
 def load_edp_config() -> EdpBootstrapConfig:
@@ -149,7 +143,6 @@ def load_edp_config() -> EdpBootstrapConfig:
         lock_ttl_seconds=int(edp_raw.get("lock_ttl_seconds", 300)),
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),
         default_segments=edp_raw.get("segments", []),
-        mtf_ops_enabled=bool(edp_raw.get("mtf_ops_enabled", True)),
     )
 
 

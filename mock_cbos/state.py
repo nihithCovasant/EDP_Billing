@@ -3,9 +3,10 @@ In-memory state for the Mock CBOS server.
 
 Simulates the stateful behaviour real CBOS exhibits across the polling
 sequence (BeginFileUpload -> FILEUPLOAD -> BILLPOSTING -> RECON ->
-CONTRACTNOTEGENERATION, plus the MTF operations chain) without any
-external dependency — pure Python dict, reset on server restart or via
-the /mock/reset control endpoint.
+CONTRACTNOTEGENERATION), identical for all 7 segments (CASH/EQ, F&O/DR,
+CD/CUR, SLBM/SL, MCX, NCDEX, MTF), without any external dependency — pure
+Python dict, reset on server restart or via the /mock/reset control
+endpoint.
 """
 
 from __future__ import annotations
@@ -38,11 +39,6 @@ class MockCbosState:
 
     # (segment, process_name) pairs pinned to always return TRUE immediately
     force_ready_keys: set = field(default_factory=set)
-
-    # When True, MTFTradeProcessFundTransfer replays the exact quirky
-    # "@job_name does not exist" message documented in the API doc (step 17)
-    # instead of a clean success message. Off by default for smoother testing.
-    fund_transfer_job_missing: bool = False
 
     _pid_counter: itertools.count = field(default_factory=lambda: itertools.count(17001))
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -133,10 +129,6 @@ class MockCbosState:
             else:
                 self.force_ready_keys.discard(key)
 
-    def set_fund_transfer_job_missing(self, enabled: bool) -> None:
-        with self._lock:
-            self.fund_transfer_job_missing = enabled
-
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -147,7 +139,6 @@ class MockCbosState:
                 "holiday_segments": sorted(self.holiday_segments),
                 "stuck_keys": [f"{k[0]}::{k[1]}" for k in self.stuck_keys],
                 "force_ready_keys": [f"{k[0]}::{k[1]}" for k in self.force_ready_keys],
-                "fund_transfer_job_missing": self.fund_transfer_job_missing,
             }
 
 

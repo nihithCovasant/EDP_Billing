@@ -16,7 +16,7 @@ All helper utilities live in utils.*
 from __future__ import annotations
 
 import time
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -25,7 +25,7 @@ from .database import get_session
 from .models import SegmentPhase, SegmentStatus
 from . import repository
 from .pipeline import advance_pipeline
-from .utils.constants import MTF_OPS_SEGMENT_CODE, STALE_HEARTBEAT_THRESHOLD
+from .utils.constants import STALE_HEARTBEAT_THRESHOLD
 from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
 from .utils.locking import lock_owner
 from .utils.log_fmt import edp_log, seg_log
@@ -35,17 +35,13 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across all 8 trade segments, then
-    the post-segment MTF operations chain.
+    Drives the daily EDP billing pipeline across all 7 trade segments.
 
-    Segments run sequentially:
-      EQ → DR → CUR → SL → NCDEX → MCX → NSECOM → MF → MTFOPS (virtual)
-    Segment N cannot start until N-1 is COMPLETED or SKIPPED.
-
-    MTFOPS is a virtual segment (see utils/constants.py) that only starts
-    once all 8 real segments are done — it drives Collateral Valuation,
-    Collateral Allocation, Fund Transfer, MTF Buy, MTF Sell, and Weekly Auto
-    Closure (v2 doc steps 12-24).
+    Segments run sequentially, in this fixed order (see utils/constants.py):
+      CASH/EQ → F&O/DR → CD/CUR → SLBM/SL → MCX → NCDEX → MTF
+    Segment N cannot start until N-1 is COMPLETED or SKIPPED. MTF is not
+    special-cased — it runs through the exact same generic 7-step pipeline
+    as every other segment.
     """
 
     def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient):
@@ -151,16 +147,6 @@ class EdpOrchestrator:
                 segments=[r.segment_code for r in created],
             ))
 
-        # ------ Seed the virtual MTFOPS segment (post-segment MTF chain) ----
-        if self.config.mtf_ops_enabled:
-            async with get_session() as session:
-                mtf_row = await repository.seed_mtf_ops_segment(session, workflow, active_date)
-            if mtf_row:
-                logger.info(edp_log(
-                    "Virtual MTFOPS segment seeded — runs after all real segments complete",
-                    date=active_date,
-                ))
-
         # ------ Fetch ordered segments and drive each one -------------------
         async with get_session() as session:
             segments = await repository.get_all_for_date(session, active_date)
@@ -248,22 +234,14 @@ class EdpOrchestrator:
                 logger.error(seg_log(segment_code, active_date, "No active workflow found"))
                 return "failed"
 
-            is_mtf_ops = segment_code == MTF_OPS_SEGMENT_CODE
-            if is_mtf_ops:
-                # Virtual segment — not listed in workflow_json.segments.
-                # GTG checks use config.cbos_login_id; the fixed G_LID login
-                # used for the actual trigger calls is hardcoded in the CBOS
-                # client (see utils/constants.py).
-                login_id = self.config.cbos_login_id
-            else:
-                seg_cfg = _find_segment_cfg(workflow.workflow_json, segment_code)
-                if not seg_cfg:
-                    logger.error(seg_log(
-                        segment_code, active_date,
-                        "Segment code missing from workflow_json — cannot process",
-                    ))
-                    return "failed"
-                login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
+            seg_cfg = _find_segment_cfg(workflow.workflow_json, segment_code)
+            if not seg_cfg:
+                logger.error(seg_log(
+                    segment_code, active_date,
+                    "Segment code missing from workflow_json — cannot process",
+                ))
+                return "failed"
+            login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
 
             window_start, window_end = _resolve_window(
                 segment_code, workflow.workflow_json, active_date, self._tz
@@ -310,12 +288,8 @@ class EdpOrchestrator:
                     return "blocked"
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
-                if is_mtf_ops:
-                    row.current_phase = SegmentPhase.COLLATERAL_VALUATION
-                    row.current_process = "CollateralValuation"
-                else:
-                    row.current_phase = SegmentPhase.HOLIDAY_CHECK
-                    row.current_process = "BeginFileUpload"
+                row.current_phase = SegmentPhase.HOLIDAY_CHECK
+                row.current_process = "BeginFileUpload"
                 await session.flush()
                 logger.info(seg_log(
                     segment_code, active_date,
@@ -393,16 +367,6 @@ def _resolve_window(
     resolving them here means a config re-upload takes effect immediately
     instead of only for segments that haven't been seeded yet.
     """
-    if segment_code == MTF_OPS_SEGMENT_CODE:
-        # No fixed window_start — gated purely by segment sequencing (the
-        # virtual MTFOPS segment only starts once every real segment is
-        # COMPLETED/SKIPPED). Generous end-of-day deadline so a slow chain
-        # isn't cut off mid-way.
-        window_end = datetime.combine(
-            trade_date + timedelta(days=1), dtime(23, 59, 59), tzinfo=tz
-        )
-        return None, window_end
-
     seg_cfg = _find_segment_cfg(workflow_json, segment_code)
     if not seg_cfg:
         return None, None

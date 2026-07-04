@@ -48,8 +48,8 @@ production; only the wall-clock scheduling glue is bypassed.
 | `conftest.py` | DB engine/session fixtures, `test_date` (isolated far-future date), and wiring so `orchestrator._process_one_segment()`'s internal `database.get_session()` calls route to the test's own engine. |
 | `fakes.py` | `FailingCbosClient` — behaves like the normal CBOS mock except for one `(segment, process_name)` pair, which always returns a permanent (non-transient) error. |
 | `helpers.py` | `seed_day`, `drive_until_terminal`, `run_one_cycle`, `cleanup_day` — the test harness described above. |
-| `test_day1_all_segments_success.py` | **Scenario 1**: all 8 real segments + the virtual `MTFOPS` chain complete successfully for one trading day. Also checks fixed sequence ordering and that the day-summary/serializer API output has no leftover `domain`/`window_*_at` fields. |
-| `test_day2_segment_process_failure.py` | **Scenario 2**: `EQ`'s 2nd process (`BILLPOSTING`) returns a permanent CBOS error → `EQ` ends `FAILED`, every segment after it (+ `MTFOPS`) stays `PENDING` (chain halts), and a manual `retry_segment` + healthy CBOS client lets the day finish. |
+| `test_day1_all_segments_success.py` | **Scenario 1**: all 7 segments (`EQ, DR, CUR, SL, MCX, NCDEX, MTF` — `MTF` is a normal segment, not special-cased) complete successfully for one trading day. Also checks fixed sequence ordering, Step 2's get-or-reserve behavior, and that the day-summary/serializer API output has no leftover `domain`/`window_*_at` fields. |
+| `test_day2_segment_process_failure.py` | **Scenario 2**: `EQ`'s 2nd process (`BILLPOSTING`) returns a permanent CBOS error → `EQ` ends `FAILED`, every segment after it (including `MTF`) stays `PENDING` (chain halts), and a manual `retry_segment` + healthy CBOS client lets the day finish. |
 
 ## Segment process ordering (for "Nth process failed" scenarios)
 

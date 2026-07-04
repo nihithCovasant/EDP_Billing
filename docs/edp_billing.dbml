@@ -22,12 +22,6 @@ Enum segment_phase {
   AWAIT_BILLPOSTING
   AWAIT_RECON
   AWAIT_CONTRACT_NOTE
-  COLLATERAL_VALUATION
-  COLLATERAL_ALLOCATION
-  FUND_TRANSFER
-  MTF_BUY
-  MTF_SELL
-  WEEKLY_AUTO_CLOSURE
   DONE
 }
 
@@ -52,7 +46,7 @@ Table edp_properties {
 Table segment_execution {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null]
-  segment_code varchar(32) [not null, note: 'EQ DR CUR SL NCDEX MCX NSECOM MF MTFOPS']
+  segment_code varchar(32) [not null, note: 'EQ DR CUR SL MCX NCDEX MTF']
   config_id_used varchar(36) [note: 'Soft ref to edp_properties.id']
   config_hash_used varchar(64) [note: 'content_hash at seed time']
   status segment_status [not null, default: 'PENDING']
@@ -73,7 +67,7 @@ Table segment_execution {
     (trade_date, segment_code) [unique, name: 'uq_segment_execution_per_day']
     trade_date
   }
-  Note: 'Up to 9 rows per day. segment_name sequence_order runtime_health window times are computed at read time not stored.'
+  Note: 'Up to 7 rows per day. segment_name sequence_order runtime_health window times are computed at read time not stored.'
 }
 
 Table agent_control {

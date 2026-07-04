@@ -1,20 +1,17 @@
 {
   "trade_date": "2026-07-02",
-  "domain": "EDP",
   "uploaded_by": "manual-test",
   "workflow_json": {
-    "domain": "EDP",
     "timezone": "Asia/Kolkata",
     "wake_interval_seconds": 60,
     "segments": [
-      {"segment_code": "EQ",     "segment_name": "Cash",            "sequence_order": 1, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "DR",     "segment_name": "Derivative",      "sequence_order": 2, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "CUR",    "segment_name": "Currency",        "sequence_order": 3, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "SL",     "segment_name": "SLB",             "sequence_order": 4, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "NCDEX",  "segment_name": "NCDEX Commodity", "sequence_order": 5, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "MCX",    "segment_name": "MCX Commodity",   "sequence_order": 6, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "NSECOM", "segment_name": "NSE Commodity",   "sequence_order": 7, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
-      {"segment_code": "MF",     "segment_name": "Mutual Fund",     "sequence_order": 8, "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false}
+      {"segment_code": "EQ",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
+      {"segment_code": "DR",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
+      {"segment_code": "CUR",   "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
+      {"segment_code": "SL",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
+      {"segment_code": "MCX",   "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
+      {"segment_code": "NCDEX", "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},
+      {"segment_code": "MTF",   "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false}
     ]
   }
 }

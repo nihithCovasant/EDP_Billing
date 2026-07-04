@@ -2,8 +2,10 @@
 Mock CBOS Server
 ================
 
-Standalone FastAPI app that simulates every CBOS endpoint referenced in
-EDP_Trade_Process_API_v2.docx, so the EDP agent can be fully tested without
+Standalone FastAPI app that simulates the CBOS endpoints used by the EDP
+Billing segment execution flow (holiday check, get-or-reserve process ID,
+file upload poll, single trigger, bill posting/recon/contract note polls —
+identical for all 7 segments), so the EDP agent can be fully tested without
 VPN/VDI access to the real MOFSL CBOS system.
 
 Run standalone:
@@ -46,17 +48,17 @@ app.add_middleware(
 
 
 # =============================================================================
-# 1/7/9/10/11/12/14/16/18/21/23/25 — file_process_status (Good-to-Go polling)
+# Steps 1/3/5/6/7 — file_process_status (Good-to-Go polling)
 #     EDP Status API — port 8087 in real CBOS
 # =============================================================================
 
 @app.post("/api/edp/file_process_status")
 async def file_process_status(payload: dict):
     """
-    Generic GTG / status poll used for every ProcessName in the doc:
-      BeginFileUpload, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION,
-      CollateralValuation, CollateralAllocation, FundTransfer, EARLYPAYIN,
-      WEEKLYAUTOCLOSURE.
+    Generic GTG / status poll used for every ProcessName in the flow —
+    identical for all 7 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX,
+    NCDEX, MTF):
+      BeginFileUpload, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION.
 
     Body: {"Segment": "EQ", "ProcessName": "BeginFileUpload", "UserID": "CV0001"}
     """
@@ -68,7 +70,7 @@ async def file_process_status(payload: dict):
 
 
 # =============================================================================
-# 2/8 — getNewTradeProcess (reserve PROCESSID="0" / execute with real PROCESSID)
+# Steps 2/4 — getNewTradeProcess (reserve PROCESSID="0" / execute with real PROCESSID)
 #     Main Process API — port 8003 in real CBOS
 # =============================================================================
 
@@ -77,10 +79,8 @@ async def get_new_trade_process(payload: dict):
     """
     Body: {"GROUPNAME":"EQ","LOGINID":"CV0001","TRADEDATE":"2026-06-29","PROCESSID":"0"}
 
-    PROCESSID == "0" -> reserve a new process id (Step 2)
-    PROCESSID == "<actual>" -> execute/trigger that process (Step 8), or the
-    special GROUPNAME="FOPositionChange" flow (Step 26a/26c) — handled
-    identically since both just need a PROCESSID lifecycle.
+    PROCESSID == "0" -> reserve a new process id (Step 2, reserve branch)
+    PROCESSID == "<actual>" -> execute/trigger that process (Step 4)
     """
     group_name = str(payload.get("GROUPNAME", ""))
     trade_date = str(payload.get("TRADEDATE", ""))
@@ -107,7 +107,7 @@ async def get_new_trade_process(payload: dict):
 
 
 # =============================================================================
-# 5 — getdropdown EXISTINGPROCESSID (crash recovery lookup)
+# Step 2 — getdropdown EXISTINGPROCESSID (get-or-reserve check)
 #     Brokerage API — port 8003/v1/api/brokerage in real CBOS
 # =============================================================================
 
@@ -133,9 +133,9 @@ async def getdropdown(payload: dict):
 
 
 # =============================================================================
-# 3/4/6 — File upload flow stubs (owned by RPA in the real pipeline — the EDP
-#     agent never calls these; kept here only so the mock server matches the
-#     full API doc for anyone testing the RPA/upload side separately).
+# File upload flow stubs (owned by RPA in the real pipeline — the EDP agent
+#     never calls these; kept here only so the mock server matches the full
+#     API doc for anyone testing the RPA/upload side separately).
 # =============================================================================
 
 @app.post("/v1/api/process/GetNewTradeProcessPromodalUploadSettings")
@@ -169,58 +169,6 @@ async def save_chunk_file(request: Request):
 @app.post("/v1/api/process/SaveNewTradeProcessPromodalUploadFile")
 async def save_upload_file(payload: dict):
     return {"Status": "Success", "Result": "File entry created successfully."}
-
-
-# =============================================================================
-# 13/15/17/19/20/22/24 — MTF operations chain triggers
-#     Main Process API — port 8003 in real CBOS
-# =============================================================================
-
-@app.post("/v1/api/process/GetCollateralValuation")
-async def get_collateral_valuation(payload: dict):
-    return {
-        "Status": "Success",
-        "Result": {"Table1": [{
-            "MSG": "Process started successfully ! Click Refresh Button for Current Status.",
-        }]},
-    }
-
-
-@app.post("/v1/api/process/MTFTradeProcessCollateralAllocation")
-async def mtf_collateral_allocation(payload: dict):
-    return {
-        "Status": "Success",
-        "Result": {"Table1": [{"MSG": "Process started successfully ! Click Refresh Button."}]},
-    }
-
-
-@app.post("/v1/api/process/MTFTradeProcessFundTransfer")
-async def mtf_fund_transfer(payload: dict):
-    if state.fund_transfer_job_missing:
-        # Exact quirky response documented in the API doc (step 17) — real
-        # CBOS returns this when the MTF_RISK_UPDATE SQL job hasn't been
-        # created yet. Still HTTP 200 / Status:Success, so the agent treats
-        # the trigger as fired; toggle via POST /mock/scenario/fund_transfer_quirk.
-        return {
-            "Status": "Success",
-            "Result": [{"Result": "The specified @job_name ('MTF_RISK_UPDATE') does not exist."}],
-        }
-    return {
-        "Status": "Success",
-        "Result": [{"MSG": "Process completed successfully"}],
-    }
-
-
-@app.post("/v1/api/process/MTFTradeProcess")
-async def mtf_trade_process(payload: dict):
-    """
-    Shared endpoint for steps 19, 20, 22, 24 — distinguished by TYPE:
-      "BUY PROCESS" | "BUY POSTING" | "SELL PROCESS AND POSTING" | "WEEKLY AUTOCLOSURE"
-    """
-    return {
-        "Status": "Success",
-        "Result": [{"MSG": "Process completed successfully"}],
-    }
 
 
 # =============================================================================
@@ -294,17 +242,6 @@ async def set_force_ready(payload: dict):
         bool(payload.get("enabled", True)),
     )
     return {"force_ready_keys": sorted(f"{k[0]}::{k[1]}" for k in state.force_ready_keys)}
-
-
-@app.post("/mock/scenario/fund_transfer_quirk")
-async def set_fund_transfer_quirk(payload: dict):
-    """
-    Toggle the documented real-world quirk where MTFTradeProcessFundTransfer
-    returns a "@job_name does not exist" message (still HTTP 200 / Success).
-    Body: {"enabled": true}
-    """
-    state.set_fund_transfer_job_missing(bool(payload.get("enabled", True)))
-    return {"fund_transfer_job_missing": state.fund_transfer_job_missing}
 
 
 if __name__ == "__main__":
