@@ -378,8 +378,22 @@ async def handle_trigger(
 
     # First attempt for this segment-day — write the pre-commit marker
     # BEFORE calling CBOS, then fire the trigger.
+    #
+    # This MUST be session.commit(), not just flush(). flush() only sends
+    # the SQL over the wire inside the current (still-open) transaction —
+    # the enclosing `async with get_session()` block in
+    # orchestrator._process_one_segment() doesn't commit until the ENTIRE
+    # advance_pipeline() call chain returns. If the pod dies after a mere
+    # flush() but before that outer commit, Postgres rolls the whole
+    # uncommitted transaction back, erasing this "TRIGGERING" marker along
+    # with it — the very thing this marker exists to survive. Committing
+    # here ends the current transaction (durably persisting TRIGGERING,
+    # plus whatever earlier phase transitions this cycle already made) and
+    # SQLAlchemy transparently opens a fresh one for everything after —
+    # safe with expire_on_commit=False (set in database.init_database),
+    # `row`'s already-loaded attributes stay usable with no extra query.
     record_trigger_attempt(row, now)
-    await session.flush()
+    await session.commit()
 
     logger.info(stage_log(
         row.segment_code, "TRIGGER",

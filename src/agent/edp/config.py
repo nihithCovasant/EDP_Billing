@@ -108,33 +108,100 @@ class EdpBootstrapConfig:
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
 
 
+def _is_truthy_env(value: str | None) -> bool:
+    return bool(value) and value.strip().lower() in ("1", "true", "yes", "on")
+
+
 @otel_trace
 def load_edp_config() -> EdpBootstrapConfig:
-    """Load EDP bootstrap settings from agent_config.json under agent_config.edp."""
+    """
+    Load EDP bootstrap settings from agent_config.json under agent_config.edp.
+
+    A missing/empty/malformed `edp` config section used to fail silently:
+    every field just fell through to a hardcoded default — cbos_use_mock=
+    True pointing at localhost, SQLite for the database — with nothing in
+    the logs to say so. A broken production deploy would start up
+    "healthy," run entirely in mock mode against no real CBOS all day, and
+    report success. This function now:
+      1. Always logs, at WARNING level, exactly which critical settings
+         (CBOS URLs/mock flag, database URL) fell through to a hardcoded
+         default rather than an explicit env var or agent_config.json value
+         — impossible to miss in production logs / log-based alerting.
+      2. Raises RuntimeError instead of starting up silently misconfigured
+         when EDP_STRICT_CONFIG=true is set (intended for production
+         deployment manifests) and ANY such setting fell through to a
+         hardcoded default. Left opt-in (not the default) so local dev /
+         zero-config test runs are unaffected.
+    """
     raw = load_agent_config()
     default_cfg = raw.get("default", {})
     edp_raw: Dict[str, Any] = default_cfg.get("edp", {})
+    if not isinstance(edp_raw, dict):
+        logger.error(
+            f"[EDP CONFIG] agent_config.json's default.edp section is not an object "
+            f"(got {type(edp_raw).__name__}) — ignoring it entirely, every EDP setting "
+            f"will fall through to env vars / hardcoded defaults"
+        )
+        edp_raw = {}
+    elif not edp_raw:
+        logger.warning(
+            "[EDP CONFIG] agent_config.json has no default.edp section (or it's empty) — "
+            "every EDP setting will rely on env vars / hardcoded defaults; this is normal "
+            "for a fully env-var-driven deployment, but verify that's intentional"
+        )
 
     # Database URL — env vars (DATABASE_URL or DB_*) take priority; see _resolve_database_url
     secrets = default_cfg.get("secrets", {})
     db_url = _resolve_database_url(edp_raw, secrets)
+    db_url_defaulted = db_url == "sqlite+aiosqlite:///./edp_agent.db" and not edp_raw.get("database_url")
 
     # CBOS URLs / mock toggle — env vars take priority over agent_config.json
     # so switching between the Mock CBOS Server, the real CBOS system, or
     # in-process mock responses is a single-place .env edit (see
     # mock_cbos/README.md). Falls back to agent_config.json, then hardcoded
     # defaults, if the env vars are not set.
+    # Preserves the exact original resolution semantics — os.getenv's own
+    # default argument only kicks in when the env var is completely UNSET,
+    # not when it's set to an empty string — while still being able to
+    # report (for logging only) whether the value ended up as the
+    # hardcoded fallback with nothing explicitly configured anywhere.
     cbos_status_url = os.getenv(
         "CBOS_STATUS_URL", edp_raw.get("cbos_status_url", "http://localhost:8087")
     )
+    cbos_status_url_defaulted = "CBOS_STATUS_URL" not in os.environ and not edp_raw.get("cbos_status_url")
+
     cbos_process_url = os.getenv(
         "CBOS_PROCESS_URL", edp_raw.get("cbos_process_url", "http://localhost:8003")
     )
+    cbos_process_url_defaulted = "CBOS_PROCESS_URL" not in os.environ and not edp_raw.get("cbos_process_url")
+
     cbos_use_mock_raw = os.getenv("CBOS_USE_MOCK")
+    cbos_use_mock_defaulted = cbos_use_mock_raw is None and "cbos_use_mock" not in edp_raw
     if cbos_use_mock_raw is not None:
-        cbos_use_mock = cbos_use_mock_raw.strip().lower() in ("1", "true", "yes", "on")
+        cbos_use_mock = _is_truthy_env(cbos_use_mock_raw)
     else:
         cbos_use_mock = bool(edp_raw.get("cbos_use_mock", True))
+
+    defaulted_settings = [
+        name for name, defaulted in (
+            ("database_url", db_url_defaulted),
+            ("cbos_status_url", cbos_status_url_defaulted),
+            ("cbos_process_url", cbos_process_url_defaulted),
+            ("cbos_use_mock", cbos_use_mock_defaulted),
+        ) if defaulted
+    ]
+    if defaulted_settings:
+        logger.warning(
+            f"[EDP CONFIG] Settings falling through to hardcoded defaults (no env var, "
+            f"no agent_config.json value): {defaulted_settings} — resolved "
+            f"cbos_use_mock={cbos_use_mock} database_url={db_url!r}"
+        )
+        if _is_truthy_env(os.getenv("EDP_STRICT_CONFIG")):
+            raise RuntimeError(
+                "EDP_STRICT_CONFIG=true: refusing to start with unconfigured EDP settings "
+                f"{defaulted_settings} — set the corresponding env var(s) or "
+                "agent_config.json 'edp' fields explicitly"
+            )
 
     return EdpBootstrapConfig(
         wake_interval_seconds=int(edp_raw.get("wake_interval_seconds", 60)),

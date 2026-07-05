@@ -10,6 +10,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import EdpProperties
@@ -79,6 +80,17 @@ async def upload(
     Returns (row, is_new):
       is_new = False → identical config already active, no change made.
       is_new = True  → new config row created (old row superseded if present).
+
+    Concurrency: this is check-then-act (get_active() then conditionally
+    insert), but a unique partial index — one active row per trade_date,
+    see models.EdpProperties.__table_args__ — makes the actual write
+    atomic at the database level. Two concurrent uploads for the same date
+    (a manual re-upload racing an automated retry) can both pass the
+    get_active() check before either commits, but only one INSERT can ever
+    land; the other raises IntegrityError, caught below and resolved by
+    returning whichever row actually won instead of crashing the request or
+    leaving two is_active=True rows (which would break every future
+    get_active() call with MultipleResultsFound).
     """
     new_hash = compute_hash(workflow_json)
     existing = await get_active(session, trade_date)
@@ -102,7 +114,31 @@ async def upload(
         uploaded_at=ts,
     )
     session.add(new_row)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        logger.warning(
+            f"Workflow upload: lost a concurrent-upload race for {trade_date} — "
+            f"another upload for this date committed first; returning its row instead "
+            f"of creating a duplicate active row"
+        )
+        winner = await get_active(session, trade_date)
+        if winner is None:
+            # Vanishingly unlikely (the winner would have to have been
+            # superseded again in between) — nothing sensible to return.
+            raise
+        if winner.content_hash != new_hash:
+            logger.warning(
+                f"Workflow upload: the row that won the race for {trade_date} has "
+                f"DIFFERENT content than what this request tried to upload (hash "
+                f"{winner.content_hash[:12]} vs {new_hash[:12]}) — re-upload if this "
+                f"request's content was the intended one"
+            )
+        # is_new=False either way: this call did not create the active row,
+        # regardless of whether its content happens to match.
+        return winner, False
+
     logger.info(
         f"Workflow uploaded: id={new_row.id} date={trade_date} by={uploaded_by}"
     )

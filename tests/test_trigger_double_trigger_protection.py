@@ -24,10 +24,14 @@ happens.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from src.agent.edp import repository
 from src.agent.edp.models import SegmentPhase, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.utils.constants import SEGMENT_ORDER
+from src.agent.edp.utils.datetime_utils import now_ist
+from src.agent.edp.utils.locking import lock_state
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
@@ -156,6 +160,125 @@ async def test_recovery_does_not_retrigger_when_cbos_already_has_it(cfg, session
     by_code = {r.segment_code: r for r in rows}
     for code in SEGMENT_ORDER:
         assert by_code[code].segment_status == SegmentStatus.COMPLETED
+
+
+async def _leave_lock_stale(session_factory, test_date, owner: str) -> None:
+    """
+    Overwrite lock_json with a LOCKED state whose expires_at is already in
+    the past — i.e. never reached release_lock(), exactly what a genuinely
+    killed pod leaves behind (as opposed to a transient error, where the
+    same still-alive process reaches its own `finally: release_lock()` and
+    the lock is freed normally).
+
+    recover_stale_locks() compares against REAL wall-clock now_ist() (it
+    has no notion of the test's simulated trade_date), so "expired" here
+    must be relative to real now, not the fixed_now used to drive the
+    pipeline through the far-future test trade_date.
+    """
+    real_now = now_ist()
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, SEGMENT)
+        row.lock_json = {
+            "state": "LOCKED",
+            "owner": owner,
+            "acquired_at": (real_now - timedelta(minutes=10)).isoformat(),
+            "expires_at": (real_now - timedelta(minutes=5)).isoformat(),
+        }
+        await session.commit()
+
+
+async def test_stale_lock_at_triggering_is_resumed_not_skipped(cfg, session_factory, test_date):
+    """
+    The actual pod-crash scenario, end to end: a segment stuck at TRIGGER
+    with an unconfirmed trigger AND a stale (expired, never-released) lock
+    — exactly what a genuinely killed pod leaves behind, as opposed to the
+    two tests above which only simulate the DB write pattern directly.
+
+    recover_stale_locks() runs at the top of every real wake cycle before
+    any segment is touched (see orchestrator.run_wake_cycle) and normally
+    marks every stale-locked segment SKIPPED (AGENT_RESTART) without ever
+    looking at CBOS again. That default is deliberately overridden for this
+    one case: a stale lock while processes_json["trigger"]["status"] ==
+    "TRIGGERING" must be unlocked (not skipped), so the segment resumes
+    through handle_trigger()'s own CBOS-checked recovery path next cycle
+    and finishes on its own — no human needed, and no double trigger.
+    """
+    cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
+    cbos.mock_set_ready_after(1)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+    fake_pid = "90003"
+
+    await _seed_and_prime_triggering_row(session_factory, cfg, orchestrator, test_date, fake_pid)
+    fixed_now = helpers.fixed_now_for(test_date, orchestrator._tz)
+    await _leave_lock_stale(session_factory, test_date, "dead-pod-1")
+
+    # This is the exact call orchestrator.run_wake_cycle() makes first,
+    # every cycle, before any segment is processed.
+    async with session_factory() as session:
+        affected = await repository.recover_stale_locks(session)
+        await session.commit()
+    assert affected == 1  # unlocked, NOT skipped
+
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, SEGMENT)
+    assert row.segment_status == SegmentStatus.IN_PROGRESS, "must NOT be SKIPPED"
+    assert row.current_phase == SegmentPhase.TRIGGER
+    assert row.processes_json["trigger"]["status"] == "TRIGGERING"
+    assert lock_state(row) == "UNLOCKED"
+
+    # Resume exactly as the next real wake cycle would: the lock is free,
+    # so the segment re-enters handle_trigger() -> _recover_trigger().
+    key = (SEGMENT, test_date.isoformat())
+    assert key not in cbos._mock_trigger_calls, "sanity: CBOS never saw this PID before"
+    orchestrator._cycle_active_date = test_date
+    orchestrator._cycle_now = fixed_now
+    outcome = await orchestrator._process_one_segment(SEGMENT)
+    assert outcome == "advanced"
+    # Exactly 2 real CBOS calls: the recovery check (found nothing running)
+    # plus the one real (re)trigger call it then correctly made — never more.
+    assert cbos._mock_trigger_calls[key] == 2
+
+    rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
+    by_code = {r.segment_code: r for r in rows}
+    for code in SEGMENT_ORDER:
+        assert by_code[code].segment_status == SegmentStatus.COMPLETED
+
+
+async def test_stale_lock_at_other_phase_is_still_skipped(cfg, session_factory, test_date):
+    """
+    Regression guard for the exception added above: it must not weaken the
+    general "skip on restart" policy for every OTHER phase. A pod crash
+    mid AWAIT_FILE_UPLOAD (no unconfirmed CBOS trigger in flight — nothing
+    dangerous to protect) must still be marked SKIPPED (AGENT_RESTART)
+    exactly as before, with the lock freed and the day moving on.
+    """
+    cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+    await helpers.seed_day(session_factory, test_date, cfg)
+    fixed_now = helpers.fixed_now_for(test_date, orchestrator._tz)
+
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, SEGMENT)
+        row.segment_status = SegmentStatus.IN_PROGRESS
+        row.started_at = fixed_now
+        row.current_phase = SegmentPhase.AWAIT_FILE_UPLOAD
+        row.processes_json = {
+            "holiday_check": {"status": "COMPLETED", "last_response": "TRUE"},
+        }
+        await session.commit()
+    await _leave_lock_stale(session_factory, test_date, "dead-pod-2")
+
+    async with session_factory() as session:
+        affected = await repository.recover_stale_locks(session)
+        await session.commit()
+    assert affected == 1
+
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, SEGMENT)
+    assert row.segment_status == SegmentStatus.SKIPPED
+    assert row.skip_category == "AGENT_RESTART"
+    assert row.current_phase == SegmentPhase.DONE
+    assert lock_state(row) == "UNLOCKED"
 
 
 async def test_transient_trigger_failure_stays_triggering_and_recovers(cfg, session_factory, test_date):

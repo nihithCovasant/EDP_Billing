@@ -125,10 +125,21 @@ async def advance_pipeline(
         if handler is None:
             if phase == SegmentPhase.DONE:
                 return "completed"
+            # An unmapped phase (e.g. a future migration adds a SegmentPhase
+            # value without updating _PHASE_HANDLERS/_POST_TRADE_PHASE_HANDLERS)
+            # must not just log-and-return — that leaves the row IN_PROGRESS
+            # at the same unmapped phase forever, silently retried every
+            # cycle with no visible failure anywhere but the logs. Mark it
+            # FAILED and durably record why, same as any other stage error.
             logger.error(stage_log(
                 row.segment_code, str(phase),
-                "No handler registered for this phase — unexpected state",
+                "No handler registered for this phase — marking FAILED",
             ))
+            row.segment_status = SegmentStatus.FAILED
+            row.skip_category = "SYSTEM_ERROR"
+            row.skip_reason = f"No pipeline handler registered for phase={phase}"
+            row.completed_at = now
+            await session.flush()
             return "failed"
 
         result: StageResult = await handler(cbos, row, session, login_id, now)

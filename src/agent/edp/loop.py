@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 from .config import load_edp_config, EdpBootstrapConfig
 from .database import close_database, init_database
@@ -14,6 +14,14 @@ from .orchestrator import EdpOrchestrator
 from .utils.log_fmt import edp_log
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger, otel_trace
+
+# A cycle taking longer than this many multiples of wake_interval_seconds
+# to even START is considered wedged (some await inside the previous cycle
+# never returned) — see liveness_check().
+_STALE_CYCLE_MULTIPLIER = 3
+# Floor for the above, so a very short wake_interval_seconds (e.g. in tests)
+# can't make the liveness check flap on ordinary cycle-to-cycle jitter.
+_MIN_STALE_THRESHOLD_SECONDS = 120
 
 
 class EdpWakeLoop:
@@ -23,6 +31,11 @@ class EdpWakeLoop:
         self._orchestrator: Optional[EdpOrchestrator] = None
         self._cycle_count: int = 0
         self._config: Optional[EdpBootstrapConfig] = None
+        # monotonic timestamp of the last time a cycle STARTED (set before
+        # anything that could possibly block) — used by liveness_check() to
+        # detect a wedged loop. Deliberately monotonic, not wall-clock, so
+        # NTP adjustments/DST can't produce false positives or negatives.
+        self._last_cycle_started_at: Optional[float] = None
 
     @otel_trace
     async def start(self) -> None:
@@ -93,6 +106,7 @@ class EdpWakeLoop:
         if self._stop_event.is_set():
             return
 
+        self._last_cycle_started_at = time.monotonic()
         self._cycle_count += 1
         cycle_no = self._cycle_count
         t0 = time.monotonic()
@@ -139,3 +153,34 @@ class EdpWakeLoop:
         # Schedule the next cycle as a fresh Task (async-inside-async),
         # rather than looping or awaiting ourselves recursively.
         self._task = asyncio.create_task(self._run_loop())
+
+    async def liveness_check(self) -> Tuple[bool, str]:
+        """
+        Registered with the app's HealthChecker (see src/agent/__main__.py)
+        as a liveness probe. Detects a wedged wake loop: if
+        _last_cycle_started_at stops advancing for way longer than
+        wake_interval_seconds, some await inside the current cycle (e.g. an
+        unresponsive CBOS call with no timeout) is blocking forever — the
+        HTTP server would otherwise keep answering /health/live with 200
+        indefinitely while the entire billing pipeline silently stalls,
+        since nothing inside this process can un-wedge a blocked await;
+        only an external restart (Kubernetes acting on a failed liveness
+        probe) can recover it.
+        """
+        if self._task is None or self._task.done():
+            return True, "wake loop not running (stopped or never started)"
+        if self._last_cycle_started_at is None or self._config is None:
+            return True, "wake loop starting up, no cycle run yet"
+
+        elapsed = time.monotonic() - self._last_cycle_started_at
+        threshold = max(
+            self._config.wake_interval_seconds * _STALE_CYCLE_MULTIPLIER,
+            _MIN_STALE_THRESHOLD_SECONDS,
+        )
+        if elapsed > threshold:
+            return False, (
+                f"no wake cycle has started in {elapsed:.0f}s (expected every "
+                f"~{self._config.wake_interval_seconds}s, threshold {threshold}s) "
+                f"— wake loop appears wedged, cycle #{self._cycle_count} may be stuck"
+            )
+        return True, f"last cycle #{self._cycle_count} started {elapsed:.0f}s ago"

@@ -31,7 +31,11 @@ _COLLATERAL_PHASE_VALUES = ("AWAIT_GTG", "TRIGGER_JOB", "AWAIT_CONFIRM", "DONE")
 
 
 def upgrade() -> None:
-    op.drop_table("collateral_execution")
+    # IF EXISTS: on a fresh install this table was never part of the
+    # migration chain — it only existed as a stray manual/orphan table in
+    # some environments. A bare DROP TABLE aborts the whole upgrade on a
+    # new database and prevents the agent from starting.
+    op.execute("DROP TABLE IF EXISTS collateral_execution")
     op.execute("DROP TYPE IF EXISTS collateralphase")
     op.execute("DROP TYPE IF EXISTS collateralstatus")
 

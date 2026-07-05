@@ -1,4 +1,4 @@
-﻿"""
+"""
 Tool Registry for centralizing tool management.
 """
 
@@ -6,8 +6,14 @@ from typing import List, Dict, Any, Optional, Type
 from pathlib import Path
 import importlib.util
 import inspect
+import sys
 
 from cams_otel_lib import Logger as logger, otel_trace
+
+# Infrastructure modules in src/tools/ — not LangChain tools. Loading them via
+# spec_from_file_location (instead of a normal package import) breaks @dataclass
+# on Python 3.14+ and spams ERROR logs on every agent startup for no benefit.
+_SKIP_TOOL_DISCOVERY = frozenset({"cbos_client", "mcp_loader", "registry", "__init__"})
 
 
 class ToolRegistry:
@@ -97,14 +103,17 @@ class ToolRegistry:
             return
 
         for file_path in directory.glob("*.py"):
-            if file_path.stem.startswith("_"):
+            if file_path.stem.startswith("_") or file_path.stem in _SKIP_TOOL_DISCOVERY:
                 continue
 
             try:
-                # Load module
-                spec = importlib.util.spec_from_file_location(file_path.stem, file_path)
+                # Load module — register in sys.modules BEFORE exec_module so
+                # @dataclass (Python 3.14+) can resolve cls.__module__ correctly.
+                module_name = f"src.tools.{file_path.stem}"
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
                 if spec and spec.loader:
                     module = importlib.util.module_from_spec(spec)
+                    sys.modules[module_name] = module
                     spec.loader.exec_module(module)
 
                     # Find tool classes

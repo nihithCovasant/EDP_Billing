@@ -1,14 +1,18 @@
-﻿"""
+"""
 Health check utilities for component and system health monitoring.
 Provides Kubernetes-compatible readiness and liveness checks.
 """
 
 import asyncio
-from typing import Dict, Any, Optional, List
+from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple
 from enum import Enum
 from datetime import datetime
 
 from cams_otel_lib import Logger as logger, otel_trace
+
+# A liveness probe returns (is_alive, reason) — reason is always logged when
+# is_alive is False, so a tripped check is diagnosable from logs alone.
+LivenessCheck = Callable[[], Awaitable[Tuple[bool, str]]]
 
 
 class HealthStatus(str, Enum):
@@ -70,6 +74,23 @@ class HealthChecker:
         """Initialize health checker."""
         self.startup_time = datetime.utcnow()
         self._components: List[ComponentHealth] = []
+        self._liveness_checks: List[LivenessCheck] = []
+
+    def register_liveness_check(self, check: LivenessCheck) -> None:
+        """
+        Register an additional liveness probe beyond the default "can we
+        execute code" check.
+
+        Without this, is_alive() was a no-op that always returned True —
+        if any background task (e.g. EdpWakeLoop's 24/7 cycle) got wedged
+        on an await that never returns (an unresponsive downstream call
+        with no timeout), the HTTP server would keep answering the
+        Kubernetes liveness probe with 200 forever, and the pod would never
+        get restarted even though the actual work silently stopped. Each
+        registered check is awaited on every /health/live call; any one of
+        them reporting not-alive fails the whole probe.
+        """
+        self._liveness_checks.append(check)
 
     @otel_trace
     async def check_llm_availability(self) -> ComponentHealth:
@@ -463,12 +484,23 @@ class HealthChecker:
         """
         Check if application is alive (Kubernetes liveness probe).
 
-        Simple check - if we can respond, we're alive.
+        Runs every registered liveness check (see register_liveness_check)
+        in addition to the base "we can execute code" guarantee. Any single
+        failing check fails the whole probe — a wedged background loop is
+        just as much a liveness failure as an unresponsive HTTP server.
 
         Returns:
             True if alive
         """
-        # Liveness is simpler - just check if we can execute code
+        for check in self._liveness_checks:
+            try:
+                ok, reason = await check()
+            except Exception as exc:
+                logger.error(f"Liveness check raised an exception — treating as not alive: {exc}")
+                return False
+            if not ok:
+                logger.error(f"Liveness check failed: {reason}")
+                return False
         return True
 
 

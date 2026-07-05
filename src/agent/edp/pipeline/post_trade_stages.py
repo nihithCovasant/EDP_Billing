@@ -31,6 +31,7 @@ from ..utils.json_helpers import (
     inc_poll,
     mark_stage_done,
     record_post_trade_trigger,
+    record_post_trade_trigger_attempt,
     record_post_trade_trigger_failed,
 )
 from ..utils.log_fmt import stage_log
@@ -133,7 +134,22 @@ async def handle_trigger_job(
     login_id: str,
     now: datetime,
 ) -> StageResult:
-    """POST the process-specific trigger endpoint (dispatched on segment_code)."""
+    """
+    POST the process-specific trigger endpoint (dispatched on segment_code).
+
+    Crash safety: unlike the real-segment TRIGGER step, there is no
+    PROCESSID/Table2 equivalent for CBOS's post-trade endpoints, so a
+    resumed pod has no way to ask CBOS "did you actually get my last call?"
+    before deciding whether it's safe to fire again. Given that, the only
+    behaviour that can never double-trigger a real trading/collateral
+    operation is: if we see our own "TRIGGERING" marker already sitting
+    here (written durably, by commit(), right before the call last time),
+    we know an attempt was made and its outcome is unknown — so we refuse
+    to call the trigger endpoint again and mark the process FAILED with an
+    explicit "needs manual CBOS verification" reason instead. An operator
+    can then check CBOS directly and use the retry endpoint once they know
+    it's actually safe.
+    """
     code = row.segment_code
     method_name = _TRIGGER_DISPATCH.get(code)
     if not method_name:
@@ -141,6 +157,29 @@ async def handle_trigger_job(
         await _fail(row, "CBOS_ERROR", f"Unknown post-trade process code {code}", now)
         await session.flush()
         return StageResult.FAILED
+
+    if get_proc(row, "trigger").get("status") == "TRIGGERING":
+        logger.error(stage_log(
+            code, "TRIGGER_JOB",
+            "Resuming with an unconfirmed prior trigger attempt — post-trade jobs have no "
+            "CBOS-side status check to safely verify, refusing to re-fire; marking FAILED "
+            "for manual verification",
+        ))
+        await _fail(
+            row, "CBOS_ERROR",
+            "Unconfirmed trigger attempt after restart — verify with CBOS directly before "
+            "retrying (post-trade triggers cannot be safely auto-recovered)",
+            now,
+        )
+        await session.flush()
+        return StageResult.FAILED
+
+    # Pre-commit marker BEFORE the CBOS call, durably committed (not just
+    # flushed) so a crash between this write and the outcome being recorded
+    # can never silently revert to "never attempted" — see module docstring
+    # above and record_post_trade_trigger_attempt()'s docstring.
+    record_post_trade_trigger_attempt(row, now)
+    await session.commit()
 
     trigger_fn = getattr(cbos, method_name)
     logger.info(stage_log(

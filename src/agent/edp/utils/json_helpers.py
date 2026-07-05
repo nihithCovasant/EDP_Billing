@@ -161,6 +161,27 @@ def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> N
     })
 
 
+def record_post_trade_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
+    """
+    Pre-commit write — crash-safety marker for post-trade triggers (see
+    pipeline.post_trade_stages.handle_trigger_job).
+
+    Unlike the real-segment TRIGGER step, post-trade CBOS trigger endpoints
+    have no PROCESSID/Table2 equivalent to check afterwards — there is no
+    way to ask CBOS "did you actually get my last call?". So this marker
+    cannot power an automatic re-trigger-if-safe decision the way
+    record_trigger_attempt() does; it exists purely so a crash between the
+    CBOS call and the outcome being recorded is durably visible (never
+    silently reverts to "never attempted"), and handle_trigger_job() refuses
+    to re-fire automatically when it sees this — see that function for the
+    resulting "mark FAILED, require manual verification" behaviour.
+    """
+    set_proc(row, "trigger", {
+        "status": "TRIGGERING",
+        "attempt_started_at": now.isoformat(),
+    })
+
+
 def record_post_trade_trigger(row: SegmentExecution, message: str, now: datetime) -> None:
     """Record a successful post-trade trigger call (no process_id involved)."""
     set_proc(row, "trigger", {

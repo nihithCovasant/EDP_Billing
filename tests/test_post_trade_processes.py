@@ -18,14 +18,17 @@ from __future__ import annotations
 
 from datetime import datetime, time as dtime, timedelta
 
-from src.agent.edp.models import SegmentStatus
+from src.agent.edp import repository
+from src.agent.edp.models import SegmentPhase, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.repository import get_day_summary
 from src.agent.edp.utils.constants import POST_TRADE_ORDER, get_sequence_order
+from src.agent.edp.utils.datetime_utils import now_ist
+from src.agent.edp.utils.locking import lock_state
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
-from .fakes import FailingCbosClient
+from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
@@ -141,3 +144,104 @@ async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
     orchestrator._cycle_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome in ("advanced", "completed")
+
+
+async def _prime_triggering_post_trade_row(session_factory, test_date, fixed_now, *, code: str = "COLVAL") -> None:
+    """
+    Simulate a pod crash right after handle_trigger_job() committed the
+    pre-commit "TRIGGERING" marker but before the CBOS call's outcome was
+    ever recorded — i.e. Steps up to GTG are done, phase=TRIGGER_JOB, and
+    processes_json["trigger"] durably shows "TRIGGERING" from this test's
+    perspective, without this test itself ever having called CBOS's
+    trigger endpoint.
+    """
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, code)
+        row.segment_status = SegmentStatus.IN_PROGRESS
+        row.started_at = fixed_now
+        row.current_phase = SegmentPhase.TRIGGER_JOB
+        row.current_process = None
+        row.processes_json = {
+            "gtg": {"status": "COMPLETED", "last_response": "TRUE"},
+            "trigger": {"status": "TRIGGERING", "attempt_started_at": fixed_now.isoformat()},
+        }
+        await session.commit()
+
+
+async def test_post_trade_trigger_resume_fails_instead_of_retriggering(cfg, session_factory, test_date):
+    """
+    Post-trade triggers have no CBOS-side status check (no PROCESSID/Table2
+    equivalent like the 7-segment TRIGGER step has) — so an unconfirmed
+    prior attempt can never be safely auto-recovered. Resuming into
+    handle_trigger_job() with processes_json["trigger"]["status"] already
+    "TRIGGERING" must mark the process FAILED (explicit "needs manual
+    verification" reason) and must NEVER call the trigger endpoint again —
+    the one behaviour that can't possibly double-trigger a real
+    trading/collateral operation when no verification is possible.
+    """
+    cbos = CountingPostTradeTriggerCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+
+    await helpers.seed_post_trade_day(session_factory, test_date)
+    fixed_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
+    await _prime_triggering_post_trade_row(session_factory, test_date, fixed_now)
+
+    orchestrator._cycle_active_date = test_date
+    orchestrator._cycle_now = fixed_now
+    outcome = await orchestrator._process_one_post_trade("COLVAL")
+    assert outcome == "failed"
+    assert cbos.trigger_call_count == 0, "must NOT call the trigger endpoint again"
+
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, "COLVAL")
+    assert row.segment_status == SegmentStatus.FAILED
+    assert row.skip_category == "CBOS_ERROR"
+    assert "manual" in (row.skip_reason or "").lower() or "verif" in (row.skip_reason or "").lower()
+    assert row.processes_json["trigger"]["status"] == "TRIGGERING", (
+        "the unresolved marker itself must be left alone for forensics — "
+        "only segment_status/skip_reason record the FAILED outcome"
+    )
+
+    # Chain halts here — nothing after COLVAL should have started.
+    rows = await helpers.get_post_trade_rows(session_factory, test_date)
+    for code in ("COLALLOC", "MTFFT", "DMRPT", "DMSTMT"):
+        row = next(r for r in rows if r.segment_code == code)
+        assert row.segment_status == SegmentStatus.PENDING
+
+
+async def test_post_trade_stale_lock_at_triggering_is_unlocked_not_skipped(cfg, session_factory, test_date):
+    """
+    Same crash scenario as above, but via a genuinely stale (expired,
+    never-released) lock rather than directly calling _process_one_post_trade
+    — proving repository.recover_stale_locks() makes the same TRIGGER_JOB
+    exception it makes for real segments' TRIGGER phase: unlock, don't
+    silently SKIP, so the next cycle can reach the FAILED-with-explicit-
+    reason outcome above instead of a generic AGENT_RESTART skip.
+    """
+    orchestrator = EdpOrchestrator(cfg, CountingPostTradeTriggerCbosClient(cfg.cbos_status_url, cfg.cbos_process_url))
+    await helpers.seed_post_trade_day(session_factory, test_date)
+    fixed_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
+    await _prime_triggering_post_trade_row(session_factory, test_date, fixed_now)
+
+    real_now = now_ist()
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, "COLVAL")
+        row.lock_json = {
+            "state": "LOCKED",
+            "owner": "dead-pod",
+            "acquired_at": (real_now - timedelta(minutes=10)).isoformat(),
+            "expires_at": (real_now - timedelta(minutes=5)).isoformat(),
+        }
+        await session.commit()
+
+    async with session_factory() as session:
+        affected = await repository.recover_stale_locks(session)
+        await session.commit()
+    assert affected == 1
+
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, "COLVAL")
+    assert row.segment_status == SegmentStatus.IN_PROGRESS, "must NOT be SKIPPED"
+    assert row.current_phase == SegmentPhase.TRIGGER_JOB
+    assert row.processes_json["trigger"]["status"] == "TRIGGERING"
+    assert lock_state(row) == "UNLOCKED"

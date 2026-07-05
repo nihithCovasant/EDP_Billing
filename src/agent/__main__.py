@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Request, Body, FastAPI
@@ -163,16 +164,16 @@ async def main():
 
     app.include_router(edp_router)
 
-    @app.on_event("startup")
-    async def _edp_startup():
+    @asynccontextmanager
+    async def _edp_lifespan(app):
         if edp_loop_enabled:
             await edp_loop.start()
             logger.info("EDP 24/7 wake loop enabled")
-
-    @app.on_event("shutdown")
-    async def _edp_shutdown():
+        yield
         if edp_loop_enabled:
             await edp_loop.stop()
+
+    app.router.lifespan_context = _edp_lifespan
 
     FastAPIInstrumentor().instrument_app(app)
 
@@ -198,6 +199,7 @@ async def main():
     app.add_middleware(OtelContextMiddleware)
 
     health_checker = get_health_checker()
+    health_checker.register_liveness_check(edp_loop.liveness_check)
 
     @app.get("/health")
     async def health_check():

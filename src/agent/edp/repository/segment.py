@@ -7,22 +7,23 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     EdpProperties,
+    LockState,
     SegmentExecution,
     SegmentPhase,
     SegmentStatus,
 )
 from ..utils.constants import get_sequence_order, POST_TRADE_ORDER
 from ..utils.datetime_utils import now_ist
+from ..utils.json_helpers import get_proc
 from ..utils.locking import (
     lock_expires_at,
     lock_owner,
     lock_state,
-    set_locked,
     set_unlocked,
 )
 from cams_otel_lib import Logger as logger, otel_trace
@@ -166,6 +167,35 @@ async def seed_post_trade_processes(
     return created
 
 
+@otel_trace
+async def has_processing_started(session: AsyncSession, trade_date: date) -> bool:
+    """
+    True if ANY segment_execution row for trade_date (one of the 7 real
+    segments or the 5 T+1 post-trade processes) has left PENDING — i.e.
+    billing is already underway for that date.
+
+    Used by the workflow upload endpoint to protect an in-flight day from
+    having its config changed out from under it mid-run: ops does not
+    upload a config every day, and when they do upload a change while
+    today's segments are already IN_PROGRESS/COMPLETED/SKIPPED/FAILED, that
+    change is deferred to trade_date + 1 instead of mutating today's
+    window_start/window_end/login_id live (see api/workflow.py). A date
+    with every row still PENDING (windows not open yet, or nothing seeded
+    at all) is NOT considered "started" — a same-day config change is safe
+    right up until the first segment actually begins.
+    """
+    stmt = (
+        select(SegmentExecution.id)
+        .where(
+            SegmentExecution.trade_date == trade_date,
+            SegmentExecution.segment_status != SegmentStatus.PENDING,
+        )
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
+
+
 # =============================================================================
 # Lock management
 # =============================================================================
@@ -178,36 +208,79 @@ async def acquire_lock(
     ttl_seconds: int = DEFAULT_LOCK_TTL,
 ) -> bool:
     """
-    Optimistic lock on a segment_execution row.
+    Atomically acquire a lock on a segment_execution row via a single
+    conditional UPDATE ... WHERE ... (not a read-then-write).
 
-    Returns True  → lock acquired, safe to process.
+    Why this matters: reading row.lock_json in Python, branching, then
+    writing it back via ORM attribute assignment + flush() is a classic
+    check-then-act race. Two DB sessions — two pod replicas briefly
+    overlapping during a rolling deploy, or two overlapping tasks in one
+    process — that both read the same UNLOCKED row before either commits
+    would BOTH believe they acquired the lock and BOTH proceed to call
+    CBOS, defeating the entire point of locking. A single UPDATE with the
+    "currently unlocked" condition baked into its own WHERE clause is
+    atomic at the database level: row-level locking during the UPDATE
+    itself (not read consistency) guarantees only one of two racing
+    UPDATEs can ever match and change the row — the loser's WHERE clause
+    simply stops matching the instant the winner's write lands, regardless
+    of isolation level.
+
+    The WHERE clause matches BOTH a row explicitly marked "UNLOCKED" and a
+    freshly-seeded row that has never been locked at all (lock_json={},
+    the column's default — no "state" key yet, so the JSON extraction
+    below evaluates to SQL NULL rather than the string "UNLOCKED").
+
+    Returns True  → lock acquired (row.lock_json refreshed in place).
     Returns False → lock held by another owner with a valid TTL, OR the
     lock is stale (TTL expired). Unlike before, a stale lock is NOT taken
     over and resumed here — recover_stale_locks() is solely responsible for
-    resolving stale locks (by marking the segment SKIPPED), and it always
-    runs earlier in the same wake cycle, before any segment reaches this
-    call. Seeing a stale lock here would mean recover_stale_locks() hasn't
-    caught up yet (a tight race) — safest is to just deny and let the next
-    cycle's recovery sweep handle it.
+    resolving stale locks (by marking the segment SKIPPED, or — for a
+    segment stuck mid-TRIGGERING — unlocking it for CBOS-checked recovery),
+    and it always runs earlier in the same wake cycle, before any segment
+    reaches this call. Seeing a stale lock here would mean
+    recover_stale_locks() hasn't caught up yet (a tight race) — safest is
+    to just deny and let the next cycle's recovery sweep handle it.
     """
     now = now_ist()
-    if lock_state(row) == "LOCKED":
-        expires_at = lock_expires_at(row)
-        if expires_at and now < expires_at:
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    new_lock = {
+        "state": LockState.LOCKED.value,
+        "owner": owner,
+        "acquired_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+    }
+    stmt = (
+        update(SegmentExecution)
+        .where(
+            SegmentExecution.id == row.id,
+            or_(
+                SegmentExecution.lock_json["state"].as_string() == LockState.UNLOCKED.value,
+                SegmentExecution.lock_json["state"].as_string().is_(None),
+            ),
+        )
+        .values(lock_json=new_lock)
+        .execution_options(synchronize_session=False)
+    )
+    result = await session.execute(stmt)
+
+    if result.rowcount == 0:
+        # Lost the race, or genuinely already locked — refresh from DB
+        # (our in-memory `row` may be stale) purely to log which case it is.
+        await session.refresh(row, attribute_names=["lock_json"])
+        held_expires_at = lock_expires_at(row)
+        if held_expires_at and now < held_expires_at:
             logger.info(
                 f"[LOCK] segment={row.segment_code} | Lock held by owner={lock_owner(row)} "
-                f"expires={expires_at.isoformat()} — not acquired"
+                f"expires={held_expires_at.isoformat()} — not acquired"
             )
         else:
             logger.warning(
-                f"[LOCK] segment={row.segment_code} | Lock stale (expired={expires_at}) "
+                f"[LOCK] segment={row.segment_code} | Lock stale (expired={held_expires_at}) "
                 f"but not yet cleaned up by recover_stale_locks() — not acquiring"
             )
         return False
 
-    expires_at = now + timedelta(seconds=ttl_seconds)
-    set_locked(row, owner, now, expires_at)
-    await session.flush()
+    row.lock_json = new_lock
     logger.info(
         f"[LOCK] segment={row.segment_code} | Lock ACQUIRED by owner={owner} "
         f"ttl={ttl_seconds}s expires={expires_at.isoformat()}"
@@ -231,18 +304,45 @@ async def recover_stale_locks(session: AsyncSession) -> int:
 
     A stale lock means the agent process died (crash/pod restart) while this
     segment was IN_PROGRESS and never reached release_lock(). Per policy, an
-    interrupted segment is NOT resumed — it's marked SKIPPED (category
-    AGENT_RESTART) and the day's chain moves on to the next segment, same as
-    any other SKIP outcome (TIMEOUT / CBOS_SKIP / MANUAL_SKIP).
+    interrupted segment is generally NOT resumed — it's marked SKIPPED
+    (category AGENT_RESTART) and the day's chain moves on to the next
+    segment, same as any other SKIP outcome (TIMEOUT / CBOS_SKIP /
+    MANUAL_SKIP).
 
-    Returns the number of segments skipped this way.
+    TWO deliberate exceptions — a segment/process stuck with
+    processes_json["trigger"]["status"] == "TRIGGERING" is never skipped
+    here, for either pipeline:
+
+      - Real segments (phase=TRIGGER): the crash happened right around the
+        single getNewTradeProcess(trigger) call — we durably know an
+        attempt was *intended* but not whether CBOS actually received it.
+        Skipping outright would either strand a segment CBOS is already
+        executing (our record says "skipped", CBOS is mid-run) or
+        permanently discard the one signal needed to safely decide whether
+        a retry is OK. Instead it's unlocked so the normal pipeline resumes
+        it next cycle: handle_trigger() sees "TRIGGERING" and runs
+        _recover_trigger(), which asks CBOS's Table2 for this exact
+        PROCESSID and re-triggers ONLY if CBOS confirms it never received
+        the original call — never if it already has (see
+        tests/test_trigger_double_trigger_protection.py).
+
+      - Post-trade processes (phase=TRIGGER_JOB): there is no Table2
+        equivalent to check, so automatic recovery isn't possible at all —
+        it's unlocked purely so handle_trigger_job() can immediately mark
+        it FAILED with an explicit "needs manual CBOS verification" reason
+        next cycle, instead of a generic, less actionable
+        SKIPPED/AGENT_RESTART (see pipeline.post_trade_stages
+        .handle_trigger_job).
+
+    Returns the number of segments/processes affected (skipped OR
+    unlocked-for-resume) this way.
     """
     now = now_ist()
     stmt = select(SegmentExecution).where(
         SegmentExecution.segment_status == SegmentStatus.IN_PROGRESS,
     )
     rows = list((await session.execute(stmt)).scalars().all())
-    recovered = 0
+    affected = 0
     for row in rows:
         if lock_state(row) != "LOCKED":
             continue
@@ -252,6 +352,20 @@ async def recover_stale_locks(session: AsyncSession) -> int:
 
         old_owner = lock_owner(row)
         stale_phase = row.current_phase.value if row.current_phase else "UNKNOWN"
+
+        if (
+            row.current_phase in (SegmentPhase.TRIGGER, SegmentPhase.TRIGGER_JOB)
+            and get_proc(row, "trigger").get("status") == "TRIGGERING"
+        ):
+            set_unlocked(row)
+            affected += 1
+            logger.warning(
+                f"[LOCK] segment={row.segment_code} | Stale lock found mid-TRIGGERING "
+                f"(phase={stale_phase}, old_owner={old_owner}) — NOT skipping; unlocked "
+                f"for recovery next cycle"
+            )
+            continue
+
         row.segment_status = SegmentStatus.SKIPPED
         row.skip_category = "AGENT_RESTART"
         row.skip_reason = (
@@ -262,14 +376,14 @@ async def recover_stale_locks(session: AsyncSession) -> int:
         row.current_process = None
         row.completed_at = now
         set_unlocked(row)
-        recovered += 1
+        affected += 1
         logger.warning(
             f"[LOCK] segment={row.segment_code} | Stale lock found — SKIPPING segment "
             f"(was mid-{stale_phase}), old_owner={old_owner}"
         )
     if rows:
         await session.flush()
-    return recovered
+    return affected
 
 
 # =============================================================================

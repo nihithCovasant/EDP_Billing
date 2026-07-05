@@ -76,3 +76,25 @@ class TransientTriggerFailureCbosClient(CbosClient):
                 is_transient=True,
             )
         return await super().get_new_trade_process(group_name, login_id, trade_date, process_id)
+
+
+class CountingPostTradeTriggerCbosClient(CbosClient):
+    """
+    Behaves exactly like the normal in-process mock, but counts every real
+    call to a post-trade trigger endpoint (GetCollateralValuation,
+    MTFTradeProcessCollateralAllocation, etc — all 5 funnel through
+    CbosClient._post_trade_trigger). Used to prove
+    pipeline.post_trade_stages.handle_trigger_job() never calls the trigger
+    endpoint a second time once it sees its own "TRIGGERING" marker on
+    resume — post-trade triggers have no CBOS-side status check, so unlike
+    the 7-segment TRIGGER step, that must be a hard refusal, not a
+    CBOS-verified decision.
+    """
+
+    def __init__(self, status_url: str, process_url: str):
+        super().__init__(status_url, process_url, use_mock=True)
+        self.trigger_call_count = 0
+
+    async def _post_trade_trigger(self, endpoint_name: str, payload: dict, segment: str):
+        self.trigger_call_count += 1
+        return await super()._post_trade_trigger(endpoint_name, payload, segment=segment)

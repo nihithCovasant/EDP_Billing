@@ -20,13 +20,27 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
+    Index,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
+from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
+
+# All JSON dict columns in this file are wrapped with MutableDict.as_mutable()
+# as defense-in-depth: today's code is already safe because json_helpers.py /
+# locking.py always reassign the whole column (row.x_json = {...}) rather than
+# mutating in place, which SQLAlchemy detects without any help. But that
+# safety is by convention, not enforced — a future handler doing
+# row.processes_json["x"] = y directly instead would otherwise silently lose
+# the write at flush time, and neither SQLite nor Postgres tests would catch
+# it. MutableDict makes in-place mutation tracked correctly too, so that
+# class of bug can't happen regardless of which style future code uses.
+_MutableJSON = MutableDict.as_mutable(JSON)
 
 
 class Base(DeclarativeBase):
@@ -151,6 +165,25 @@ class EdpProperties(Base):
     """
 
     __tablename__ = "edp_properties"
+    __table_args__ = (
+        # Enforces "at most one active row per trade_date" at the database
+        # level, not just in application code. repository.workflow.upload()
+        # is check-then-act (get_active() then conditionally insert) with no
+        # SELECT FOR UPDATE — two concurrent uploads for the same date (a
+        # manual re-upload racing an automated retry) could otherwise both
+        # pass the check before either commits, leaving two is_active=True
+        # rows, which then breaks get_active()'s scalar_one_or_none() with
+        # MultipleResultsFound on the very next read. With this index, the
+        # loser's INSERT raises IntegrityError instead — see upload()'s
+        # handling of that.
+        Index(
+            "ix_edp_properties_one_active_per_date",
+            "trade_date",
+            unique=True,
+            postgresql_where=text("is_active"),
+            sqlite_where=text("is_active"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -159,7 +192,7 @@ class EdpProperties(Base):
         Date, nullable=False, index=True
     )
     workflow_json: Mapped[dict] = mapped_column(
-        JSON, nullable=False,
+        _MutableJSON, nullable=False,
         comment="Full segment + process config for the day"
     )
     content_hash: Mapped[str] = mapped_column(
@@ -348,13 +381,13 @@ class SegmentExecution(Base):
     # Shape: {"state": "LOCKED"|"UNLOCKED", "owner": str|None,
     #         "acquired_at": iso str|None, "expires_at": iso str|None}
     lock_json: Mapped[dict] = mapped_column(
-        JSON, nullable=False, default=dict,
+        _MutableJSON, nullable=False, default=dict,
         comment="Lock state — see utils/locking.py for read/write helpers"
     )
 
     # --- Per-process state (all 4 processes in one JSON column) ---
     processes_json: Mapped[dict] = mapped_column(
-        JSON, nullable=False, default=dict,
+        _MutableJSON, nullable=False, default=dict,
         comment="Keys: holiday_check, file_upload_ready, trigger, bill_posting, recon, contract_note — see docstring for shape"
     )
 
@@ -379,9 +412,16 @@ class SegmentExecution(Base):
     )
 
     # --- Skip / Failure reason ---
+    # Despite the column name, this is used for BOTH SKIPPED and FAILED
+    # outcomes (see pipeline.stages._skip / _fail) — an unconstrained free
+    # string, not a DB enum, deliberately: MOFSL ops reads it via the status
+    # API, it isn't machine-branched on anywhere in this codebase.
     skip_category: Mapped[str | None] = mapped_column(
         String(32), nullable=True,
-        comment="CBOS_SKIP | TIMEOUT | MANUAL_SKIP | HOLIDAY | DEPENDENCY_FAILED"
+        comment=(
+            "SKIPPED: CBOS_SKIP | TIMEOUT | MANUAL_SKIP | AGENT_RESTART | "
+            "FAILED: CBOS_ERROR | SYSTEM_ERROR"
+        )
     )
     skip_reason: Mapped[str | None] = mapped_column(
         Text, nullable=True
@@ -450,6 +490,6 @@ class AgentControl(Base):
         comment="RUNNING or STOPPED"
     )
     snapshot_json: Mapped[dict | None] = mapped_column(
-        JSON, nullable=True,
+        _MutableJSON, nullable=True,
         comment="Runtime state snapshot at time of action"
     )
