@@ -37,7 +37,7 @@ ALL_SEGMENT_CODES = list(SEGMENT_ORDER)
 ALL_POST_TRADE_CODES = list(POST_TRADE_ORDER)
 
 
-def build_all_day_open_workflow_json(timezone: str = "Asia/Kolkata") -> dict:
+def build_all_day_open_workflow_json() -> dict:
     """
     A workflow_json where every real segment's window is wide open
     (00:00 -> 23:59 the next day) so tests are never gated by window
@@ -55,7 +55,7 @@ def build_all_day_open_workflow_json(timezone: str = "Asia/Kolkata") -> dict:
         }
         for code in SEGMENT_ORDER
     ]
-    return build_default_workflow_json(segments, timezone=timezone)
+    return build_default_workflow_json(segments)
 
 
 def fixed_now_for(trade_date: date, tz) -> datetime:
@@ -85,7 +85,7 @@ async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -
     """Upload an all-day-open workflow config and seed all segment rows —
     mirrors the setup steps orchestrator.run_wake_cycle() performs before
     driving segments, minus the wall-clock active_date resolution."""
-    workflow_json = build_all_day_open_workflow_json(cfg.timezone)
+    workflow_json = build_all_day_open_workflow_json()
     async with session_factory() as session:
         await repository.upload(session, trade_date, workflow_json, uploaded_by="test")
         await session.commit()
@@ -97,7 +97,7 @@ async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -
 
 
 async def seed_post_trade_day(
-    session_factory, trade_date: date, timezone: str = "Asia/Kolkata",
+    session_factory, trade_date: date,
 ) -> None:
     """
     Seed the 5 post-trade process rows for trade_date from the active
@@ -116,7 +116,7 @@ async def seed_post_trade_day(
     async with session_factory() as session:
         workflow = await repository.get_active(session, trade_date)
         if not workflow:
-            workflow_json = build_default_workflow_json([], timezone=timezone)
+            workflow_json = build_default_workflow_json([])
             workflow, _ = await repository.upload(
                 session, trade_date, workflow_json, uploaded_by="test"
             )

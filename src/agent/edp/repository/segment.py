@@ -1,5 +1,5 @@
 """
-segment_execution table — CRUD, seeding, locking, heartbeat, and queries.
+edpb_segment_execution table — CRUD, seeding, locking, heartbeat, and queries.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ async def seed_from_workflow(
     segment_name/window_start_at/window_end_at (resolved on demand from
     segment_code / workflow_json instead — see utils/constants.py and
     orchestrator._resolve_window()), so there's nothing left to reconcile
-    on a config re-upload except config_id_used/config_hash_used for audit.
+    on a config re-upload except config_id_used for audit.
     """
     created: List[SegmentExecution] = []
 
@@ -103,10 +103,9 @@ async def seed_from_workflow(
         if existing:
             if (
                 existing.segment_status == SegmentStatus.PENDING
-                and existing.config_hash_used != workflow.content_hash
+                and existing.config_id_used != workflow.id
             ):
                 existing.config_id_used = workflow.id
-                existing.config_hash_used = workflow.content_hash
                 logger.info(
                     f"[OPS] segment={code} trade_date={trade_date} | "
                     f"Segment row's config reference updated (was PENDING)"
@@ -117,7 +116,6 @@ async def seed_from_workflow(
             trade_date=trade_date,
             segment_code=code,
             config_id_used=workflow.id,
-            config_hash_used=workflow.content_hash,
             segment_status=SegmentStatus.PENDING,
             processes_json={},
         )
@@ -159,9 +157,9 @@ async def seed_post_trade_processes(
     uploaded EMPTY list, by contrast, means ops wants no post-trade
     processes seeded at all for that config and is respected as such.
 
-    Idempotent for rows that have already started — same
-    config_id_used/config_hash_used reconciliation behaviour as
-    seed_from_workflow() for still-PENDING rows on a config re-upload.
+    Idempotent for rows that have already started — same config_id_used
+    reconciliation behaviour as seed_from_workflow() for still-PENDING
+    rows on a config re-upload.
     """
     if "post_trade_processes" in workflow.workflow_json:
         proc_configs = workflow.workflow_json["post_trade_processes"]
@@ -183,10 +181,9 @@ async def seed_post_trade_processes(
         if existing:
             if (
                 existing.segment_status == SegmentStatus.PENDING
-                and existing.config_hash_used != workflow.content_hash
+                and existing.config_id_used != workflow.id
             ):
                 existing.config_id_used = workflow.id
-                existing.config_hash_used = workflow.content_hash
                 logger.info(
                     f"[OPS] post_trade_process={code} trade_date={trade_date} | "
                     f"Process row's config reference updated (was PENDING)"
@@ -197,7 +194,6 @@ async def seed_post_trade_processes(
             trade_date=trade_date,
             segment_code=code,
             config_id_used=workflow.id,
-            config_hash_used=workflow.content_hash,
             segment_status=SegmentStatus.PENDING,
             processes_json={},
         )

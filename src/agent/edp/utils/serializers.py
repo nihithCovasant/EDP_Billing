@@ -47,7 +47,6 @@ def serialize_segment(row: SegmentExecution) -> dict:
         "lock_state": lock_state(row),
         "lock_owner": lock_owner(row),
         "config_id_used": row.config_id_used,
-        "config_hash_used": row.config_hash_used,
         "processes_json": row.processes_json or {},
         "created_at": _dt(row.created_at),
         "updated_at": _dt(row.updated_at),

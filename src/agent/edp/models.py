@@ -1,9 +1,12 @@
 """
 SQLAlchemy models for EDP Billing agent — final 3-table design.
 
-edp_properties     — daily uploaded JSON config per trade_date
-segment_execution  — runtime state per (trade_date, segment_code)
-agent_control      — append-only START/STOP audit log
+All tables are prefixed with edpb_ (EDP Billing) to namespace them within
+a shared database:
+
+edpb_properties          — daily uploaded JSON config per trade_date
+edpb_segment_execution   — runtime state per (trade_date, segment_code)
+edpb_agent_control       — append-only START/STOP audit log
 
 No foreign-key constraints between tables (soft references only).
 All tables are append-only — no deletes.
@@ -123,7 +126,7 @@ class AgentControlAction(str, enum.Enum):
 
 
 # ---------------------------------------------------------------------------
-# Table 1: edp_properties
+# Table 1: edpb_properties
 # ---------------------------------------------------------------------------
 
 class EdpProperties(Base):
@@ -131,12 +134,17 @@ class EdpProperties(Base):
     Daily workflow config uploaded by MOFSL ops.
     One active row per trade_date.
 
-    On re-upload: old row is soft-superseded (is_active=False, superseded_at set)
-    and a new row is inserted. If content_hash is identical, upload is a no-op.
+    On re-upload: the old row is soft-superseded (is_active=False,
+    superseded_at set) and a new row is ALWAYS inserted — every upload is
+    treated as a brand-new config version, regardless of whether its
+    content matches the previous one. There is no content hash / dedup
+    check; ops re-uploading the same JSON by mistake just creates another
+    (identical) audit row rather than being silently absorbed as a no-op.
 
-    workflow_json shape:
+    workflow_json shape (always IST — there is no per-config timezone
+    field; see EdpBootstrapConfig.timezone for the one fixed place the
+    agent's timezone is configured):
     {
-      "timezone": "Asia/Kolkata",
       "wake_interval_seconds": 60,
       "segments": [
         {
@@ -164,7 +172,7 @@ class EdpProperties(Base):
     fixed code constants resolved from segment_code (see utils/constants.py).
     """
 
-    __tablename__ = "edp_properties"
+    __tablename__ = "edpb_properties"
     __table_args__ = (
         # Enforces "at most one active row per trade_date" at the database
         # level, not just in application code. repository.workflow.upload()
@@ -177,7 +185,7 @@ class EdpProperties(Base):
         # loser's INSERT raises IntegrityError instead — see upload()'s
         # handling of that.
         Index(
-            "ix_edp_properties_one_active_per_date",
+            "ix_edpb_properties_one_active_per_date",
             "trade_date",
             unique=True,
             postgresql_where=text("is_active"),
@@ -194,10 +202,6 @@ class EdpProperties(Base):
     workflow_json: Mapped[dict] = mapped_column(
         _MutableJSON, nullable=False,
         comment="Full segment + process config for the day"
-    )
-    content_hash: Mapped[str] = mapped_column(
-        String(64), nullable=False,
-        comment="SHA-256 of workflow_json; identical re-upload is a no-op"
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True,
@@ -219,7 +223,7 @@ class EdpProperties(Base):
 
 
 # ---------------------------------------------------------------------------
-# Table 2: segment_execution
+# Table 2: edpb_segment_execution
 # ---------------------------------------------------------------------------
 
 class SegmentExecution(Base):
@@ -315,7 +319,7 @@ class SegmentExecution(Base):
     TRIGGER_JOB).
     """
 
-    __tablename__ = "segment_execution"
+    __tablename__ = "edpb_segment_execution"
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -335,14 +339,10 @@ class SegmentExecution(Base):
         )
     )
 
-    # --- Soft reference to edp_properties (no FK) ---
+    # --- Soft reference to edpb_properties (no FK) ---
     config_id_used: Mapped[str | None] = mapped_column(
         String(36), nullable=True,
-        comment="edp_properties.id that seeded this row — no FK constraint"
-    )
-    config_hash_used: Mapped[str | None] = mapped_column(
-        String(64), nullable=True,
-        comment="edp_properties.content_hash at seed time — for audit"
+        comment="edpb_properties.id that seeded this row — no FK constraint"
     )
 
     # --- Overall segment status ---
@@ -449,7 +449,7 @@ class SegmentExecution(Base):
 
 
 # ---------------------------------------------------------------------------
-# Table 3: agent_control
+# Table 3: edpb_agent_control
 # ---------------------------------------------------------------------------
 
 class AgentControl(Base):
@@ -470,7 +470,7 @@ class AgentControl(Base):
     }
     """
 
-    __tablename__ = "agent_control"
+    __tablename__ = "edpb_agent_control"
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())

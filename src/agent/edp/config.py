@@ -2,10 +2,10 @@
 EDP agent bootstrap configuration loaded from agent_config.json.
 
 This config covers only agent-level settings (DB URL, CBOS URL, wake interval).
-Segment schedules and process definitions are stored in the edp_properties DB
+Segment schedules and process definitions are stored in the edpb_properties DB
 table and uploaded daily by ops.
 
-On first run with no edp_properties row, default_segments is used to
+On first run with no edpb_properties row, default_segments is used to
 auto-seed a workflow for today so the agent can start without a manual upload.
 """
 
@@ -104,7 +104,7 @@ class EdpBootstrapConfig:
     # Unique ID for this agent pod (used as lock_owner)
     agent_instance_id: str = "agent-1"
 
-    # Default segment definitions — used to auto-seed edp_properties
+    # Default segment definitions — used to auto-seed edpb_properties
     # when no config has been uploaded for today yet.
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -241,11 +241,15 @@ def load_edp_config() -> EdpBootstrapConfig:
 def build_default_workflow_json(
     segments: List[Dict[str, Any]],
     post_trade_processes: Optional[List[Dict[str, Any]]] = None,
-    timezone: str = "Asia/Kolkata",
 ) -> dict:
     """
     Build a workflow_json from the default_segments / default_post_trade_processes
     lists in bootstrap config.
+
+    workflow_json intentionally carries no "timezone" field — the agent only
+    ever operates in IST (EdpBootstrapConfig.timezone), and including a
+    per-config timezone would wrongly imply ops can pick a different one
+    per upload.
 
     The 7-stage pipeline (BeginFileUpload → RESERVE_PID → FILEUPLOAD → TRIGGER
     → BILLPOSTING → RECON → CONTRACTNOTEGENERATION) is fixed in the orchestrator
@@ -299,7 +303,6 @@ def build_default_workflow_json(
         built_post_trade.append(entry)
 
     return {
-        "timezone": timezone,
         "wake_interval_seconds": 60,
         "segments": built_segments,
         "post_trade_processes": built_post_trade,

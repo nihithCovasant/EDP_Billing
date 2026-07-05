@@ -4,18 +4,25 @@ Mid-day config-change protection.
 Ops does NOT upload a config every day — only when something changes. Since
 window_start/window_end/login_id are resolved LIVE from the active config
 on every wake cycle (see orchestrator._resolve_window()), an upload that
-lands while today's trade_date is already mid-run would otherwise change
+lands while today's trading date is already mid-run would otherwise change
 those values for segments still in flight. repository.has_processing_started()
 + the /workflow/upload endpoint's defer logic (see api/workflow.py) protect
-against that: any upload targeting a trade_date where at least one segment
-has left PENDING is silently redirected to trade_date + 1 instead of
+against that: any upload landing while at least one segment for the target
+day has left PENDING is silently redirected to the next day instead of
 mutating today's config, and the response reports `deferred=True` plus the
-`requested_trade_date` that was asked for vs. `trade_date` where it actually
-landed.
+`resolved_trade_date` (the day it was implicitly targeting) vs. `trade_date`
+where it actually landed.
 
-A trade_date with every segment still PENDING (nothing seeded, or windows
-simply haven't opened yet) is NOT "started" — same-day changes must still
-apply immediately in that case, since nothing has actually run yet.
+There is no trade_date request field (see api/workflow.py::upload_workflow
+for why) — the route handler always resolves "today" itself. These tests
+call the underlying `_upload_workflow_for_date()` directly with an explicit
+far-future `test_date` standing in for "today", the same way helpers.py
+drives orchestrator internals directly instead of going through the real
+wall-clock entry point.
+
+A day with every segment still PENDING (nothing seeded, or windows simply
+haven't opened yet) is NOT "started" — same-day changes must still apply
+immediately in that case, since nothing has actually run yet.
 """
 
 from __future__ import annotations
@@ -23,8 +30,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from src.agent.edp import repository
-from src.agent.edp.api.workflow import upload_workflow
-from src.agent.edp.api.schemas import WorkflowUploadRequest
+from src.agent.edp.api.workflow import _upload_workflow_for_date
 from src.agent.edp.config import build_default_workflow_json
 from src.agent.edp.models import SegmentStatus
 
@@ -42,22 +48,20 @@ def _workflow_json(cfg, login_id: str = "CV0001") -> dict:
         }
         for code in helpers.SEGMENT_ORDER
     ]
-    return build_default_workflow_json(segments, timezone=cfg.timezone)
+    return build_default_workflow_json(segments)
 
 
 async def test_upload_applies_immediately_when_nothing_started(cfg, session_factory, test_date):
     """All rows PENDING (or nothing seeded at all) — upload takes effect for the requested date itself."""
     await helpers.seed_day(session_factory, test_date, cfg)
 
-    resp = await upload_workflow(WorkflowUploadRequest(
-        trade_date=test_date,
-        workflow_json=_workflow_json(cfg, "CHANGED"),
-        uploaded_by="ops",
-    ))
+    resp = await _upload_workflow_for_date(
+        test_date, _workflow_json(cfg, "CHANGED"), "ops",
+    )
 
     assert resp["deferred"] is False
     assert resp["trade_date"] == test_date
-    assert resp["requested_trade_date"] == test_date
+    assert resp["resolved_trade_date"] == test_date
 
     async with session_factory() as session:
         active = await repository.get_active(session, test_date)
@@ -80,22 +84,20 @@ async def test_upload_deferred_to_next_day_once_a_segment_has_started(cfg, sessi
 
         async with session_factory() as session:
             original_active = await repository.get_active(session, test_date)
-        original_hash = original_active.content_hash
+        original_id = original_active.id
 
-        resp = await upload_workflow(WorkflowUploadRequest(
-            trade_date=test_date,
-            workflow_json=_workflow_json(cfg, "SHOULD_NOT_APPLY_TODAY"),
-            uploaded_by="ops",
-        ))
+        resp = await _upload_workflow_for_date(
+            test_date, _workflow_json(cfg, "SHOULD_NOT_APPLY_TODAY"), "ops",
+        )
 
         assert resp["deferred"] is True
-        assert resp["requested_trade_date"] == test_date
+        assert resp["resolved_trade_date"] == test_date
         assert resp["trade_date"] == next_day, "deferred upload must land on trade_date + 1"
 
         # Today's active config is completely untouched.
         async with session_factory() as session:
             still_active_today = await repository.get_active(session, test_date)
-        assert still_active_today.content_hash == original_hash
+        assert still_active_today.id == original_id
         assert still_active_today.workflow_json["segments"][0]["login_id"] != "SHOULD_NOT_APPLY_TODAY"
 
         # The new config is waiting, active, for tomorrow.
@@ -120,11 +122,9 @@ async def test_upload_deferred_when_only_post_trade_process_has_started(cfg, ses
             row.segment_status = SegmentStatus.IN_PROGRESS
             await session.commit()
 
-        resp = await upload_workflow(WorkflowUploadRequest(
-            trade_date=test_date,
-            workflow_json=_workflow_json(cfg, "SHOULD_DEFER"),
-            uploaded_by="ops",
-        ))
+        resp = await _upload_workflow_for_date(
+            test_date, _workflow_json(cfg, "SHOULD_DEFER"), "ops",
+        )
 
         assert resp["deferred"] is True
         assert resp["trade_date"] == next_day

@@ -1,5 +1,5 @@
 """
-agent_control table — START/STOP audit log operations.
+edpb_agent_control table — START/STOP audit log operations.
 """
 
 from __future__ import annotations

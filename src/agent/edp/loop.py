@@ -59,7 +59,7 @@ class EdpWakeLoop:
         self._config = config
         self._stop_event.clear()
         self._cycle_count = 0
-        self._task = asyncio.create_task(self._run_loop())
+        self._task = asyncio.create_task(self._loop_forever(), name="edp-wake-loop")
         logger.info(edp_log(
             "Wake loop started",
             interval_s=config.wake_interval_seconds,
@@ -85,36 +85,46 @@ class EdpWakeLoop:
             total_cycles=self._cycle_count,
         ))
 
-    async def _run_loop(self) -> None:
+    async def _loop_forever(self) -> None:
         """
-        Runs ONE wake cycle, then reschedules itself as a brand-new asyncio
-        Task for the next cycle — "async inside async" self-scheduling
-        instead of an iterative `while` loop.
+        ONE persistent Task for the entire process lifetime — created once in
+        start() and never reassigned. Runs wake cycles back-to-back until
+        stop() cancels it.
 
-        Config is bootstrap-time and never changes across cycles, so it's
-        read from `self._config` (set once in `start()`) rather than being
-        re-passed as an argument through every recursive reschedule.
+        Deliberately a plain `while` loop rather than the earlier design
+        (each cycle scheduling a brand-new asyncio.create_task(...) for the
+        next one, self._task reassigned every ~60s). That chain-of-tasks
+        shape was correctness-neutral but needlessly hard to reason about:
+        every cycle boundary created a new Task object, so "the wake loop"
+        was never one stable, nameable thing you could point at in
+        asyncio.all_tasks(), a debugger, or an incident review — you'd see
+        a different Task each time you looked. A single `while True` is the
+        obviously-correct, boringly-simple shape for a 24/7 background
+        worker: one Task, one place execution can be, trivial to explain.
 
-        Why this is preferable to `while True: await cycle(); await sleep()`
-        for a 24/7 background worker:
-          - Each cycle is scheduled via `asyncio.create_task(...)`, a fresh
-            Task on the event loop, rather than a recursive `await` call or
-            a loop body that keeps one long-lived stack frame alive for the
-            lifetime of the process. The call stack resets every cycle, so
-            it cannot grow unbounded no matter how many years the agent runs.
-          - `self._task` always points at "the task doing the current/next
-            cycle", so `stop()` can cancel it cleanly at any point — same
-            cancellation semantics as the while-loop version, just modeled
-            as a chain of discrete, independently-inspectable Tasks instead
-            of one monolithic loop.
-          - The event loop is never blocked: the cancellable sleep below
-            (`asyncio.wait_for` on `_stop_event`) still yields control so
-            other coroutines (e.g. incoming HTTP requests) run concurrently
-            between cycles, exactly as before.
+        The loop body doesn't recurse (no nested asyncio stack growth to
+        worry about either way), and the cancellable sleep
+        (`asyncio.wait_for` on `_stop_event`) still yields control every
+        cycle so other coroutines (e.g. incoming HTTP requests) keep running
+        concurrently between cycles, exactly as before.
         """
-        if self._stop_event.is_set():
-            return
+        while not self._stop_event.is_set():
+            await self._run_one_cycle()
 
+            if self._stop_event.is_set():
+                return
+
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self._config.wake_interval_seconds,
+                )
+                return  # stop_event was set while sleeping
+            except asyncio.TimeoutError:
+                pass  # normal case — time for the next cycle
+
+    async def _run_one_cycle(self) -> None:
+        """Run exactly one wake cycle: orchestrator pass + START/END/ERROR logging."""
         self._last_cycle_started_at = time.monotonic()
         self._cycle_count += 1
         cycle_no = self._cycle_count
@@ -143,25 +153,6 @@ class EdpWakeLoop:
                 elapsed_ms=elapsed_ms,
                 error=str(exc),
             ), exc_info=True)
-
-        if self._stop_event.is_set():
-            return
-
-        try:
-            await asyncio.wait_for(
-                self._stop_event.wait(),
-                timeout=self._config.wake_interval_seconds,
-            )
-            return  # stop_event was set while sleeping — don't reschedule
-        except asyncio.TimeoutError:
-            pass  # normal case — time to run the next cycle
-
-        if self._stop_event.is_set():
-            return
-
-        # Schedule the next cycle as a fresh Task (async-inside-async),
-        # rather than looping or awaiting ourselves recursively.
-        self._task = asyncio.create_task(self._run_loop())
 
     async def liveness_check(self) -> Tuple[bool, str]:
         """

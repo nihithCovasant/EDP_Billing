@@ -6,7 +6,6 @@ from .workflow import (
     get_latest_effective,
     upload,
     get_history as get_workflow_history,
-    compute_hash,
 )
 from .segment import (
     get_one,
@@ -34,7 +33,6 @@ __all__ = [
     "get_latest_effective",
     "upload",
     "get_workflow_history",
-    "compute_hash",
     # segment
     "get_one",
     "get_all_for_date",

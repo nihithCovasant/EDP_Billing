@@ -1,0 +1,25 @@
+{
+  "uploaded_by": "demo",
+  "workflow_json": {
+    "wake_interval_seconds": 60,
+    "segments": [
+      {"segment_code": "EQ",    "login_id": "CV0001", "window_start": "16:00", "window_end": "23:59", "window_end_next_day": false},
+      {"segment_code": "DR",    "login_id": "CV0001", "window_start": "00:00", "window_end": "23:59", "window_end_next_day": false},
+      {"segment_code": "CUR",   "login_id": "CV0001", "window_start": "00:00", "window_end": "23:59", "window_end_next_day": false},
+      {"segment_code": "SL",    "login_id": "CV0001", "window_start": "00:00", "window_end": "23:59", "window_end_next_day": false},
+      {"segment_code": "MCX",   "login_id": "CV0001", "window_start": "00:00", "window_end": "23:59", "window_end_next_day": false},
+      {"segment_code": "NCDEX", "login_id": "CV0001", "window_start": "00:00", "window_end": "23:59", "window_end_next_day": false},
+      {"segment_code": "MTF",   "login_id": "CV0001", "window_start": "00:00", "window_end": "23:59", "window_end_next_day": false}
+    ],
+    "post_trade_processes": [
+      {
+        "process_code": "COLVAL", "login_id": "G_LID", "gtg_process_name": "CollateralValuation",
+        "window_start": "00:00", "window_start_next_day": true
+      },
+      {"process_code": "COLALLOC", "login_id": "G_LID", "gtg_process_name": "CollateralAllocation"},
+      {"process_code": "MTFFT",    "login_id": "G_LID", "gtg_process_name": "FundTransfer"},
+      {"process_code": "DMRPT",    "login_id": "G_LID", "gtg_process_name": "DailyMarginReporting"},
+      {"process_code": "DMSTMT",   "login_id": "G_LID", "gtg_process_name": "DailyMarginStatements"}
+    ]
+  }
+}

@@ -1,7 +1,7 @@
 """
 Workflow endpoints.
 
-  POST /edp/workflow/upload              — upload daily workflow config
+  POST /edp/workflow/upload              — upload workflow config (applies now)
   GET  /edp/workflow/{trade_date}        — get active workflow for a date
   GET  /edp/workflow/{trade_date}/history — all config versions for a date
 """
@@ -12,9 +12,11 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException
 
+from ..config import load_edp_config
 from ..database import get_session
 from ..repository import upload, get_active, get_workflow_history, has_processing_started
 from ..utils.constants import POST_TRADE_ORDER
+from ..utils.datetime_utils import now_ist, resolve_active_date
 from .schemas import WorkflowUploadRequest, WorkflowUploadResponse, WorkflowDetailResponse
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -104,59 +106,65 @@ def _validate_workflow_json(workflow_json: dict) -> None:
             seen_codes.add(code)
 
 
-@router.post("/workflow/upload", response_model=WorkflowUploadResponse)
-@otel_trace
-async def upload_workflow(body: WorkflowUploadRequest):
+async def _upload_workflow_for_date(
+    today: date,
+    workflow_json: dict,
+    uploaded_by: str,
+) -> dict:
     """
-    Upload the workflow config for a trading date.
+    Core upload logic, given an already-resolved "today" — split out from
+    upload_workflow() purely so tests can drive it with an explicit
+    far-future test date instead of the real wall-clock "today" the route
+    handler resolves (see that function for why there's no trade_date
+    input at all).
 
-    - Identical config → returns existing row with is_new=False (no duplicate created).
-    - Different config → supersedes old row and creates new (is_new=True).
+    Every upload creates a brand-new row and supersedes whatever was active
+    before — there is no content-hash dedup check, so even a byte-for-byte
+    identical re-upload creates a new audit row (is_new=True). is_new is
+    only False if this call lost a concurrent upload race (see
+    repository.workflow.upload()).
 
     Ops does NOT upload a config every day — only when something changes
     (segments, windows, login IDs). Because of that, an upload can arrive
-    at any time, including while today's trade_date is already mid-run. To
-    avoid a live config change disrupting segments that are already
+    at any time, including while today's trading date is already mid-run.
+    To avoid a live config change disrupting segments that are already
     IN_PROGRESS/COMPLETED/SKIPPED/FAILED (window times / login IDs are
     resolved live from the active config every cycle — see
-    orchestrator._resolve_window()), any upload targeting a trade_date that
-    already has processing underway is automatically deferred to
-    trade_date + 1: it is saved and will become active starting the next
-    trading day, leaving today's in-flight run completely untouched.
-    A trade_date where every segment is still PENDING (windows not open
-    yet, or nothing seeded at all) is NOT considered "started" — same-day
-    changes are applied immediately in that case.
+    orchestrator._resolve_window()), an upload landing while today already
+    has processing underway is automatically deferred to tomorrow: it is
+    saved and will become active starting the next trading day, leaving
+    today's in-flight run completely untouched. A day where every segment
+    is still PENDING (windows not open yet, or nothing seeded at all) is
+    NOT considered "started" — same-day changes are applied immediately in
+    that case.
     """
-    _validate_workflow_json(body.workflow_json)
-    requested_date = body.trade_date
     async with get_session() as session:
-        deferred = await has_processing_started(session, requested_date)
-        effective_date = requested_date + timedelta(days=1) if deferred else requested_date
+        deferred = await has_processing_started(session, today)
+        effective_date = today + timedelta(days=1) if deferred else today
         row, is_new = await upload(
             session,
             effective_date,
-            body.workflow_json,
-            uploaded_by=body.uploaded_by,
+            workflow_json,
+            uploaded_by=uploaded_by,
         )
     if deferred:
         logger.warning(
-            f"POST /workflow/upload: {requested_date} already has processing underway — "
+            f"POST /workflow/upload: {today} already has processing underway — "
             f"deferring config to {effective_date} instead of disrupting today's in-flight run"
         )
-    post_trade_processes = body.workflow_json.get("post_trade_processes")
+    post_trade_processes = workflow_json.get("post_trade_processes")
     logger.info(
-        f"POST /workflow/upload: requested_date={requested_date} effective_date={effective_date} "
-        f"deferred={deferred} is_new={is_new} segments={len(body.workflow_json.get('segments', []))} "
+        f"POST /workflow/upload: today={today} effective_date={effective_date} "
+        f"deferred={deferred} is_new={is_new} segments={len(workflow_json.get('segments', []))} "
         f"post_trade_processes={len(post_trade_processes) if post_trade_processes is not None else 'default'}"
     )
     return {
         "id": row.id,
         "trade_date": row.trade_date,
-        "content_hash": row.content_hash,
         "is_active": row.is_active,
         "is_new": is_new,
         "deferred": deferred,
-        "requested_trade_date": requested_date,
+        "resolved_trade_date": today,
         "uploaded_by": row.uploaded_by,
         "uploaded_at": row.uploaded_at,
         "segment_count": len(row.workflow_json.get("segments", [])),
@@ -164,6 +172,30 @@ async def upload_workflow(body: WorkflowUploadRequest):
             len(post_trade_processes) if post_trade_processes is not None else None
         ),
     }
+
+
+@router.post("/workflow/upload", response_model=WorkflowUploadResponse)
+@otel_trace
+async def upload_workflow(body: WorkflowUploadRequest):
+    """
+    Upload the workflow config — it always applies starting now.
+
+    There is no trade_date input: ops never needs to know or compute
+    "today's trading date" (which isn't the same as the calendar date —
+    see active_date_cutoff_hour). The server resolves it itself the exact
+    same way the orchestrator's own wake cycle does
+    (resolve_active_date()), so ops can't target the wrong date by mistake.
+    A config uploaded right now always keeps applying to every future
+    trading day until superseded by a later upload — there's never a
+    reason to pre-stage a config for some specific date further out.
+
+    See _upload_workflow_for_date() for the deferral rule applied once
+    "today" is resolved.
+    """
+    _validate_workflow_json(body.workflow_json)
+    config = load_edp_config()
+    today = resolve_active_date(now_ist(), config.active_date_cutoff_hour, config.timezone)
+    return await _upload_workflow_for_date(today, body.workflow_json, body.uploaded_by)
 
 
 @router.get("/workflow/{trade_date}", response_model=WorkflowDetailResponse)
@@ -180,7 +212,6 @@ async def get_workflow(trade_date: date):
     return {
         "id": row.id,
         "trade_date": row.trade_date,
-        "content_hash": row.content_hash,
         "is_active": row.is_active,
         "uploaded_by": row.uploaded_by,
         "uploaded_at": row.uploaded_at,
@@ -207,7 +238,6 @@ async def get_workflow_history_endpoint(trade_date: date):
         {
             "id": r.id,
             "trade_date": r.trade_date.isoformat(),
-            "content_hash": r.content_hash,
             "is_active": r.is_active,
             "uploaded_by": r.uploaded_by,
             "uploaded_at": r.uploaded_at.isoformat() if r.uploaded_at else None,

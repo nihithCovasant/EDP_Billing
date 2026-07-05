@@ -1,8 +1,6 @@
 {
-  "trade_date": "2026-07-02",
   "uploaded_by": "manual-test",
   "workflow_json": {
-    "timezone": "Asia/Kolkata",
     "wake_interval_seconds": 60,
     "segments": [
       {"segment_code": "EQ",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55", "window_end_next_day": false},

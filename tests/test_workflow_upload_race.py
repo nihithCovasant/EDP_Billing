@@ -54,7 +54,7 @@ def _workflow_variant(cfg, login_id: str) -> dict:
         }
         for code in helpers.SEGMENT_ORDER
     ]
-    return build_default_workflow_json(segments, timezone=cfg.timezone)
+    return build_default_workflow_json(segments)
 
 
 async def test_unique_index_serializes_concurrent_inserts_for_same_date(cfg, session_factory, test_date):
@@ -67,7 +67,6 @@ async def test_unique_index_serializes_concurrent_inserts_for_same_date(cfg, ses
             row = EdpProperties(
                 trade_date=test_date,
                 workflow_json=workflow_json_a,
-                content_hash=workflow_repo.compute_hash(workflow_json_a),
                 is_active=True,
                 uploaded_by="racer-a",
             )
@@ -84,7 +83,6 @@ async def test_unique_index_serializes_concurrent_inserts_for_same_date(cfg, ses
             row = EdpProperties(
                 trade_date=test_date,
                 workflow_json=workflow_json_b,
-                content_hash=workflow_repo.compute_hash(workflow_json_b),
                 is_active=True,
                 uploaded_by="racer-b",
             )
@@ -136,7 +134,6 @@ async def test_upload_handles_lost_race_via_integrity_error(cfg, session_factory
                 other_session.add(EdpProperties(
                     trade_date=trade_date,
                     workflow_json=workflow_json_winner,
-                    content_hash=workflow_repo.compute_hash(workflow_json_winner),
                     is_active=True,
                     uploaded_by="winner",
                 ))

@@ -139,14 +139,12 @@ class EdpOrchestrator:
                         date=active_date,
                         config_uploaded_for=workflow.trade_date,
                         config_id=workflow.id,
-                        config_hash=workflow.content_hash[:12],
                     ))
             if not workflow:
                 if self.config.default_segments:
                     default_wf = build_default_workflow_json(
                         self.config.default_segments,
                         post_trade_processes=self.config.default_post_trade_processes or None,
-                        timezone=self.config.timezone,
                     )
                     workflow, _ = await repository.upload(
                         session, active_date, default_wf, uploaded_by="agent-bootstrap"

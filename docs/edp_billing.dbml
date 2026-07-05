@@ -3,7 +3,7 @@
 
 Project edp_billing {
   database_type: 'PostgreSQL'
-  Note: 'EDP billing agent. 3 tables. Soft refs only — no FK constraints.'
+  Note: 'EDP billing agent. 3 tables, all prefixed edpb_. Soft refs only — no FK constraints.'
 }
 
 Enum segment_status {
@@ -36,28 +36,26 @@ Enum agent_control_action {
   STOP
 }
 
-Table edp_properties {
+Table edpb_properties {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null, note: 'Trading calendar date']
-  workflow_json json [not null, note: 'segments: segment_code, login_id, window_start, window_end, window_end_next_day']
-  content_hash varchar(64) [not null, note: 'SHA-256 of workflow_json']
+  workflow_json json [not null, note: 'segments: segment_code, login_id, window_start, window_end, window_end_next_day. Always IST — no per-config timezone field.']
   is_active boolean [not null, default: true, note: 'One active row per trade_date']
   uploaded_by varchar(256) [not null, default: 'system']
   uploaded_at timestamp [not null, default: `now()`]
   superseded_at timestamp [note: 'Set when newer config replaces this row']
   created_at timestamp [not null, default: `now()`]
   indexes {
-    (trade_date) [unique, name: 'ix_edp_properties_one_active_per_date', note: 'Partial: WHERE is_active — DB-enforced, closes the concurrent-upload race in repository.workflow.upload()']
+    (trade_date) [unique, name: 'ix_edpb_properties_one_active_per_date', note: 'Partial: WHERE is_active — DB-enforced, closes the concurrent-upload race in repository.workflow.upload()']
   }
-  Note: 'Daily workflow config. sequence_order and segment_name are code constants, not stored.'
+  Note: 'Daily workflow config. Every upload creates a new row unconditionally (no content-hash dedup) — sequence_order and segment_name are code constants, not stored.'
 }
 
-Table segment_execution {
+Table edpb_segment_execution {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null]
   segment_code varchar(32) [not null, note: 'Real segment: EQ DR CUR SL MCX NCDEX MTF | Post-trade: COLVAL COLALLOC MTFFT DMRPT DMSTMT']
-  config_id_used varchar(36) [note: 'Soft ref to edp_properties.id (real segments only)']
-  config_hash_used varchar(64) [note: 'content_hash at seed time (real segments only)']
+  config_id_used varchar(36) [note: 'Soft ref to edpb_properties.id (real segments only)']
   status segment_status [not null, default: 'PENDING']
   current_process varchar(64) [note: 'CBOS ProcessName e.g. BILLPOSTING or CollateralValuation']
   current_phase segment_phase [note: 'Active pipeline stage — see segment_phase enum note']
@@ -79,7 +77,7 @@ Table segment_execution {
   Note: 'Up to 12 rows per day (7 real segments + 5 T+1 post-trade processes). segment_name sequence_order runtime_health window times are computed at read time not stored.'
 }
 
-Table agent_control {
+Table edpb_agent_control {
   id varchar(36) [pk, note: 'UUID']
   action agent_control_action [not null]
   requested_at timestamp [not null, default: `now()`]
@@ -90,16 +88,16 @@ Table agent_control {
   Note: 'Append-only START STOP audit log. Never updated.'
 }
 
-Ref: segment_execution.config_id_used > edp_properties.id
+Ref: edpb_segment_execution.config_id_used > edpb_properties.id
 
 TableGroup config {
-  edp_properties
+  edpb_properties
 }
 
 TableGroup runtime {
-  segment_execution
+  edpb_segment_execution
 }
 
 TableGroup ops {
-  agent_control
+  edpb_agent_control
 }

@@ -54,7 +54,6 @@ async def test_post_trade_process_uses_configured_login_id_and_process_name(
             {"process_code": "DMRPT", "login_id": "G_LID"},
             {"process_code": "DMSTMT", "login_id": "G_LID"},
         ],
-        timezone=cfg.timezone,
     )
     async with session_factory() as session:
         await repository.upload(session, test_date, workflow_json, uploaded_by="test")
@@ -101,7 +100,6 @@ async def test_post_trade_no_default_window_gate_when_configured_elsewhere(
             {"process_code": "DMRPT", "login_id": "G_LID"},
             {"process_code": "DMSTMT", "login_id": "G_LID"},
         ],
-        timezone=cfg.timezone,
     )
     async with session_factory() as session:
         await repository.upload(session, test_date, workflow_json, uploaded_by="test")
@@ -137,7 +135,6 @@ async def test_seed_post_trade_processes_skips_unknown_process_code(cfg, session
             {"process_code": "NOT_A_REAL_CODE", "login_id": "G_LID"},
             {"process_code": "COLVAL", "login_id": "G_LID"},
         ],
-        timezone=cfg.timezone,
     )
     async with session_factory() as session:
         await repository.upload(session, test_date, workflow_json, uploaded_by="test")
@@ -158,7 +155,6 @@ async def test_legacy_workflow_without_post_trade_processes_key_still_seeds_fixe
     "post_trade_processes" key at all) must still seed the fixed 5 —
     backward compatibility for already-uploaded configs."""
     legacy_workflow_json = {
-        "timezone": cfg.timezone,
         "wake_interval_seconds": 60,
         "segments": [],
         # deliberately no "post_trade_processes" key
@@ -179,7 +175,7 @@ async def test_legacy_workflow_without_post_trade_processes_key_still_seeds_fixe
 async def test_explicit_empty_post_trade_processes_list_seeds_nothing(cfg, session_factory, test_date):
     """An explicitly-uploaded EMPTY post_trade_processes list means ops
     wants none seeded — distinct from the key being absent entirely."""
-    workflow_json = build_default_workflow_json([], post_trade_processes=[], timezone=cfg.timezone)
+    workflow_json = build_default_workflow_json([], post_trade_processes=[])
     async with session_factory() as session:
         await repository.upload(session, test_date, workflow_json, uploaded_by="test")
         await session.commit()

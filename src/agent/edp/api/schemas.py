@@ -18,7 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field
 # =============================================================================
 
 class WorkflowUploadRequest(BaseModel):
-    trade_date: date
+    # No trade_date field: ops does not pick/compute a trading date. The
+    # server always targets "today's trading date" (resolve_active_date(),
+    # same cutoff-hour logic the orchestrator itself uses) — or tomorrow if
+    # today already has processing underway (see upload_workflow()'s
+    # deferral logic). A config always applies going forward until
+    # superseded, so there is never a reason for ops to pre-stage a config
+    # for an arbitrary future date.
     workflow_json: Dict[str, Any]
     uploaded_by: str = "ops"
 
@@ -28,7 +34,6 @@ class WorkflowResponse(BaseModel):
 
     id: str
     trade_date: date
-    content_hash: str
     is_active: bool
     uploaded_by: str
     uploaded_at: Optional[datetime]
@@ -42,13 +47,17 @@ class WorkflowResponse(BaseModel):
 
 class WorkflowUploadResponse(WorkflowResponse):
     is_new: bool
-    # True when the requested trade_date already had processing underway
-    # (some segment left PENDING) — the config was NOT applied to that date;
-    # it was saved instead for requested_trade_date + 1 day (see `trade_date`
-    # above for where it actually landed) so today's in-flight run is not
-    # disrupted mid-way.
+    # True when today's trading date (auto-resolved server-side — see
+    # resolved_trade_date) already had processing underway (some segment
+    # left PENDING) — the config was NOT applied to today; it was saved
+    # instead for resolved_trade_date + 1 day (see `trade_date` above for
+    # where it actually landed) so today's in-flight run is not disrupted
+    # mid-way.
     deferred: bool = False
-    requested_trade_date: date
+    # Today's trading date as the server computed it (resolve_active_date())
+    # BEFORE any deferral — i.e. what ops implicitly targeted by uploading
+    # right now, not something ops specified.
+    resolved_trade_date: date
 
 
 class WorkflowDetailResponse(WorkflowResponse):
@@ -118,7 +127,6 @@ class SegmentDetailResponse(BaseModel):
     lock_state: str = "UNLOCKED"
     lock_owner: Optional[str] = None
     config_id_used: Optional[str] = None
-    config_hash_used: Optional[str] = None
     processes_json: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

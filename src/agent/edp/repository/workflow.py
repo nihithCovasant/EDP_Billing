@@ -1,11 +1,9 @@
 """
-edp_properties table — daily config upload and retrieval.
+edpb_properties table — daily config upload and retrieval.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import date, datetime
 from typing import Optional
 
@@ -16,12 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import EdpProperties
 from ..utils.datetime_utils import now_ist
 from cams_otel_lib import Logger as logger, otel_trace
-
-
-def compute_hash(workflow_json: dict) -> str:
-    """SHA-256 of the canonically serialized workflow JSON."""
-    serialized = json.dumps(workflow_json, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 @otel_trace
@@ -75,29 +67,29 @@ async def upload(
     uploaded_by: str = "system",
 ) -> tuple[EdpProperties, bool]:
     """
-    Insert or replace the workflow config for the day.
+    Insert the workflow config for the day as a brand-new row.
 
-    Returns (row, is_new):
-      is_new = False → identical config already active, no change made.
-      is_new = True  → new config row created (old row superseded if present).
+    There is no content-hash dedup check: every call to this function
+    creates a new row and marks it active, superseding whatever was active
+    before for this trade_date (if anything). Re-uploading identical JSON
+    on purpose or by mistake still creates a new audit row — the caller is
+    always trusted to know it wants a new version. Returns (row, is_new)
+    with is_new always True on success, kept for API/response-shape
+    backward compatibility; it is only False when this call lost a
+    concurrent-upload race (see below) and ended up not creating anything.
 
-    Concurrency: this is check-then-act (get_active() then conditionally
-    insert), but a unique partial index — one active row per trade_date,
-    see models.EdpProperties.__table_args__ — makes the actual write
-    atomic at the database level. Two concurrent uploads for the same date
-    (a manual re-upload racing an automated retry) can both pass the
-    get_active() check before either commits, but only one INSERT can ever
-    land; the other raises IntegrityError, caught below and resolved by
-    returning whichever row actually won instead of crashing the request or
-    leaving two is_active=True rows (which would break every future
-    get_active() call with MultipleResultsFound).
+    Concurrency: this is check-then-act (get_active() then insert), but a
+    unique partial index — one active row per trade_date, see
+    models.EdpProperties.__table_args__ — makes the actual write atomic at
+    the database level. Two concurrent uploads for the same date (a manual
+    re-upload racing an automated retry) can both pass the get_active()
+    check before either commits, but only one INSERT can ever land; the
+    other raises IntegrityError, caught below and resolved by returning
+    whichever row actually won instead of crashing the request or leaving
+    two is_active=True rows (which would break every future get_active()
+    call with MultipleResultsFound).
     """
-    new_hash = compute_hash(workflow_json)
     existing = await get_active(session, trade_date)
-
-    if existing and existing.content_hash == new_hash:
-        logger.info(f"Workflow upload: identical hash — no change for {trade_date}")
-        return existing, False
 
     ts = now_ist()
     if existing:
@@ -108,7 +100,6 @@ async def upload(
     new_row = EdpProperties(
         trade_date=trade_date,
         workflow_json=workflow_json,
-        content_hash=new_hash,
         is_active=True,
         uploaded_by=uploaded_by,
         uploaded_at=ts,
@@ -128,15 +119,7 @@ async def upload(
             # Vanishingly unlikely (the winner would have to have been
             # superseded again in between) — nothing sensible to return.
             raise
-        if winner.content_hash != new_hash:
-            logger.warning(
-                f"Workflow upload: the row that won the race for {trade_date} has "
-                f"DIFFERENT content than what this request tried to upload (hash "
-                f"{winner.content_hash[:12]} vs {new_hash[:12]}) — re-upload if this "
-                f"request's content was the intended one"
-            )
-        # is_new=False either way: this call did not create the active row,
-        # regardless of whether its content happens to match.
+        # is_new=False: this call did not create the active row.
         return winner, False
 
     logger.info(
