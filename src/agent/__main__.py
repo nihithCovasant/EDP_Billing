@@ -8,6 +8,73 @@ import json
 import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# On Windows (and anywhere stdout/stderr isn't attached to an interactive
+# TTY — e.g. piped into a file, IDE terminal capture, or `--reload`'s
+# parent/child process split), the C stdio layer defaults to fully
+# block-buffered instead of line-buffered. logging.StreamHandler.flush()
+# still forces a write syscall per record, but on some Windows pipe/console
+# configurations that write can itself sit in an OS-level pipe buffer that
+# isn't drained until it fills or the process exits — which is exactly why
+# "Running Alembic migrations..." can be the last visible line for tens of
+# seconds even though the process is alive and working underneath. Forcing
+# line buffering here (Python 3.7+) makes every logger.info(...)/print(...)
+# show up immediately, regardless of how stdout ended up connected.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass  # stream doesn't support reconfigure (e.g. redirected to a non-file object)
+
+# The real root cause of "logs stop appearing after migrations" on Windows:
+# a console/terminal pane that isn't actively being read (IDE terminal
+# capture, a detached/backgrounded process, `--reload`'s parent/child pipe,
+# etc.) lets the OS-level stdout/stderr pipe buffer fill up. The next
+# `write()` syscall then blocks *forever* waiting for a reader that never
+# comes — and since logging.Logger.callHandlers() invokes every handler
+# synchronously on the calling thread, that one blocked console write also
+# stops any other handler (e.g. a file handler) from ever running, even
+# though the app itself (event loop, DB, HTTP server) is completely healthy.
+#
+# Fix: route ALL logging through a QueueHandler. The actual handlers
+# (console + file) run on a dedicated QueueListener thread instead of the
+# app's own threads/event loop, so a stuck console pipe can only stall that
+# one listener thread — it can never block migrations, the wake loop, or
+# incoming requests, and the file handler (attached to the same listener)
+# keeps writing regardless of what the console is doing.
+#
+# The file on disk can always be tailed directly with no lag:
+#   powershell: Get-Content -Wait -Tail 50 logs\agent.log
+import logging as _logging
+import queue as _queue
+from logging.handlers import QueueHandler as _QueueHandler, QueueListener as _QueueListener
+
+_LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+_log_formatter = _logging.Formatter("%(asctime)s %(levelname)s:%(name)s:%(message)s")
+
+try:
+    sys.stdout.reconfigure(errors="backslashreplace")
+except (AttributeError, ValueError):
+    pass  # non-reconfigurable stream — fall back to default error handling
+_console_handler = _logging.StreamHandler(sys.stdout)
+_console_handler.setFormatter(_log_formatter)
+_file_handler = _logging.FileHandler(_LOG_DIR / "agent.log", encoding="utf-8")
+_file_handler.setFormatter(_log_formatter)
+
+_log_queue: "_queue.Queue" = _queue.Queue(-1)
+_queue_handler = _QueueHandler(_log_queue)
+_queue_listener = _QueueListener(_log_queue, _console_handler, _file_handler, respect_handler_level=False)
+_queue_listener.start()
+
+_root_logger = _logging.getLogger()
+_root_logger.handlers.clear()  # drop the default StreamHandler logging.basicConfig() will otherwise add
+_root_logger.addHandler(_queue_handler)
+_root_logger.setLevel(_logging.INFO)
+# cams_otel_lib's Otel_Client.initialize_otel_client() calls logging.basicConfig(level=INFO) again
+# later — make that a no-op for handler setup so it can't re-add a blocking direct StreamHandler.
+_logging.basicConfig = lambda *a, **k: None  # noqa: E731
 
 import uvicorn
 from fastapi import Request, Body, FastAPI
@@ -16,8 +83,6 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.apps import A2AFastAPIApplication
 from a2a.types import AgentCard, AgentCapabilities, AgentProvider, AgentSkill
-
-from pathlib import Path
 
 from .executor import AgentExecutor
 from src.agent.edp.loop import EdpWakeLoop
@@ -169,6 +234,11 @@ async def main():
         if edp_loop_enabled:
             await edp_loop.start()
             logger.info("EDP 24/7 wake loop enabled")
+        else:
+            logger.info("EDP 24/7 wake loop DISABLED (EDP_LOOP_ENABLED=false)")
+        logger.info("=" * 60)
+        logger.info(">>> AGENT STARTUP COMPLETE — ready to serve requests <<<")
+        logger.info("=" * 60)
         yield
         if edp_loop_enabled:
             await edp_loop.stop()

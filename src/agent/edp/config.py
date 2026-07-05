@@ -211,8 +211,16 @@ def load_edp_config() -> EdpBootstrapConfig:
                 "agent_config.json 'edp' fields explicitly"
             )
 
+    # EDP_WAKE_INTERVAL_SECONDS env override exists purely so a demo/local
+    # run can speed the loop up (e.g. to 3-5s) without editing
+    # agent_config.json — same "env var wins" pattern as the CBOS settings
+    # above, not meant to be set in a real prod deployment.
+    wake_interval_seconds = int(
+        os.getenv("EDP_WAKE_INTERVAL_SECONDS", edp_raw.get("wake_interval_seconds", 60))
+    )
+
     return EdpBootstrapConfig(
-        wake_interval_seconds=int(edp_raw.get("wake_interval_seconds", 60)),
+        wake_interval_seconds=wake_interval_seconds,
         active_date_cutoff_hour=int(edp_raw.get("active_date_cutoff_hour", 6)),
         timezone=edp_raw.get("timezone", "Asia/Kolkata"),
         cbos_status_url=cbos_status_url,

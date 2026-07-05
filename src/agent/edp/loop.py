@@ -40,7 +40,16 @@ class EdpWakeLoop:
     @otel_trace
     async def start(self) -> None:
         config = load_edp_config()
+        logger.info(edp_log(
+            "EDP startup: initializing database (running Alembic migrations "
+            "if any are pending — first-time/fresh-DB runs can take a while)"
+        ))
+        t_db0 = time.monotonic()
         await init_database(config.database_url)
+        logger.info(edp_log(
+            "EDP startup: database ready",
+            elapsed_ms=int((time.monotonic() - t_db0) * 1000),
+        ))
         cbos = CbosClient(
             status_url=config.cbos_status_url,
             process_url=config.cbos_process_url,

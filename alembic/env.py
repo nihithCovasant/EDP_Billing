@@ -8,6 +8,7 @@ the app runtime continues to use asyncpg / aiosqlite.
 
 from __future__ import annotations
 
+import logging
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -28,7 +29,22 @@ from src.agent.edp.models import Base  # noqa: E402, F401 — registers all mode
 
 config = context.config
 
-if config.config_file_name is not None:
+# alembic.ini's [logger_root] section installs a raw, direct StreamHandler
+# onto the *root* logger via fileConfig() — fine for a standalone
+# `alembic upgrade head` CLI run, but destructive when migrations run
+# in-process inside the EDP agent: run_migrations() executes on a worker
+# thread via asyncio.to_thread during agent startup, and fileConfig()'s
+# handler swap happens live, tearing out the agent's queue-based
+# non-blocking log handler (see src/agent/__main__.py) and replacing it with
+# a direct sys.stderr write. From that point on, *every* subsequent log call
+# in *any* thread (including the main event loop) blocks the instant that
+# stream's pipe/console isn't being actively drained — exactly the
+# "logs stop appearing right after migrations" symptom this caused.
+# Heuristic: only let fileConfig configure logging when nothing already has
+# (i.e. we're a standalone `alembic` CLI invocation) — when the root logger
+# already has handlers, a host process (the agent) owns logging and we must
+# not clobber it.
+if config.config_file_name is not None and not logging.getLogger().handlers:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
