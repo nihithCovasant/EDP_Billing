@@ -33,10 +33,22 @@ class WorkflowResponse(BaseModel):
     uploaded_by: str
     uploaded_at: Optional[datetime]
     segment_count: int = 0
+    # Present only when workflow_json explicitly carries a
+    # "post_trade_processes" list; None for a legacy config that predates
+    # this field (falls back to fixed defaults at seed/resolve time instead
+    # — see repository.segment.seed_post_trade_processes()).
+    post_trade_process_count: Optional[int] = None
 
 
 class WorkflowUploadResponse(WorkflowResponse):
     is_new: bool
+    # True when the requested trade_date already had processing underway
+    # (some segment left PENDING) — the config was NOT applied to that date;
+    # it was saved instead for requested_trade_date + 1 day (see `trade_date`
+    # above for where it actually landed) so today's in-flight run is not
+    # disrupted mid-way.
+    deferred: bool = False
+    requested_trade_date: date
 
 
 class WorkflowDetailResponse(WorkflowResponse):

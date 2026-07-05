@@ -78,6 +78,28 @@ class TransientTriggerFailureCbosClient(CbosClient):
         return await super().get_new_trade_process(group_name, login_id, trade_date, process_id)
 
 
+class RecordingFileStatusCbosClient(CbosClient):
+    """
+    Behaves exactly like the normal in-process mock, but records the exact
+    (segment, process_name, user_id) triple passed to every
+    file_process_status() call — used to prove that a config-supplied
+    login_id / gtg_process_name for a post-trade process (see
+    orchestrator._resolve_post_trade_process_name(),
+    workflow_json["post_trade_processes"][].gtg_process_name/login_id) is
+    actually the value used against CBOS, not the fixed code default.
+    """
+
+    def __init__(self, status_url: str, process_url: str):
+        super().__init__(status_url, process_url, use_mock=True)
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def file_process_status(
+        self, segment: str, process_name: str, user_id: str
+    ) -> FileStatusResult:
+        self.calls.append((segment, process_name, user_id))
+        return await super().file_process_status(segment, process_name, user_id)
+
+
 class CountingPostTradeTriggerCbosClient(CbosClient):
     """
     Behaves exactly like the normal in-process mock, but counts every real

@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 from src.config.agent_config import load_agent_config
+from .utils.constants import POST_TRADE_ORDER, POST_TRADE_FIRST_WINDOW_START
 from cams_otel_lib import Logger as logger, otel_trace
 
 
@@ -106,6 +107,13 @@ class EdpBootstrapConfig:
     # Default segment definitions — used to auto-seed edp_properties
     # when no config has been uploaded for today yet.
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Default post-trade process definitions — same auto-seed role as
+    # default_segments, for the 5 T+1 post-trade processes' per-process
+    # login_id / opening window (see build_default_workflow_json()). Empty
+    # here means "use the fixed legacy defaults" (POST_TRADE_ORDER order,
+    # post_trade_login_id for every process, window only on the first).
+    default_post_trade_processes: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _is_truthy_env(value: str | None) -> bool:
@@ -218,15 +226,19 @@ def load_edp_config() -> EdpBootstrapConfig:
         lock_ttl_seconds=int(edp_raw.get("lock_ttl_seconds", 300)),
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),
         default_segments=edp_raw.get("segments", []),
+        default_post_trade_processes=edp_raw.get("post_trade_processes", []),
     )
 
 
 def build_default_workflow_json(
     segments: List[Dict[str, Any]],
+    post_trade_processes: Optional[List[Dict[str, Any]]] = None,
     timezone: str = "Asia/Kolkata",
 ) -> dict:
     """
-    Build a workflow_json from the default_segments list in bootstrap config.
+    Build a workflow_json from the default_segments / default_post_trade_processes
+    lists in bootstrap config.
+
     The 7-stage pipeline (BeginFileUpload → RESERVE_PID → FILEUPLOAD → TRIGGER
     → BILLPOSTING → RECON → CONTRACTNOTEGENERATION) is fixed in the orchestrator
     and does not need to be listed per segment in the workflow_json.
@@ -236,6 +248,15 @@ def build_default_workflow_json(
     code constants resolved from segment_code (see utils/constants.py), not
     part of the config. This system is also EDP-only, so there's no domain
     field to carry either.
+
+    Same idea for post_trade_processes: process_code (one of the fixed
+    POST_TRADE_ORDER 5) and CBOS trigger-endpoint dispatch stay fixed code —
+    there is no CBOS integration for an arbitrary 6th process — but
+    login_id / gtg_process_name / opening window are now config-driven, same
+    as the 7 segments' login_id/window. post_trade_processes=None builds the
+    fixed legacy defaults (POST_TRADE_ORDER order, a single shared login_id,
+    window only on the first process) so callers that don't care about
+    per-process overrides get the original hardcoded behavior unchanged.
     """
     built_segments = []
     for seg in segments:
@@ -248,8 +269,30 @@ def build_default_workflow_json(
             "window_end_next_day": seg.get("window_end_next_day", True),
         })
 
+    if post_trade_processes is None:
+        post_trade_processes = [{"process_code": code} for code in POST_TRADE_ORDER]
+        post_trade_processes[0] = {
+            **post_trade_processes[0],
+            "window_start": POST_TRADE_FIRST_WINDOW_START,
+            "window_start_next_day": True,
+        }
+
+    built_post_trade = []
+    for proc in post_trade_processes:
+        entry: Dict[str, Any] = {
+            "process_code": proc.get("process_code", ""),
+            "login_id": proc.get("login_id", "G_LID"),
+        }
+        if proc.get("gtg_process_name"):
+            entry["gtg_process_name"] = proc["gtg_process_name"]
+        if proc.get("window_start"):
+            entry["window_start"] = proc["window_start"]
+            entry["window_start_next_day"] = proc.get("window_start_next_day", True)
+        built_post_trade.append(entry)
+
     return {
         "timezone": timezone,
         "wake_interval_seconds": 60,
         "segments": built_segments,
+        "post_trade_processes": built_post_trade,
     }

@@ -96,12 +96,35 @@ async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -
         await session.commit()
 
 
-async def seed_post_trade_day(session_factory, trade_date: date) -> None:
-    """Seed the 5 fixed post-trade process rows for trade_date — mirrors the
-    unconditional seeding orchestrator.run_wake_cycle() performs every cycle
-    via _process_post_trade_chain(), independent of the 7 segments' config."""
+async def seed_post_trade_day(
+    session_factory, trade_date: date, timezone: str = "Asia/Kolkata",
+) -> None:
+    """
+    Seed the 5 post-trade process rows for trade_date from the active
+    workflow config's post_trade_processes list — mirrors the seeding
+    orchestrator.run_wake_cycle() performs every cycle via
+    _process_post_trade_chain(), independent of the 7 segments' config.
+
+    If no workflow has been uploaded for trade_date yet (tests that
+    exercise the post-trade chain standalone, without seed_day()), uploads
+    a minimal one (empty segments list + default post_trade_processes, via
+    build_default_workflow_json([], ...)) first so there's something to
+    seed from — same fallback path production hits via
+    orchestrator._process_post_trade_chain()'s own get_active/
+    get_latest_effective lookup.
+    """
     async with session_factory() as session:
-        await repository.seed_post_trade_processes(session, trade_date)
+        workflow = await repository.get_active(session, trade_date)
+        if not workflow:
+            workflow_json = build_default_workflow_json([], timezone=timezone)
+            workflow, _ = await repository.upload(
+                session, trade_date, workflow_json, uploaded_by="test"
+            )
+            await session.commit()
+
+    async with session_factory() as session:
+        workflow = await repository.get_active(session, trade_date)
+        await repository.seed_post_trade_processes(session, workflow, trade_date)
         await session.commit()
 
 

@@ -133,28 +133,71 @@ async def seed_from_workflow(
 @otel_trace
 async def seed_post_trade_processes(
     session: AsyncSession,
+    workflow: EdpProperties,
     trade_date: date,
 ) -> List[SegmentExecution]:
     """
-    Create PENDING segment_execution rows for the 5 fixed T+1 post-trade
-    processes (utils/constants.POST_TRADE_ORDER) for a given trade_date.
+    Create PENDING segment_execution rows for the 5 T+1 post-trade processes
+    from the active workflow config's `post_trade_processes` list — mirrors
+    seed_from_workflow() for the 7 real segments.
 
-    Unlike seed_from_workflow(), these are NOT part of the ops-uploaded
-    workflow_json — there's no per-day login_id/window to configure for
-    them, so they're seeded unconditionally from the fixed code constant,
-    same as the 7 real segments' processing order. Idempotent: rows that
-    already exist (any status) are left untouched.
+    process_code must be one of the fixed POST_TRADE_ORDER codes: CBOS
+    trigger-endpoint dispatch and the default GTG/confirm ProcessName
+    mapping (see pipeline/post_trade_stages.py, utils/constants
+    .POST_TRADE_GTG_PROCESS_NAME) are still fixed per code — there's no CBOS
+    integration for an arbitrary 6th process — but login_id,
+    gtg_process_name, and the opening window are now ops-controlled the
+    same way segments' login_id/window are. Any unrecognized process_code
+    in the config is skipped with a warning rather than crashing the wake
+    cycle.
+
+    Backward compatibility: a workflow_json that entirely predates this
+    feature (no "post_trade_processes" key at all, e.g. an old row from
+    before an upgrade) falls back to seeding the fixed 5 in POST_TRADE_ORDER
+    unconditionally, same as the old hardcoded behavior, so existing
+    deployments keep working unchanged until re-uploaded. An explicitly
+    uploaded EMPTY list, by contrast, means ops wants no post-trade
+    processes seeded at all for that config and is respected as such.
+
+    Idempotent for rows that have already started — same
+    config_id_used/config_hash_used reconciliation behaviour as
+    seed_from_workflow() for still-PENDING rows on a config re-upload.
     """
+    if "post_trade_processes" in workflow.workflow_json:
+        proc_configs = workflow.workflow_json["post_trade_processes"]
+    else:
+        proc_configs = [{"process_code": code} for code in POST_TRADE_ORDER]
+
     created: List[SegmentExecution] = []
 
-    for code in POST_TRADE_ORDER:
+    for proc_cfg in proc_configs:
+        code = proc_cfg.get("process_code", "")
+        if code not in POST_TRADE_ORDER:
+            logger.warning(
+                f"[OPS] post_trade_processes config has unrecognized process_code={code!r} "
+                f"for {trade_date} — skipping (must be one of {POST_TRADE_ORDER})"
+            )
+            continue
+
         existing = await get_one(session, trade_date, code)
         if existing:
-            continue
+            if (
+                existing.segment_status == SegmentStatus.PENDING
+                and existing.config_hash_used != workflow.content_hash
+            ):
+                existing.config_id_used = workflow.id
+                existing.config_hash_used = workflow.content_hash
+                logger.info(
+                    f"[OPS] post_trade_process={code} trade_date={trade_date} | "
+                    f"Process row's config reference updated (was PENDING)"
+                )
+            continue  # already seeded
 
         row = SegmentExecution(
             trade_date=trade_date,
             segment_code=code,
+            config_id_used=workflow.id,
+            config_hash_used=workflow.content_hash,
             segment_status=SegmentStatus.PENDING,
             processes_json={},
         )

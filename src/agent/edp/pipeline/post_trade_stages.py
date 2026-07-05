@@ -8,11 +8,19 @@ after (but independent of) the 7 real segments.
   AWAIT_CONFIRM -> POST file_process_status(<same ProcessName>) — poll again
 
 The 5 processes only differ in which CBOS trigger endpoint handle_trigger_job()
-calls (dispatched on row.segment_code) — the GTG/confirm poll and overall
+calls (dispatched on row.segment_code, fixed code — there's no CBOS
+integration for an arbitrary process) — the GTG/confirm poll and overall
 state machine are identical for all 5, including MTFFT (MTF Fund Transfer),
 which the spec describes as "returns job execution result -> done" but which
 is otherwise driven through the same re-poll-until-confirmed pattern as the
 other 4 here for consistency.
+
+The CBOS ProcessName used for the GTG/confirm polls IS ops-configurable
+though (workflow_json["post_trade_processes"][].gtg_process_name, falling
+back to a fixed default per process_code) — resolved once by the
+orchestrator when the process starts and read here from row.current_process,
+not re-derived from a hardcoded map on every poll (see
+orchestrator._resolve_post_trade_process_name()).
 
 Mirrors pipeline/stages.py's structure (StageResult, processes_json helpers,
 _fail/_skip terminal helpers) — reused directly from there.
@@ -52,7 +60,12 @@ async def handle_await_gtg(
     now: datetime,
 ) -> StageResult:
     """POST file_process_status(<ProcessName>) — poll until CBOS says ready to trigger."""
-    process_name = POST_TRADE_GTG_PROCESS_NAME[row.segment_code]
+    # row.current_process was resolved from the active workflow config's
+    # post_trade_processes[].gtg_process_name (or the fixed default) when
+    # this process started — see orchestrator._resolve_post_trade_process_name()
+    # — and is durably persisted, so it survives a restart mid-poll without
+    # needing workflow_json re-fetched here.
+    process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
     poll_state = get_proc(row, "gtg")
     poll_count = poll_state.get("poll_count", 0) + 1
 
@@ -214,7 +227,10 @@ async def handle_trigger_job(
 
     record_post_trade_trigger(row, result.message, now)
     row.current_phase = SegmentPhase.AWAIT_CONFIRM
-    row.current_process = POST_TRADE_GTG_PROCESS_NAME[code]
+    # current_process already holds the resolved ProcessName from AWAIT_GTG
+    # (see handle_await_gtg above) — left untouched rather than re-derived
+    # from the fixed map, so a config-supplied gtg_process_name override
+    # survives into AWAIT_CONFIRM too.
     await session.flush()
 
     logger.info(stage_log(
@@ -238,7 +254,7 @@ async def handle_await_confirm(
     now: datetime,
 ) -> StageResult:
     """POST file_process_status(<ProcessName>) again — poll until CBOS confirms completion."""
-    process_name = POST_TRADE_GTG_PROCESS_NAME[row.segment_code]
+    process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
     poll_state = get_proc(row, "confirm")
     poll_count = poll_state.get("poll_count", 0) + 1
 

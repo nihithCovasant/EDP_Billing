@@ -21,6 +21,7 @@ from .segment import (
     touch_heartbeat,
     retry_segment,
     skip_segment_manually,
+    has_processing_started,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "touch_heartbeat",
     "retry_segment",
     "skip_segment_manually",
+    "has_processing_started",
 ]
