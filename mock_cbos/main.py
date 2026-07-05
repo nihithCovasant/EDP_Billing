@@ -32,6 +32,7 @@ from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from .constants import POST_TRADE_ORDER, post_trade_reference
 from .state import state, build_table2
 
 app = FastAPI(
@@ -62,17 +63,20 @@ async def file_process_status(payload: dict):
       BeginFileUpload, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION.
 
     Also reused as-is for the 5 T+1 post-trade processes' GTG/confirm polls
-    (Segment=COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT, ProcessName=CollateralValuation/
+    (Segment=COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT, ProcessName=<gtg_process_name
+    from the agent's uploaded workflow config, defaulting to CollateralValuation/
     CollateralAllocation/FundTransfer/DailyMarginReporting/DailyMarginStatements)
-    — same stateful poll-count-based TRUE/FALSE logic, just a different
-    (segment, process_name) key.
+    — same stateful poll-count-based TRUE/FALSE logic, keyed by whatever
+    (segment, process_name) triple the agent sends (ProcessName is now
+    config-driven; UserID/login_id is echoed in /mock/state for verification).
 
     Body: {"Segment": "EQ", "ProcessName": "BeginFileUpload", "UserID": "CV0001"}
     """
     segment = str(payload.get("Segment", ""))
     process_name = str(payload.get("ProcessName", ""))
+    user_id = str(payload.get("UserID", ""))
 
-    msg = state.file_status(segment, process_name)
+    msg = state.file_status(segment, process_name, user_id)
     return {"Status": "Success", "Data": [{"MSG": msg}]}
 
 
@@ -149,37 +153,42 @@ async def getdropdown(payload: dict):
 async def get_collateral_valuation(payload: dict):
     """
     Post-trade Process 1 trigger.
-    Body: {"BUTTONNAME":"COLLATERAL_VALUATION_DATEWISE","LOGINID":"G_LID","MARGINDATE":"29-Jun-2026"}
+    Body: {"BUTTONNAME":"COLLATERAL_VALUATION_DATEWISE","LOGINID":"<from config>","MARGINDATE":"29-Jun-2026"}
     """
-    state.mark_post_trade_triggered("COLVAL")
+    login_id = str(payload.get("LOGINID", ""))
+    state.mark_post_trade_triggered("COLVAL", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
 @app.post("/v1/api/process/MTFTradeProcessCollateralAllocation")
 async def mtf_trade_process_collateral_allocation(payload: dict):
-    """Post-trade Process 2 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
-    state.mark_post_trade_triggered("COLALLOC")
+    """Post-trade Process 2 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
+    login_id = str(payload.get("LOGINID", ""))
+    state.mark_post_trade_triggered("COLALLOC", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
 @app.post("/v1/api/process/MTFTradeProcessFundTransfer")
 async def mtf_trade_process_fund_transfer(payload: dict):
-    """Post-trade Process 3 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
-    state.mark_post_trade_triggered("MTFFT")
+    """Post-trade Process 3 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
+    login_id = str(payload.get("LOGINID", ""))
+    state.mark_post_trade_triggered("MTFFT", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
 @app.post("/v1/api/process/DailyMarginReporting")
 async def daily_margin_reporting(payload: dict):
-    """Post-trade Process 4 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
-    state.mark_post_trade_triggered("DMRPT")
+    """Post-trade Process 4 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
+    login_id = str(payload.get("LOGINID", ""))
+    state.mark_post_trade_triggered("DMRPT", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
 @app.post("/v1/api/process/DailyMarginStatements")
 async def daily_margin_statements(payload: dict):
-    """Post-trade Process 5 trigger. Body: {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}"""
-    state.mark_post_trade_triggered("DMSTMT")
+    """Post-trade Process 5 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
+    login_id = str(payload.get("LOGINID", ""))
+    state.mark_post_trade_triggered("DMSTMT", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
@@ -278,6 +287,74 @@ async def set_stuck(payload: dict):
         bool(payload.get("enabled", True)),
     )
     return {"stuck_keys": sorted(f"{k[0]}::{k[1]}" for k in state.stuck_keys)}
+
+
+@app.get("/mock/reference/post_trade")
+async def get_post_trade_reference():
+    """
+    Default post-trade process_code / gtg_process_name / trigger-endpoint
+    mapping — mirrors what the agent falls back to when a config entry omits
+    gtg_process_name. Use this when scripting /mock/scenario/post_trade_*
+    unless your uploaded workflow_json overrides gtg_process_name.
+    """
+    return post_trade_reference()
+
+
+@app.post("/mock/scenario/post_trade_stuck")
+async def set_post_trade_stuck(payload: dict):
+    """
+    Pin a post-trade GTG/confirm poll to always return FALSE.
+
+    Body: {
+      "process_code": "COLVAL",
+      "gtg_process_name": "CollateralValuation",  // optional — defaults from reference
+      "enabled": true
+    }
+
+    When the agent uses a custom gtg_process_name in workflow_json, pass that
+    same value here (or inspect recent_file_status_calls via /mock/state).
+    """
+    process_code = str(payload.get("process_code", "")).upper()
+    if process_code not in POST_TRADE_ORDER:
+        return {
+            "error": f"unknown process_code {process_code!r} — must be one of {list(POST_TRADE_ORDER)}",
+        }
+    gtg_process_name = payload.get("gtg_process_name")
+    enabled = bool(payload.get("enabled", True))
+    resolved = state.set_post_trade_stuck(process_code, enabled, gtg_process_name)
+    return {
+        "process_code": process_code,
+        "gtg_process_name": resolved,
+        "enabled": enabled,
+        "stuck_keys": sorted(f"{k[0]}::{k[1]}" for k in state.stuck_keys),
+    }
+
+
+@app.post("/mock/scenario/post_trade_force_ready")
+async def set_post_trade_force_ready(payload: dict):
+    """
+    Pin a post-trade GTG/confirm poll to always return TRUE immediately.
+
+    Body: {
+      "process_code": "COLVAL",
+      "gtg_process_name": "CustomColVal",  // optional — match your workflow config
+      "enabled": true
+    }
+    """
+    process_code = str(payload.get("process_code", "")).upper()
+    if process_code not in POST_TRADE_ORDER:
+        return {
+            "error": f"unknown process_code {process_code!r} — must be one of {list(POST_TRADE_ORDER)}",
+        }
+    gtg_process_name = payload.get("gtg_process_name")
+    enabled = bool(payload.get("enabled", True))
+    resolved = state.set_post_trade_force_ready(process_code, enabled, gtg_process_name)
+    return {
+        "process_code": process_code,
+        "gtg_process_name": resolved,
+        "enabled": enabled,
+        "force_ready_keys": sorted(f"{k[0]}::{k[1]}" for k in state.force_ready_keys),
+    }
 
 
 @app.post("/mock/scenario/force_ready")

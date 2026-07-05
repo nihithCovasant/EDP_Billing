@@ -17,34 +17,48 @@ without VPN/VDI access to the real MOFSL CBOS system.
 
 The 7-step segment execution flow — identical for all 7 segments (CASH/EQ,
 F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF; MTF is not special-cased) — plus
-the 5 T+1 post-trade processes that run once all 7 segments finish, on a
-single port (both real CBOS base URLs, `EDP Status API` port 8087 and `Main
-Process API` port 8003, have distinct paths so one mock server process can
-stand in for both):
+the 5 T+1 post-trade processes, on a single port (both real CBOS base URLs,
+`EDP Status API` port 8087 and `Main Process API` port 8003, have distinct
+paths so one mock server process can stand in for both):
 
 | Step(s) | Endpoint | Purpose |
 |---|---|---|
-| 1, 3, 5, 6, 7 | `POST /api/edp/file_process_status` | Holiday check / FILEUPLOAD / BILLPOSTING / RECON / CONTRACTNOTEGENERATION GTG polls (also reused for the 5 post-trade GTG/confirm polls) |
+| 1, 3, 5, 6, 7 | `POST /api/edp/file_process_status` | Holiday check / FILEUPLOAD / BILLPOSTING / RECON / CONTRACTNOTEGENERATION GTG polls (also reused for post-trade GTG/confirm polls) |
 | 2 | `POST /v1/api/brokerage/getdropdown` | `EXISTINGPROCESSID` — check for an existing process ID before reserving |
-| 2, 4 | `POST /v1/api/process/getNewTradeProcess` | Reserve PROCESSID (`PROCESSID:"0"`, only if not found via getdropdown) / execute (`PROCESSID:<actual>`) |
+| 2, 4 | `POST /v1/api/process/getNewTradeProcess` | Reserve PROCESSID (`PROCESSID:"0"`) / execute (`PROCESSID:<actual>`) |
 | — | Upload stubs | Kept for completeness — the EDP agent never calls these (RPA's job) |
 
-Post-trade (T+1) triggers — one per process, in fixed order:
+### Post-trade (T+1) — config-driven on the agent side
 
-| Process | Endpoint |
-|---|---|
-| 1. Collateral Valuation (`COLVAL`) | `POST /v1/api/process/GetCollateralValuation` |
-| 2. Collateral Allocation (`COLALLOC`) | `POST /v1/api/process/MTFTradeProcessCollateralAllocation` |
-| 3. MTF Fund Transfer (`MTFFT`) | `POST /v1/api/process/MTFTradeProcessFundTransfer` |
-| 4. Daily Margin Reporting (`DMRPT`) | `POST /v1/api/process/DailyMarginReporting` |
-| 5. Daily Margin Statements (`DMSTMT`) | `POST /v1/api/process/DailyMarginStatements` |
+The agent now reads post-trade settings from `workflow_json.post_trade_processes`
+(uploaded by ops). On the mock server:
 
-Each always returns `{"Status":"Success","Data":[{"MSG":"Process started successfully"}]}`
-and records the call in `state.post_trade_triggered` (visible via `/mock/state`).
+| What | Config-driven? | Mock behaviour |
+|---|---|---|
+| `process_code` (COLVAL, …) | Fixed set of 5 | Used as `Segment` in GTG polls; trigger endpoint is fixed per code |
+| `login_id` | Yes — per process | Accepted on trigger payloads (`LOGINID`); echoed in `/mock/state` → `post_trade_triggered` and `recent_file_status_calls` (`UserID`) |
+| `gtg_process_name` | Yes — per process | Used as `ProcessName` in GTG/confirm polls — **any** string works; poll state is keyed by `(process_code, gtg_process_name)` |
+| `window_start` | Yes — agent only | Not enforced by mock CBOS (agent gates locally) |
+
+Default reference mapping (when config omits `gtg_process_name`):
+
+| Process | Trigger endpoint | Default GTG ProcessName |
+|---|---|---|
+| 1. Collateral Valuation (`COLVAL`) | `POST /v1/api/process/GetCollateralValuation` | `CollateralValuation` |
+| 2. Collateral Allocation (`COLALLOC`) | `POST /v1/api/process/MTFTradeProcessCollateralAllocation` | `CollateralAllocation` |
+| 3. MTF Fund Transfer (`MTFFT`) | `POST /v1/api/process/MTFTradeProcessFundTransfer` | `FundTransfer` |
+| 4. Daily Margin Reporting (`DMRPT`) | `POST /v1/api/process/DailyMarginReporting` | `DailyMarginReporting` |
+| 5. Daily Margin Statements (`DMSTMT`) | `POST /v1/api/process/DailyMarginStatements` | `DailyMarginStatements` |
+
+Fetch the full reference JSON: `GET /mock/reference/post_trade`
+
+Each trigger always returns `{"Status":"Success","Data":[{"MSG":"Process started successfully"}]}`
+and records `{login_id, triggered_at}` under `state.post_trade_triggered[process_code]`.
 
 Plus admin/control endpoints (`/mock/*`) to script test scenarios (holiday
 simulation, forcing a stage to stay pending, forcing instant readiness,
-changing how many polls are needed before `TRUE`).
+changing how many polls are needed before `TRUE`, post-trade-specific
+stuck/force_ready helpers).
 
 ## Running it
 
@@ -107,9 +121,13 @@ No agent code changes needed either way.
   that `(segment, trade_date)` — before that it correctly returns an empty
   `Result`, exercising the "reserve a new one" branch of Step 2.
 - The 5 post-trade triggers always succeed deterministically (no failure
-  scenario endpoint yet) — use `/mock/scenario/stuck` on their GTG
-  `ProcessName` (e.g. `CollateralValuation`) to simulate a stuck/failing
-  post-trade process instead.
+  scenario endpoint yet) — use `/mock/scenario/post_trade_stuck` (or the
+  generic `/mock/scenario/stuck` with the **configured** `gtg_process_name`,
+  not necessarily the default) to simulate a stuck/failing post-trade process.
+- GTG polls accept **any** `(Segment, ProcessName, UserID)` the agent sends —
+  custom `gtg_process_name` / `login_id` from `workflow_json.post_trade_processes`
+  work without mock changes. Inspect `recent_file_status_calls` in `/mock/state`
+  to verify the agent sent the expected values.
 
 ## Scripting test scenarios
 
@@ -135,7 +153,21 @@ curl -X POST http://localhost:9100/mock/scenario/force_ready \
      -H "Content-Type: application/json" \
      -d '{"segment": "EQ", "process_name": "BILLPOSTING", "enabled": true}'
 
-# Inspect current in-memory state (poll counts, reserved PIDs, overrides)
+# Post-trade: force COLVAL GTG to pass immediately (uses default gtg_process_name)
+curl -X POST http://localhost:9100/mock/scenario/post_trade_force_ready \
+     -H "Content-Type: application/json" \
+     -d '{"process_code": "COLVAL", "enabled": true}'
+
+# Post-trade with custom gtg_process_name from your uploaded workflow config
+curl -X POST http://localhost:9100/mock/scenario/post_trade_stuck \
+     -H "Content-Type: application/json" \
+     -d '{"process_code": "COLVAL", "gtg_process_name": "CustomColVal", "enabled": true}'
+
+# Default post-trade reference (process_code, default GTG names, trigger paths)
+curl http://localhost:9100/mock/reference/post_trade
+
+# Inspect current in-memory state (poll counts, reserved PIDs, overrides,
+# post_trade_triggered login_ids, recent file_process_status calls)
 curl http://localhost:9100/mock/state
 ```
 

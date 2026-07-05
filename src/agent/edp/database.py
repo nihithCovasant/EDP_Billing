@@ -4,6 +4,7 @@ Async database engine and session factory for the EDP agent.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
@@ -24,7 +25,11 @@ _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 @otel_trace
 async def init_database(database_url: str) -> None:
     global _engine, _session_factory
-    run_migrations()
+    # Alembic upgrade is synchronous — run off the event loop so a fresh-DB
+    # migration pass (can take tens of seconds on PostgreSQL) doesn't freeze
+    # the entire HTTP server and make startup look hung after the last
+    # "Running upgrade ..." line with no "Wake loop started" yet.
+    await asyncio.to_thread(run_migrations)
     _engine = create_async_engine(database_url, echo=False)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     logger.info(f"EDP database initialized: {database_url.split('://')[0]}://...")

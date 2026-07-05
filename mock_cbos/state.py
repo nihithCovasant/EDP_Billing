@@ -6,7 +6,9 @@ sequence (BeginFileUpload -> FILEUPLOAD -> BILLPOSTING -> RECON ->
 CONTRACTNOTEGENERATION), identical for all 7 segments (CASH/EQ, F&O/DR,
 CD/CUR, SLBM/SL, MCX, NCDEX, MTF), plus the 5 T+1 post-trade processes
 (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT — GTG/confirm polling reuses the
-same file_status() method as the segments, keyed by their own ProcessName),
+same file_status() method as the segments, keyed by (process_code,
+gtg_process_name) where gtg_process_name comes from the agent's uploaded
+workflow config or falls back to mock_cbos.constants.DEFAULT_GTG_PROCESS_NAME),
 without any external dependency — pure Python dict, reset on server restart
 or via the /mock/reset control endpoint.
 """
@@ -16,7 +18,10 @@ from __future__ import annotations
 import itertools
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+from .constants import resolve_gtg_process_name
 
 
 @dataclass
@@ -42,11 +47,18 @@ class MockCbosState:
     # (segment, process_name) pairs pinned to always return TRUE immediately
     force_ready_keys: set = field(default_factory=set)
 
-    # Post-trade processes (COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT) that have
-    # had their trigger endpoint called at least once — purely informational
-    # (used by /mock/state for debugging), the file_status() poll counters
-    # above are what actually drive GTG/confirm poll behaviour.
-    post_trade_triggered: set = field(default_factory=set)
+    # Post-trade processes that have had their trigger endpoint called at
+    # least once — keyed by process_code (COLVAL, ...). Values hold the
+    # LOGINID that was on the trigger payload (config-driven login_id from
+    # workflow_json.post_trade_processes[].login_id) plus a timestamp for
+    # /mock/state debugging. GTG/confirm poll behaviour is still driven by
+    # poll_counts above, keyed by (process_code, gtg_process_name).
+    post_trade_triggered: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # Last few file_process_status calls — useful for verifying the agent
+    # sent the config-resolved (Segment, ProcessName, UserID) triple.
+    recent_file_status_calls: List[Dict[str, str]] = field(default_factory=list)
+    _max_recent_calls: int = 20
 
     _pid_counter: itertools.count = field(default_factory=lambda: itertools.count(17001))
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -55,13 +67,16 @@ class MockCbosState:
     # file_process_status (Good-to-Go polling)
     # -------------------------------------------------------------------------
 
-    def file_status(self, segment: str, process_name: str) -> str:
+    def file_status(self, segment: str, process_name: str, user_id: str = "") -> str:
         """Return TRUE | FALSE | SKIP for the given (segment, process_name)."""
         with self._lock:
-            if process_name == "BeginFileUpload" and segment.upper() in self.holiday_segments:
+            seg = segment.upper()
+            if process_name == "BeginFileUpload" and seg in self.holiday_segments:
                 return "SKIP"
 
-            key = (segment.upper(), process_name)
+            key = (seg, process_name)
+
+            self._record_file_status_call(seg, process_name, user_id)
 
             if key in self.stuck_keys:
                 return "FALSE"
@@ -73,6 +88,16 @@ class MockCbosState:
             if self.poll_counts[key] >= self.ready_after:
                 return "TRUE"
             return "FALSE"
+
+    def _record_file_status_call(self, segment: str, process_name: str, user_id: str) -> None:
+        entry = {
+            "segment": segment,
+            "process_name": process_name,
+            "user_id": user_id or "",
+        }
+        self.recent_file_status_calls.append(entry)
+        if len(self.recent_file_status_calls) > self._max_recent_calls:
+            self.recent_file_status_calls = self.recent_file_status_calls[-self._max_recent_calls:]
 
     # -------------------------------------------------------------------------
     # getNewTradeProcess (reserve + trigger)
@@ -100,12 +125,40 @@ class MockCbosState:
     # Transfer, Daily Margin Reporting/Statements
     # -------------------------------------------------------------------------
 
-    def mark_post_trade_triggered(self, segment: str) -> None:
+    def mark_post_trade_triggered(self, process_code: str, login_id: str = "") -> None:
         with self._lock:
-            self.post_trade_triggered.add(segment.upper())
+            code = process_code.upper()
+            self.post_trade_triggered[code] = {
+                "login_id": login_id or "",
+                "triggered_at": datetime.now().isoformat(timespec="seconds"),
+            }
 
-    def is_post_trade_triggered(self, segment: str) -> bool:
-        return segment.upper() in self.post_trade_triggered
+    def is_post_trade_triggered(self, process_code: str) -> bool:
+        return process_code.upper() in self.post_trade_triggered
+
+    def set_post_trade_stuck(
+        self, process_code: str, enabled: bool, gtg_process_name: str | None = None,
+    ) -> str:
+        """
+        Pin a post-trade GTG/confirm poll to always return FALSE.
+        Returns the resolved gtg_process_name used as the stuck key.
+        """
+        code = process_code.upper()
+        proc_name = resolve_gtg_process_name(code, gtg_process_name)
+        self.set_stuck(code, proc_name, enabled)
+        return proc_name
+
+    def set_post_trade_force_ready(
+        self, process_code: str, enabled: bool, gtg_process_name: str | None = None,
+    ) -> str:
+        """
+        Pin a post-trade GTG/confirm poll to always return TRUE immediately.
+        Returns the resolved gtg_process_name used as the force_ready key.
+        """
+        code = process_code.upper()
+        proc_name = resolve_gtg_process_name(code, gtg_process_name)
+        self.set_force_ready(code, proc_name, enabled)
+        return proc_name
 
     # -------------------------------------------------------------------------
     # Admin / control helpers (used by /mock/* endpoints)
@@ -120,6 +173,7 @@ class MockCbosState:
             self.stuck_keys.clear()
             self.force_ready_keys.clear()
             self.post_trade_triggered.clear()
+            self.recent_file_status_calls.clear()
             self._pid_counter = itertools.count(17001)
 
     def set_ready_after(self, n: int) -> None:
@@ -160,7 +214,8 @@ class MockCbosState:
                 "holiday_segments": sorted(self.holiday_segments),
                 "stuck_keys": [f"{k[0]}::{k[1]}" for k in self.stuck_keys],
                 "force_ready_keys": [f"{k[0]}::{k[1]}" for k in self.force_ready_keys],
-                "post_trade_triggered": sorted(self.post_trade_triggered),
+                "post_trade_triggered": dict(self.post_trade_triggered),
+                "recent_file_status_calls": list(self.recent_file_status_calls),
             }
 
 
