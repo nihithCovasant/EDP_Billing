@@ -10,3 +10,7 @@ dist/
 build/
 .pytest_cache/
 logs/
+
+# Local SQLite dev DB (Postgres is the real backing store — see .env)
+*.db
+*.sqlite3

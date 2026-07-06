@@ -71,28 +71,21 @@ async def advance_pipeline(
 ) -> str:
     """
     Execute pipeline stages for a segment_execution row until it blocks,
-    completes, or fails.
-
-    phase_handlers selects which pipeline drives this row — defaults to the
-    7-step real-segment pipeline; pass _POST_TRADE_PHASE_HANDLERS (via
-    pipeline.POST_TRADE_PHASE_HANDLERS) for the 5 post-trade processes.
-
-    window_end is resolved by the caller (orchestrator._resolve_window) from
-    workflow_json — it's no longer a stored column, just passed through.
-    None for post-trade rows (no deadline, see orchestrator._resolve_post_trade_window).
+    completes, or fails. phase_handlers selects which pipeline drives this
+    row — defaults to the 7-step real-segment pipeline; pass
+    POST_TRADE_PHASE_HANDLERS for the 5 post-trade processes. window_end
+    is None for post-trade rows (no deadline).
 
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
     handlers = phase_handlers if phase_handlers is not None else _PHASE_HANDLERS
     window_end = ensure_aware(window_end)
     while True:
-        # Refresh "now" every iteration — a chain of instant ADVANCE results
-        # (multiple phases completing back-to-back within one wake cycle) can
-        # otherwise run for a noticeable time against the stale timestamp
-        # captured once at the start of the wake cycle.
+        # Refresh every iteration so a chain of instant ADVANCEs doesn't run
+        # against a stale timestamp from the start of the wake cycle.
         now = now_ist()
 
-        # Window deadline check — catches segments that stall in long polling phases
+        # Catches segments that stall in long polling phases past the window.
         if (
             window_end
             and now > window_end
@@ -125,12 +118,7 @@ async def advance_pipeline(
         if handler is None:
             if phase == SegmentPhase.DONE:
                 return "completed"
-            # An unmapped phase (e.g. a future migration adds a SegmentPhase
-            # value without updating _PHASE_HANDLERS/_POST_TRADE_PHASE_HANDLERS)
-            # must not just log-and-return — that leaves the row IN_PROGRESS
-            # at the same unmapped phase forever, silently retried every
-            # cycle with no visible failure anywhere but the logs. Mark it
-            # FAILED and durably record why, same as any other stage error.
+            # An unmapped phase must not silently retry forever — fail it durably.
             logger.error(stage_log(
                 row.segment_code, str(phase),
                 "No handler registered for this phase — marking FAILED",

@@ -332,16 +332,11 @@ async def handle_trigger(
     POST getNewTradeProcess(PROCESSID=<actual>) — starts billing/calculation.
     After firing, polls BILLPOSTING from next wake cycle.
 
-    Double-trigger protection: calling this twice for the same segment-day
-    would make CBOS execute the whole billing chain twice. To prevent that,
-    "TRIGGERING" is written to processes_json BEFORE the CBOS call is made
-    — the DB always leads the CBOS call, never follows it. If the pod dies
-    at any point between that pre-commit write and the eventual
-    record_trigger()/record_trigger_failed() write (including a transient
-    network error where we simply don't know if CBOS got the call), the
-    next wake cycle re-enters this handler with processes_json["trigger"]
-    ["status"] still "TRIGGERING" and runs _recover_trigger() below instead
-    of blindly firing the trigger again.
+    Double-trigger protection: "TRIGGERING" is committed to processes_json
+    BEFORE the CBOS call is made, so the DB always leads the call. If the
+    pod dies before the eventual record_trigger()/record_trigger_failed()
+    write, the next cycle re-enters with status still "TRIGGERING" and
+    runs _recover_trigger() instead of blindly firing again.
     """
     # Safety: recover process_id if missing (crash/restart scenario)
     if not row.process_id:
@@ -376,22 +371,12 @@ async def handle_trigger(
     if get_proc(row, "trigger").get("status") == "TRIGGERING":
         return await _recover_trigger(cbos, row, session, login_id, now)
 
-    # First attempt for this segment-day — write the pre-commit marker
-    # BEFORE calling CBOS, then fire the trigger.
-    #
-    # This MUST be session.commit(), not just flush(). flush() only sends
-    # the SQL over the wire inside the current (still-open) transaction —
-    # the enclosing `async with get_session()` block in
-    # orchestrator._process_one_segment() doesn't commit until the ENTIRE
-    # advance_pipeline() call chain returns. If the pod dies after a mere
-    # flush() but before that outer commit, Postgres rolls the whole
-    # uncommitted transaction back, erasing this "TRIGGERING" marker along
-    # with it — the very thing this marker exists to survive. Committing
-    # here ends the current transaction (durably persisting TRIGGERING,
-    # plus whatever earlier phase transitions this cycle already made) and
-    # SQLAlchemy transparently opens a fresh one for everything after —
-    # safe with expire_on_commit=False (set in database.init_database),
-    # `row`'s already-loaded attributes stay usable with no extra query.
+    # First attempt for this segment-day — commit the pre-commit marker
+    # BEFORE calling CBOS. Must be commit(), not flush(): flush() alone
+    # stays inside the outer (uncommitted) transaction, so a crash before
+    # the enclosing session commits would roll back "TRIGGERING" along
+    # with it — the exact thing this marker exists to survive.
+    # expire_on_commit=False keeps `row`'s loaded attributes usable after.
     record_trigger_attempt(row, now)
     await session.commit()
 
@@ -420,17 +405,11 @@ async def _recover_trigger(
     now: datetime,
 ) -> StageResult:
     """
-    Recovery decision tree for a segment resuming with processes_json
-    ["trigger"]["status"] == "TRIGGERING" — we know we intended to fire the
-    trigger but never durably recorded whether CBOS actually received it
-    (pod crash, or an earlier transient network error on the call itself).
-
-    Ask CBOS for the current Table2 step statuses on the saved PROCESSID
-    before deciding what to do next:
-      - Any step IN_PROGRESS/SUCCESS -> CBOS already has it; do NOT
-        re-trigger — just catch the DB up to TRIGGERED.
-      - All steps PENDING (or none)  -> CBOS never received it; safe to
-        fire the trigger now.
+    Recovery for a segment resuming with trigger.status == "TRIGGERING" —
+    we intended to fire but never durably learned if CBOS received it.
+    Checks CBOS's Table2 step statuses on the saved PROCESSID: any step
+    IN_PROGRESS/SUCCESS means CBOS already has it (catch DB up to
+    TRIGGERED, don't re-fire); all PENDING means safe to trigger now.
     """
     logger.warning(stage_log(
         row.segment_code, "TRIGGER",
@@ -745,15 +724,9 @@ async def _fail(
     row: SegmentExecution, category: str, reason: str, now: datetime,
 ) -> None:
     """
-    Mark the segment FAILED — a permanent CBOS/system error. This HALTS the
-    rest of the day's sequential chain (orchestrator stops at the first
-    FAILED segment), so it is reserved for real errors, not for "ran out of
-    time waiting" (see _skip for that — TIMEOUT and CBOS_SKIP responses do
-    NOT halt the chain, they just skip this one segment and move on).
-
-    No HITL/alert bookkeeping — MOFSL ops watches the day's status via the
-    API and handles skipped/failed segments manually; this just records the
-    outcome on the row and moves on.
+    Mark the segment FAILED — a permanent error. Halts the rest of the
+    day's sequential chain (orchestrator stops at the first FAILED
+    segment), reserved for real errors, not timeouts (see _skip).
     """
     logger.error(stage_log(
         row.segment_code,
@@ -773,12 +746,8 @@ async def _skip(
     row: SegmentExecution, category: str, reason: str, now: datetime,
 ) -> None:
     """
-    Mark the segment SKIPPED for today. Used for: holiday (CBOS_SKIP at
-    HOLIDAY_CHECK), a CBOS_SKIP response at ANY later stage, and TIMEOUT
-    (window deadline passed while still polling FALSE). Unlike FAILED, a
-    SKIPPED segment does NOT halt the chain — the orchestrator moves on to
-    the next segment in sequence. MOFSL ops handles skipped segments
-    manually the next day; we just record the outcome and move on.
+    Mark the segment SKIPPED (holiday, CBOS_SKIP at any stage, or TIMEOUT).
+    Unlike FAILED, does NOT halt the chain — orchestrator moves on.
     """
     logger.info(stage_log(
         row.segment_code,

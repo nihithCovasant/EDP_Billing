@@ -18,19 +18,12 @@ _ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
 @otel_trace
 def run_migrations() -> None:
     """
-    Upgrade to the latest Alembic revision (head).
+    Upgrade to the latest Alembic revision (head). Called synchronously
+    during init_database(), off the event loop via asyncio.to_thread.
 
-    Called synchronously during init_database() before the async engine starts
-    (off the event loop, via asyncio.to_thread — see database.py).
-    Database URL is resolved inside alembic/env.py from the same .env / config
-    as the running agent.
-
-    Note: when the DB is already at head (the common case on every restart
-    after the first), Alembic itself only logs two "Context impl.../Will
-    assume transactional DDL" lines and nothing else — it does NOT print a
-    "no migrations to run" line. That silence is normal, not a hang; the
-    explicit before/after logs here (with elapsed_ms) make that unambiguous
-    so a quiet gap here isn't mistaken for the process being stuck.
+    When already at head, Alembic logs nothing but two boilerplate lines —
+    the before/after logs here (with elapsed_ms) make that silence
+    unambiguous rather than looking like a hang.
     """
     if not _ALEMBIC_INI.is_file():
         raise RuntimeError(f"alembic.ini not found at {_ALEMBIC_INI}")

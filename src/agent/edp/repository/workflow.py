@@ -35,14 +35,9 @@ async def get_latest_effective(
     as_of_date: date,
 ) -> Optional[EdpProperties]:
     """
-    Return the most recently uploaded active config on or before `as_of_date`.
-
-    Ops does NOT need to upload a config every day — only when something
-    changes. This carries the last uploaded config forward indefinitely
-    until a newer one is uploaded (for any date, not just `as_of_date`).
-
-    Used as a fallback by the orchestrator when get_active(as_of_date) finds
-    no row uploaded specifically for today.
+    Return the most recently uploaded active config on or before `as_of_date`
+    — carries the last uploaded config forward until a newer one exists.
+    Fallback used when get_active(as_of_date) finds nothing for today.
     """
     stmt = (
         select(EdpProperties)
@@ -67,27 +62,15 @@ async def upload(
     uploaded_by: str = "system",
 ) -> tuple[EdpProperties, bool]:
     """
-    Insert the workflow config for the day as a brand-new row.
+    Insert the workflow config for the day as a brand-new row, superseding
+    whatever was active before. No content-hash dedup — every call creates
+    a new audit row. Returns (row, is_new); is_new is False only if this
+    call lost a concurrent-upload race (see IntegrityError handling below).
 
-    There is no content-hash dedup check: every call to this function
-    creates a new row and marks it active, superseding whatever was active
-    before for this trade_date (if anything). Re-uploading identical JSON
-    on purpose or by mistake still creates a new audit row — the caller is
-    always trusted to know it wants a new version. Returns (row, is_new)
-    with is_new always True on success, kept for API/response-shape
-    backward compatibility; it is only False when this call lost a
-    concurrent-upload race (see below) and ended up not creating anything.
-
-    Concurrency: this is check-then-act (get_active() then insert), but a
-    unique partial index — one active row per trade_date, see
-    models.EdpProperties.__table_args__ — makes the actual write atomic at
-    the database level. Two concurrent uploads for the same date (a manual
-    re-upload racing an automated retry) can both pass the get_active()
-    check before either commits, but only one INSERT can ever land; the
-    other raises IntegrityError, caught below and resolved by returning
-    whichever row actually won instead of crashing the request or leaving
-    two is_active=True rows (which would break every future get_active()
-    call with MultipleResultsFound).
+    Concurrency: check-then-act (get_active() then insert), but a unique
+    partial index (one active row per trade_date) makes the write atomic
+    at the DB level — the losing concurrent INSERT raises IntegrityError
+    instead of leaving two is_active=True rows.
     """
     existing = await get_active(session, trade_date)
 

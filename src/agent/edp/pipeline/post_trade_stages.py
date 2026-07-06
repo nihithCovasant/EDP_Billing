@@ -7,23 +7,13 @@ after (but independent of) the 7 real segments.
   TRIGGER_JOB   -> POST <process-specific trigger endpoint>
   AWAIT_CONFIRM -> POST file_process_status(<same ProcessName>) — poll again
 
-The 5 processes only differ in which CBOS trigger endpoint handle_trigger_job()
-calls (dispatched on row.segment_code, fixed code — there's no CBOS
-integration for an arbitrary process) — the GTG/confirm poll and overall
-state machine are identical for all 5, including MTFFT (MTF Fund Transfer),
-which the spec describes as "returns job execution result -> done" but which
-is otherwise driven through the same re-poll-until-confirmed pattern as the
-other 4 here for consistency.
+The 5 processes differ only in which CBOS trigger endpoint
+handle_trigger_job() dispatches to; the GTG/confirm poll and state machine
+are identical for all 5. The GTG/confirm ProcessName is ops-configurable
+(workflow_json["post_trade_processes"][].gtg_process_name), resolved once
+when the process starts and read from row.current_process thereafter.
 
-The CBOS ProcessName used for the GTG/confirm polls IS ops-configurable
-though (workflow_json["post_trade_processes"][].gtg_process_name, falling
-back to a fixed default per process_code) — resolved once by the
-orchestrator when the process starts and read here from row.current_process,
-not re-derived from a hardcoded map on every poll (see
-orchestrator._resolve_post_trade_process_name()).
-
-Mirrors pipeline/stages.py's structure (StageResult, processes_json helpers,
-_fail/_skip terminal helpers) — reused directly from there.
+Mirrors pipeline/stages.py's structure (StageResult, _fail/_skip helpers).
 """
 
 from __future__ import annotations
@@ -60,11 +50,8 @@ async def handle_await_gtg(
     now: datetime,
 ) -> StageResult:
     """POST file_process_status(<ProcessName>) — poll until CBOS says ready to trigger."""
-    # row.current_process was resolved from the active workflow config's
-    # post_trade_processes[].gtg_process_name (or the fixed default) when
-    # this process started — see orchestrator._resolve_post_trade_process_name()
-    # — and is durably persisted, so it survives a restart mid-poll without
-    # needing workflow_json re-fetched here.
+    # Resolved and persisted at process start (see
+    # orchestrator._resolve_post_trade_process_name()); survives a restart mid-poll.
     process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
     poll_state = get_proc(row, "gtg")
     poll_count = poll_state.get("poll_count", 0) + 1
@@ -150,18 +137,11 @@ async def handle_trigger_job(
     """
     POST the process-specific trigger endpoint (dispatched on segment_code).
 
-    Crash safety: unlike the real-segment TRIGGER step, there is no
-    PROCESSID/Table2 equivalent for CBOS's post-trade endpoints, so a
-    resumed pod has no way to ask CBOS "did you actually get my last call?"
-    before deciding whether it's safe to fire again. Given that, the only
-    behaviour that can never double-trigger a real trading/collateral
-    operation is: if we see our own "TRIGGERING" marker already sitting
-    here (written durably, by commit(), right before the call last time),
-    we know an attempt was made and its outcome is unknown — so we refuse
-    to call the trigger endpoint again and mark the process FAILED with an
-    explicit "needs manual CBOS verification" reason instead. An operator
-    can then check CBOS directly and use the retry endpoint once they know
-    it's actually safe.
+    Crash safety: unlike the real-segment TRIGGER step, there's no
+    PROCESSID/Table2 equivalent to ask CBOS "did you get my last call?".
+    So if our own "TRIGGERING" marker is already set, we refuse to
+    re-fire and mark FAILED with a "needs manual CBOS verification"
+    reason instead — an operator verifies with CBOS before retrying.
     """
     code = row.segment_code
     method_name = _TRIGGER_DISPATCH.get(code)
@@ -174,23 +154,20 @@ async def handle_trigger_job(
     if get_proc(row, "trigger").get("status") == "TRIGGERING":
         logger.error(stage_log(
             code, "TRIGGER_JOB",
-            "Resuming with an unconfirmed prior trigger attempt — post-trade jobs have no "
-            "CBOS-side status check to safely verify, refusing to re-fire; marking FAILED "
-            "for manual verification",
+            "Resuming with an unconfirmed prior trigger attempt — refusing to "
+            "re-fire; marking FAILED for manual verification",
         ))
         await _fail(
             row, "CBOS_ERROR",
-            "Unconfirmed trigger attempt after restart — verify with CBOS directly before "
-            "retrying (post-trade triggers cannot be safely auto-recovered)",
+            "Unconfirmed trigger attempt after restart — verify with CBOS "
+            "directly before retrying",
             now,
         )
         await session.flush()
         return StageResult.FAILED
 
-    # Pre-commit marker BEFORE the CBOS call, durably committed (not just
-    # flushed) so a crash between this write and the outcome being recorded
-    # can never silently revert to "never attempted" — see module docstring
-    # above and record_post_trade_trigger_attempt()'s docstring.
+    # Pre-commit marker BEFORE the CBOS call, durably committed so a crash
+    # in between can never silently revert to "never attempted".
     record_post_trade_trigger_attempt(row, now)
     await session.commit()
 
@@ -201,9 +178,8 @@ async def handle_trigger_job(
         triggered_at=now.strftime("%H:%M:%S %Z"),
     ))
 
-    # All 5 trigger methods share the same (login_id, date) signature — only
-    # the JSON key differs (MARGINDATE for COLVAL, TRADEDATE for the rest),
-    # which is handled inside CbosClient itself.
+    # All 5 trigger methods share this signature; CbosClient handles the
+    # per-endpoint JSON key differences (MARGINDATE vs TRADEDATE) internally.
     result = await trigger_fn(login_id, row.trade_date)
 
     if not result.success:
@@ -227,10 +203,7 @@ async def handle_trigger_job(
 
     record_post_trade_trigger(row, result.message, now)
     row.current_phase = SegmentPhase.AWAIT_CONFIRM
-    # current_process already holds the resolved ProcessName from AWAIT_GTG
-    # (see handle_await_gtg above) — left untouched rather than re-derived
-    # from the fixed map, so a config-supplied gtg_process_name override
-    # survives into AWAIT_CONFIRM too.
+    # current_process already holds the resolved ProcessName from AWAIT_GTG.
     await session.flush()
 
     logger.info(stage_log(

@@ -90,9 +90,7 @@ class EdpBootstrapConfig:
     cbos_use_mock: bool = True
     cbos_login_id: str = "CV0001"
 
-    # LOGINID used for the 5 T+1 post-trade trigger calls (GetCollateralValuation,
-    # MTFTradeProcessCollateralAllocation/FundTransfer, DailyMarginReporting/
-    # Statements) — a distinct login ID from cbos_login_id, per spec ("G_LID").
+    # LOGINID for the 5 T+1 post-trade trigger calls, distinct from cbos_login_id.
     post_trade_login_id: str = "G_LID"
 
     # Database
@@ -104,15 +102,9 @@ class EdpBootstrapConfig:
     # Unique ID for this agent pod (used as lock_owner)
     agent_instance_id: str = "agent-1"
 
-    # Default segment definitions — used to auto-seed edpb_properties
-    # when no config has been uploaded for today yet.
+    # Auto-seed defaults, used when no config has been uploaded yet.
     default_segments: List[Dict[str, Any]] = field(default_factory=list)
-
-    # Default post-trade process definitions — same auto-seed role as
-    # default_segments, for the 5 T+1 post-trade processes' per-process
-    # login_id / opening window (see build_default_workflow_json()). Empty
-    # here means "use the fixed legacy defaults" (POST_TRADE_ORDER order,
-    # post_trade_login_id for every process, window only on the first).
+    # Empty means "use fixed legacy defaults" (see build_default_workflow_json()).
     default_post_trade_processes: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -125,21 +117,10 @@ def load_edp_config() -> EdpBootstrapConfig:
     """
     Load EDP bootstrap settings from agent_config.json under agent_config.edp.
 
-    A missing/empty/malformed `edp` config section used to fail silently:
-    every field just fell through to a hardcoded default — cbos_use_mock=
-    True pointing at localhost, SQLite for the database — with nothing in
-    the logs to say so. A broken production deploy would start up
-    "healthy," run entirely in mock mode against no real CBOS all day, and
-    report success. This function now:
-      1. Always logs, at WARNING level, exactly which critical settings
-         (CBOS URLs/mock flag, database URL) fell through to a hardcoded
-         default rather than an explicit env var or agent_config.json value
-         — impossible to miss in production logs / log-based alerting.
-      2. Raises RuntimeError instead of starting up silently misconfigured
-         when EDP_STRICT_CONFIG=true is set (intended for production
-         deployment manifests) and ANY such setting fell through to a
-         hardcoded default. Left opt-in (not the default) so local dev /
-         zero-config test runs are unaffected.
+    Logs a WARNING for any critical setting (CBOS URLs/mock flag, database
+    URL) that fell through to a hardcoded default rather than an explicit
+    env var / config value. If EDP_STRICT_CONFIG=true, raises instead of
+    starting up silently misconfigured (opt-in, off by default).
     """
     raw = load_agent_config()
     default_cfg = raw.get("default", {})
@@ -158,21 +139,11 @@ def load_edp_config() -> EdpBootstrapConfig:
             "for a fully env-var-driven deployment, but verify that's intentional"
         )
 
-    # Database URL — env vars (DATABASE_URL or DB_*) take priority; see _resolve_database_url
+    # Env vars take priority over agent_config.json, then hardcoded defaults.
     secrets = default_cfg.get("secrets", {})
     db_url = _resolve_database_url(edp_raw, secrets)
     db_url_defaulted = db_url == "sqlite+aiosqlite:///./edp_agent.db" and not edp_raw.get("database_url")
 
-    # CBOS URLs / mock toggle — env vars take priority over agent_config.json
-    # so switching between the Mock CBOS Server, the real CBOS system, or
-    # in-process mock responses is a single-place .env edit (see
-    # mock_cbos/README.md). Falls back to agent_config.json, then hardcoded
-    # defaults, if the env vars are not set.
-    # Preserves the exact original resolution semantics — os.getenv's own
-    # default argument only kicks in when the env var is completely UNSET,
-    # not when it's set to an empty string — while still being able to
-    # report (for logging only) whether the value ended up as the
-    # hardcoded fallback with nothing explicitly configured anywhere.
     cbos_status_url = os.getenv(
         "CBOS_STATUS_URL", edp_raw.get("cbos_status_url", "http://localhost:8087")
     )
@@ -211,10 +182,7 @@ def load_edp_config() -> EdpBootstrapConfig:
                 "agent_config.json 'edp' fields explicitly"
             )
 
-    # EDP_WAKE_INTERVAL_SECONDS env override exists purely so a demo/local
-    # run can speed the loop up (e.g. to 3-5s) without editing
-    # agent_config.json — same "env var wins" pattern as the CBOS settings
-    # above, not meant to be set in a real prod deployment.
+    # For demo/local runs to speed the loop up without editing agent_config.json.
     wake_interval_seconds = int(
         os.getenv("EDP_WAKE_INTERVAL_SECONDS", edp_raw.get("wake_interval_seconds", 60))
     )
@@ -243,32 +211,13 @@ def build_default_workflow_json(
     post_trade_processes: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
     """
-    Build a workflow_json from the default_segments / default_post_trade_processes
-    lists in bootstrap config.
+    Build a workflow_json from default_segments / default_post_trade_processes.
 
-    workflow_json intentionally carries no "timezone" field — the agent only
-    ever operates in IST (EdpBootstrapConfig.timezone), and including a
-    per-config timezone would wrongly imply ops can pick a different one
-    per upload.
-
-    The 7-stage pipeline (BeginFileUpload → RESERVE_PID → FILEUPLOAD → TRIGGER
-    → BILLPOSTING → RECON → CONTRACTNOTEGENERATION) is fixed in the orchestrator
-    and does not need to be listed per segment in the workflow_json.
-    The workflow_json only carries segment identity + timing metadata.
-
-    Processing order and display name are NOT included here — both are fixed
-    code constants resolved from segment_code (see utils/constants.py), not
-    part of the config. This system is also EDP-only, so there's no domain
-    field to carry either.
-
-    Same idea for post_trade_processes: process_code (one of the fixed
-    POST_TRADE_ORDER 5) and CBOS trigger-endpoint dispatch stay fixed code —
-    there is no CBOS integration for an arbitrary 6th process — but
-    login_id / gtg_process_name / opening window are now config-driven, same
-    as the 7 segments' login_id/window. post_trade_processes=None builds the
-    fixed legacy defaults (POST_TRADE_ORDER order, a single shared login_id,
-    window only on the first process) so callers that don't care about
-    per-process overrides get the original hardcoded behavior unchanged.
+    No "timezone" field — the agent only ever operates in IST (see
+    EdpBootstrapConfig.timezone). Pipeline stages, processing order, and
+    display names are fixed code constants, not part of the config — this
+    only carries segment/process identity + timing metadata. Passing
+    post_trade_processes=None builds the fixed legacy defaults.
     """
     built_segments = []
     for seg in segments:

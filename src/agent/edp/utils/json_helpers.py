@@ -1,25 +1,14 @@
 """
-processes_json read/write helpers.
+processes_json read/write helpers — per-stage execution state for a
+segment_execution row (see models.SegmentExecution docstring for shapes).
 
-processes_json stores the per-stage execution state for a segment_execution
-row. Two shapes exist, depending on segment_code (see models.SegmentExecution
-docstring for the full shapes):
+The "trigger" stage has its own status progression for double-trigger
+crash protection: PID_RESERVED -> TRIGGERING -> TRIGGERED (or FAILED).
+"TRIGGERING" is written BEFORE the CBOS call, and is the signal a resumed
+pod uses to run the recovery check instead of re-firing.
 
-  7 real segments (6 stages): holiday_check, file_upload_ready, trigger,
-    bill_posting, recon, contract_note
-  5 post-trade processes (3 stages): gtg, trigger, confirm
-
-The "trigger" stage (real segments only) has its own internal status
-progression, used for double-trigger crash protection — see
-record_trigger_attempt() / pipeline.stages.handle_trigger():
-  PID_RESERVED -> TRIGGERING -> TRIGGERED (or FAILED)
-"TRIGGERING" is written BEFORE the CBOS call is made and is the only
-status a resumed pod uses to decide it must run the recovery check instead
-of firing the trigger again.
-
-SQLAlchemy does NOT detect in-place mutations on JSON columns.
-Always use set_proc() to reassign the top-level dict so the ORM marks
-the column as modified.
+Always use set_proc() to reassign the whole dict — SQLAlchemy doesn't
+detect in-place mutations on JSON columns.
 """
 
 from __future__ import annotations
@@ -98,17 +87,9 @@ def mark_stage_done(
 def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     """
     Pre-commit write — double-trigger protection (see pipeline.stages.handle_trigger).
-
-    Durably records intent to call getNewTradeProcess(trigger) BEFORE the
-    CBOS call is made, so the DB always leads the CBOS call and never
-    follows it. If the pod dies anywhere between this write and the
-    eventual record_trigger()/record_trigger_failed() write, the next wake
-    cycle sees processes_json["trigger"]["status"] still "TRIGGERING" and
-    runs the recovery decision tree instead of blindly re-firing the
-    trigger — the one call that must never be repeated by accident.
-
-    Preserves process_id_source (set by Step 2's RESERVE_PID stage) like
-    record_trigger() does, since this is the same processes_json key.
+    Durably records intent BEFORE the CBOS call, so a crash before the
+    outcome is recorded leaves "TRIGGERING" for the recovery check to see.
+    Preserves process_id_source from Step 2, same processes_json key.
     """
     existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {
@@ -124,13 +105,8 @@ def record_trigger(
     is_runnable: bool,
     now: datetime,
 ) -> None:
-    """
-    Record a successful getNewTradeProcess trigger call.
-
-    Preserves process_id_source (set by Step 2's RESERVE_PID stage —
-    "EXISTING" or "RESERVED_NEW") instead of overwriting the whole
-    "trigger" state, since this is the same processes_json key.
-    """
+    """Record a successful trigger call, preserving process_id_source
+    ("EXISTING"|"RESERVED_NEW") set by Step 2's RESERVE_PID stage."""
     existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {
         "status": "TRIGGERED",
@@ -143,14 +119,9 @@ def record_trigger(
 
 def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
     """
-    Record a CONFIRMED, permanent getNewTradeProcess trigger failure.
-
-    Only called for a definitive (non-transient) failure — always paired
-    with pipeline.stages._fail(), which marks the whole segment FAILED (a
-    terminal state that stops the pipeline from ever re-entering
-    handle_trigger for this row). Transient failures deliberately do NOT
-    call this — they leave processes_json["trigger"]["status"] as
-    "TRIGGERING" so the next cycle goes through the recovery check instead.
+    Record a CONFIRMED, permanent trigger failure — only for non-transient
+    failures, always paired with pipeline.stages._fail(). Transient
+    failures deliberately skip this, leaving "TRIGGERING" for recovery.
     """
     existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {
@@ -163,18 +134,11 @@ def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> N
 
 def record_post_trade_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     """
-    Pre-commit write — crash-safety marker for post-trade triggers (see
-    pipeline.post_trade_stages.handle_trigger_job).
-
-    Unlike the real-segment TRIGGER step, post-trade CBOS trigger endpoints
-    have no PROCESSID/Table2 equivalent to check afterwards — there is no
-    way to ask CBOS "did you actually get my last call?". So this marker
-    cannot power an automatic re-trigger-if-safe decision the way
-    record_trigger_attempt() does; it exists purely so a crash between the
-    CBOS call and the outcome being recorded is durably visible (never
-    silently reverts to "never attempted"), and handle_trigger_job() refuses
-    to re-fire automatically when it sees this — see that function for the
-    resulting "mark FAILED, require manual verification" behaviour.
+    Pre-commit crash-safety marker for post-trade triggers. Unlike the
+    real-segment TRIGGER step, there's no CBOS-side check afterwards, so
+    this can't power an automatic re-trigger decision — it exists purely
+    so a crash mid-call is durably visible; handle_trigger_job() refuses
+    to re-fire when it sees this and requires manual verification instead.
     """
     set_proc(row, "trigger", {
         "status": "TRIGGERING",

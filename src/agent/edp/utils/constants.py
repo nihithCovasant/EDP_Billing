@@ -1,37 +1,25 @@
 """
 Fixed constants for the EDP segment pipeline.
 
-Per the EDP Billing segment flow, the agent processes 7 segments sequentially
-— CASH -> F&O -> CD -> SLBM -> MCX -> NCDEX -> MTF — each running through the
-identical generic 7-step pipeline (holiday check -> get-or-reserve process ID
--> file upload poll -> single trigger -> bill posting / recon / contract note
-polls). MTF is not special-cased — it is just the 7th segment in sequence,
-driven through the exact same pipeline as every other segment.
-
-Once all 7 segments finish for a trade_date, 5 T+1 post-trade processes run
-(Collateral Valuation -> Collateral Allocation -> MTF Fund Transfer -> Daily
-Margin Reporting -> Daily Margin Statements), each through a shorter, uniform
-3-step pipeline (GTG poll -> trigger -> confirm poll). They are stored as
-extra segment_execution rows for the same trade_date (see POST_TRADE_ORDER),
-reusing all the same status/lock/heartbeat machinery as the 7 real segments.
+7 segments run sequentially through the generic 7-step pipeline (holiday
+check -> get-or-reserve PID -> file upload poll -> trigger -> bill
+posting/recon/contract note polls); MTF is not special-cased. Then 5 T+1
+post-trade processes run through a shorter 3-step pipeline (GTG poll ->
+trigger -> confirm poll), stored as extra segment_execution rows for the
+same trade_date, reusing the same status/lock/heartbeat machinery.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
 
-# Fixed processing order for the 7 trade segments. This used to be a
-# per-day config field (workflow_json.segments[].sequence_order) mirrored
-# onto a segment_execution DB column; it is now a code constant since the
-# regulatory sequence does not change day to day. Changing the order
-# requires a code change.
+# Fixed processing order — a code constant since the regulatory sequence
+# doesn't change day to day; changing it requires a code change.
 SEGMENT_ORDER: tuple[str, ...] = (
     "EQ", "DR", "CUR", "SL", "MCX", "NCDEX", "MTF",
 )
 
-# Human display labels — also used to be a per-day config field
-# (workflow_json.segments[].segment_name) mirrored onto a segment_execution
-# DB column; folded into a code constant for the same reason as SEGMENT_ORDER.
+# Human display labels.
 SEGMENT_NAMES: dict[str, str] = {
     "EQ": "Cash",
     "DR": "F&O",
@@ -44,9 +32,6 @@ SEGMENT_NAMES: dict[str, str] = {
 
 # Fixed processing order for the 5 T+1 post-trade processes — run once per
 # trade_date, sequentially, AFTER (but not gated on) the 7 real segments.
-# Unlike the 7 segments, these are not part of the ops-uploaded workflow_json
-# config: there is no per-day login_id/window to configure, so the order,
-# names, and CBOS ProcessName mapping are all fixed code constants too.
 POST_TRADE_ORDER: tuple[str, ...] = (
     "COLVAL", "COLALLOC", "MTFFT", "DMRPT", "DMSTMT",
 )

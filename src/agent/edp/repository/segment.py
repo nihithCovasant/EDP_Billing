@@ -87,13 +87,8 @@ async def seed_from_workflow(
 ) -> List[SegmentExecution]:
     """
     Create PENDING segment_execution rows from the active workflow config.
-
-    Idempotent for rows that have already started (IN_PROGRESS/COMPLETED/
-    SKIPPED/FAILED) — those are left untouched. Rows no longer carry
-    segment_name/window_start_at/window_end_at (resolved on demand from
-    segment_code / workflow_json instead — see utils/constants.py and
-    orchestrator._resolve_window()), so there's nothing left to reconcile
-    on a config re-upload except config_id_used for audit.
+    Idempotent for rows that have already started — those are left
+    untouched except reconciling config_id_used for audit.
     """
     created: List[SegmentExecution] = []
 
@@ -135,31 +130,12 @@ async def seed_post_trade_processes(
     trade_date: date,
 ) -> List[SegmentExecution]:
     """
-    Create PENDING segment_execution rows for the 5 T+1 post-trade processes
-    from the active workflow config's `post_trade_processes` list — mirrors
-    seed_from_workflow() for the 7 real segments.
-
-    process_code must be one of the fixed POST_TRADE_ORDER codes: CBOS
-    trigger-endpoint dispatch and the default GTG/confirm ProcessName
-    mapping (see pipeline/post_trade_stages.py, utils/constants
-    .POST_TRADE_GTG_PROCESS_NAME) are still fixed per code — there's no CBOS
-    integration for an arbitrary 6th process — but login_id,
-    gtg_process_name, and the opening window are now ops-controlled the
-    same way segments' login_id/window are. Any unrecognized process_code
-    in the config is skipped with a warning rather than crashing the wake
-    cycle.
-
-    Backward compatibility: a workflow_json that entirely predates this
-    feature (no "post_trade_processes" key at all, e.g. an old row from
-    before an upgrade) falls back to seeding the fixed 5 in POST_TRADE_ORDER
-    unconditionally, same as the old hardcoded behavior, so existing
-    deployments keep working unchanged until re-uploaded. An explicitly
-    uploaded EMPTY list, by contrast, means ops wants no post-trade
-    processes seeded at all for that config and is respected as such.
-
-    Idempotent for rows that have already started — same config_id_used
-    reconciliation behaviour as seed_from_workflow() for still-PENDING
-    rows on a config re-upload.
+    Create PENDING segment_execution rows for the 5 T+1 post-trade
+    processes from workflow_json["post_trade_processes"] — mirrors
+    seed_from_workflow(). process_code must be one of POST_TRADE_ORDER
+    (unrecognized codes are skipped with a warning); a missing
+    "post_trade_processes" key falls back to the fixed 5 for backward
+    compatibility, while an explicit empty list means "seed none."
     """
     if "post_trade_processes" in workflow.workflow_json:
         proc_configs = workflow.workflow_json["post_trade_processes"]
@@ -209,19 +185,10 @@ async def seed_post_trade_processes(
 @otel_trace
 async def has_processing_started(session: AsyncSession, trade_date: date) -> bool:
     """
-    True if ANY segment_execution row for trade_date (one of the 7 real
-    segments or the 5 T+1 post-trade processes) has left PENDING — i.e.
-    billing is already underway for that date.
-
-    Used by the workflow upload endpoint to protect an in-flight day from
-    having its config changed out from under it mid-run: ops does not
-    upload a config every day, and when they do upload a change while
-    today's segments are already IN_PROGRESS/COMPLETED/SKIPPED/FAILED, that
-    change is deferred to trade_date + 1 instead of mutating today's
-    window_start/window_end/login_id live (see api/workflow.py). A date
-    with every row still PENDING (windows not open yet, or nothing seeded
-    at all) is NOT considered "started" — a same-day config change is safe
-    right up until the first segment actually begins.
+    True if any segment_execution row for trade_date has left PENDING —
+    i.e. billing is already underway. Used by the workflow upload endpoint
+    to defer a same-day config change to trade_date + 1 instead of
+    mutating a live day's windows/login_id (see api/workflow.py).
     """
     stmt = (
         select(SegmentExecution.id)
@@ -247,38 +214,17 @@ async def acquire_lock(
     ttl_seconds: int = DEFAULT_LOCK_TTL,
 ) -> bool:
     """
-    Atomically acquire a lock on a segment_execution row via a single
-    conditional UPDATE ... WHERE ... (not a read-then-write).
+    Atomically acquire a lock via a single conditional UPDATE ... WHERE
+    (not read-then-write), so two racing pods/tasks can't both believe
+    they hold the lock — only one UPDATE can ever match the row.
 
-    Why this matters: reading row.lock_json in Python, branching, then
-    writing it back via ORM attribute assignment + flush() is a classic
-    check-then-act race. Two DB sessions — two pod replicas briefly
-    overlapping during a rolling deploy, or two overlapping tasks in one
-    process — that both read the same UNLOCKED row before either commits
-    would BOTH believe they acquired the lock and BOTH proceed to call
-    CBOS, defeating the entire point of locking. A single UPDATE with the
-    "currently unlocked" condition baked into its own WHERE clause is
-    atomic at the database level: row-level locking during the UPDATE
-    itself (not read consistency) guarantees only one of two racing
-    UPDATEs can ever match and change the row — the loser's WHERE clause
-    simply stops matching the instant the winner's write lands, regardless
-    of isolation level.
+    The WHERE clause matches a row marked "UNLOCKED" and a freshly-seeded
+    row that's never been locked (lock_json={}, no "state" key yet).
 
-    The WHERE clause matches BOTH a row explicitly marked "UNLOCKED" and a
-    freshly-seeded row that has never been locked at all (lock_json={},
-    the column's default — no "state" key yet, so the JSON extraction
-    below evaluates to SQL NULL rather than the string "UNLOCKED").
-
-    Returns True  → lock acquired (row.lock_json refreshed in place).
-    Returns False → lock held by another owner with a valid TTL, OR the
-    lock is stale (TTL expired). Unlike before, a stale lock is NOT taken
-    over and resumed here — recover_stale_locks() is solely responsible for
-    resolving stale locks (by marking the segment SKIPPED, or — for a
-    segment stuck mid-TRIGGERING — unlocking it for CBOS-checked recovery),
-    and it always runs earlier in the same wake cycle, before any segment
-    reaches this call. Seeing a stale lock here would mean
-    recover_stale_locks() hasn't caught up yet (a tight race) — safest is
-    to just deny and let the next cycle's recovery sweep handle it.
+    Returns True on success. Returns False if held by another owner with
+    a valid TTL, or if stale — a stale lock is NOT taken over here;
+    recover_stale_locks() (run earlier in the same cycle) owns resolving
+    stale locks, so seeing one here means it hasn't caught up yet.
     """
     now = now_ist()
     expires_at = now + timedelta(seconds=ttl_seconds)
@@ -341,40 +287,21 @@ async def recover_stale_locks(session: AsyncSession) -> int:
     """
     Called at the start of every wake cycle, before any segment is processed.
 
-    A stale lock means the agent process died (crash/pod restart) while this
-    segment was IN_PROGRESS and never reached release_lock(). Per policy, an
-    interrupted segment is generally NOT resumed — it's marked SKIPPED
-    (category AGENT_RESTART) and the day's chain moves on to the next
-    segment, same as any other SKIP outcome (TIMEOUT / CBOS_SKIP /
-    MANUAL_SKIP).
+    A stale lock means the agent crashed/restarted while IN_PROGRESS. Per
+    policy an interrupted segment is generally marked SKIPPED (category
+    AGENT_RESTART), not resumed.
 
-    TWO deliberate exceptions — a segment/process stuck with
-    processes_json["trigger"]["status"] == "TRIGGERING" is never skipped
-    here, for either pipeline:
+    Two exceptions — a row stuck with trigger.status == "TRIGGERING" is
+    never skipped here, since the crash happened right around the actual
+    trigger call and we don't know if CBOS received it:
+      - Real segments (phase=TRIGGER): unlocked so handle_trigger() runs
+        _recover_trigger() next cycle, which checks CBOS's Table2 and only
+        re-triggers if CBOS confirms it never received the original call.
+      - Post-trade processes (phase=TRIGGER_JOB): no Table2 equivalent, so
+        unlocked purely so handle_trigger_job() can mark it FAILED with a
+        "needs manual CBOS verification" reason next cycle.
 
-      - Real segments (phase=TRIGGER): the crash happened right around the
-        single getNewTradeProcess(trigger) call — we durably know an
-        attempt was *intended* but not whether CBOS actually received it.
-        Skipping outright would either strand a segment CBOS is already
-        executing (our record says "skipped", CBOS is mid-run) or
-        permanently discard the one signal needed to safely decide whether
-        a retry is OK. Instead it's unlocked so the normal pipeline resumes
-        it next cycle: handle_trigger() sees "TRIGGERING" and runs
-        _recover_trigger(), which asks CBOS's Table2 for this exact
-        PROCESSID and re-triggers ONLY if CBOS confirms it never received
-        the original call — never if it already has (see
-        tests/test_trigger_double_trigger_protection.py).
-
-      - Post-trade processes (phase=TRIGGER_JOB): there is no Table2
-        equivalent to check, so automatic recovery isn't possible at all —
-        it's unlocked purely so handle_trigger_job() can immediately mark
-        it FAILED with an explicit "needs manual CBOS verification" reason
-        next cycle, instead of a generic, less actionable
-        SKIPPED/AGENT_RESTART (see pipeline.post_trade_stages
-        .handle_trigger_job).
-
-    Returns the number of segments/processes affected (skipped OR
-    unlocked-for-resume) this way.
+    Returns the number of rows affected (skipped or unlocked-for-resume).
     """
     now = now_ist()
     stmt = select(SegmentExecution).where(

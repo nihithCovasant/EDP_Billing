@@ -31,10 +31,8 @@ class EdpWakeLoop:
         self._orchestrator: Optional[EdpOrchestrator] = None
         self._cycle_count: int = 0
         self._config: Optional[EdpBootstrapConfig] = None
-        # monotonic timestamp of the last time a cycle STARTED (set before
-        # anything that could possibly block) — used by liveness_check() to
-        # detect a wedged loop. Deliberately monotonic, not wall-clock, so
-        # NTP adjustments/DST can't produce false positives or negatives.
+        # Monotonic (not wall-clock) timestamp of the last cycle start — used
+        # by liveness_check() to detect a wedged loop.
         self._last_cycle_started_at: Optional[float] = None
 
     @otel_trace
@@ -87,26 +85,14 @@ class EdpWakeLoop:
 
     async def _loop_forever(self) -> None:
         """
-        ONE persistent Task for the entire process lifetime — created once in
-        start() and never reassigned. Runs wake cycles back-to-back until
-        stop() cancels it.
+        One persistent Task for the process lifetime — created once in
+        start() and never reassigned; runs wake cycles back-to-back until
+        stop() cancels it. A single `while True`, not a chain of
+        self-rescheduling tasks, so there's always exactly one Task to
+        point at (asyncio.all_tasks(), debugger, incident review).
 
-        Deliberately a plain `while` loop rather than the earlier design
-        (each cycle scheduling a brand-new asyncio.create_task(...) for the
-        next one, self._task reassigned every ~60s). That chain-of-tasks
-        shape was correctness-neutral but needlessly hard to reason about:
-        every cycle boundary created a new Task object, so "the wake loop"
-        was never one stable, nameable thing you could point at in
-        asyncio.all_tasks(), a debugger, or an incident review — you'd see
-        a different Task each time you looked. A single `while True` is the
-        obviously-correct, boringly-simple shape for a 24/7 background
-        worker: one Task, one place execution can be, trivial to explain.
-
-        The loop body doesn't recurse (no nested asyncio stack growth to
-        worry about either way), and the cancellable sleep
-        (`asyncio.wait_for` on `_stop_event`) still yields control every
-        cycle so other coroutines (e.g. incoming HTTP requests) keep running
-        concurrently between cycles, exactly as before.
+        The cancellable sleep (`asyncio.wait_for` on `_stop_event`) yields
+        control every cycle so other coroutines keep running in between.
         """
         while not self._stop_event.is_set():
             await self._run_one_cycle()
@@ -159,13 +145,9 @@ class EdpWakeLoop:
         Registered with the app's HealthChecker (see src/agent/__main__.py)
         as a liveness probe. Detects a wedged wake loop: if
         _last_cycle_started_at stops advancing for way longer than
-        wake_interval_seconds, some await inside the current cycle (e.g. an
-        unresponsive CBOS call with no timeout) is blocking forever — the
-        HTTP server would otherwise keep answering /health/live with 200
-        indefinitely while the entire billing pipeline silently stalls,
-        since nothing inside this process can un-wedge a blocked await;
-        only an external restart (Kubernetes acting on a failed liveness
-        probe) can recover it.
+        wake_interval_seconds, some await is blocking forever — only an
+        external restart (Kubernetes acting on a failed liveness probe)
+        can recover it.
         """
         if self._task is None or self._task.done():
             return True, "wake loop not running (stopped or never started)"

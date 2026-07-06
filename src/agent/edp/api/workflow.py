@@ -30,21 +30,9 @@ _VALID_POST_TRADE_CODES = set(POST_TRADE_ORDER)
 def _validate_workflow_json(workflow_json: dict) -> None:
     """
     Raise HTTPException(422) if workflow_json is missing required structure.
-    Called before writing to DB so bad configs are rejected early.
-
-    Processing order is NOT part of the uploaded config for either segments
-    or post_trade_processes — both are fixed code constants (see
-    utils/constants.SEGMENT_ORDER / POST_TRADE_ORDER) and cannot be
-    overridden per upload; process_code must be one of the 5 fixed
-    POST_TRADE_ORDER values since CBOS trigger-endpoint dispatch is wired
-    per code (no CBOS integration exists for an arbitrary 6th process).
-
-    `post_trade_processes` is OPTIONAL for backward compatibility with
-    configs uploaded before this became ops-configurable — omitting it
-    entirely falls back to the fixed legacy defaults at seed/resolve time
-    (see repository.segment.seed_post_trade_processes(),
-    orchestrator._resolve_post_trade_window()). If present, it is validated
-    the same way segments are.
+    Processing order is a fixed code constant, not part of the config.
+    `post_trade_processes` is optional (backward compat — omitting it falls
+    back to fixed legacy defaults); if present, validated like segments.
     """
     segments = workflow_json.get("segments")
     if not isinstance(segments, list) or len(segments) == 0:
@@ -112,31 +100,13 @@ async def _upload_workflow_for_date(
     uploaded_by: str,
 ) -> dict:
     """
-    Core upload logic, given an already-resolved "today" — split out from
-    upload_workflow() purely so tests can drive it with an explicit
-    far-future test date instead of the real wall-clock "today" the route
-    handler resolves (see that function for why there's no trade_date
-    input at all).
+    Core upload logic given an already-resolved "today" — split out from
+    upload_workflow() so tests can drive it with an explicit test date.
 
-    Every upload creates a brand-new row and supersedes whatever was active
-    before — there is no content-hash dedup check, so even a byte-for-byte
-    identical re-upload creates a new audit row (is_new=True). is_new is
-    only False if this call lost a concurrent upload race (see
-    repository.workflow.upload()).
-
-    Ops does NOT upload a config every day — only when something changes
-    (segments, windows, login IDs). Because of that, an upload can arrive
-    at any time, including while today's trading date is already mid-run.
-    To avoid a live config change disrupting segments that are already
-    IN_PROGRESS/COMPLETED/SKIPPED/FAILED (window times / login IDs are
-    resolved live from the active config every cycle — see
-    orchestrator._resolve_window()), an upload landing while today already
-    has processing underway is automatically deferred to tomorrow: it is
-    saved and will become active starting the next trading day, leaving
-    today's in-flight run completely untouched. A day where every segment
-    is still PENDING (windows not open yet, or nothing seeded at all) is
-    NOT considered "started" — same-day changes are applied immediately in
-    that case.
+    Every upload creates a brand-new row (no content-hash dedup). If
+    today's trading date already has processing underway, the upload is
+    deferred to tomorrow instead of disrupting the in-flight run; a day
+    where every segment is still PENDING applies the change immediately.
     """
     async with get_session() as session:
         deferred = await has_processing_started(session, today)
@@ -178,19 +148,12 @@ async def _upload_workflow_for_date(
 @otel_trace
 async def upload_workflow(body: WorkflowUploadRequest):
     """
-    Upload the workflow config — it always applies starting now.
+    Upload the workflow config — always applies starting now.
 
-    There is no trade_date input: ops never needs to know or compute
-    "today's trading date" (which isn't the same as the calendar date —
-    see active_date_cutoff_hour). The server resolves it itself the exact
-    same way the orchestrator's own wake cycle does
-    (resolve_active_date()), so ops can't target the wrong date by mistake.
-    A config uploaded right now always keeps applying to every future
-    trading day until superseded by a later upload — there's never a
-    reason to pre-stage a config for some specific date further out.
-
-    See _upload_workflow_for_date() for the deferral rule applied once
-    "today" is resolved.
+    No trade_date input: the server resolves "today's trading date" itself
+    (resolve_active_date(), same as the orchestrator's wake cycle), so ops
+    can't target the wrong date. See _upload_workflow_for_date() for the
+    deferral rule applied once "today" is resolved.
     """
     _validate_workflow_json(body.workflow_json)
     config = load_edp_config()

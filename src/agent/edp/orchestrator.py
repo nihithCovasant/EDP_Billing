@@ -44,33 +44,23 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across all 7 trade segments, then
-    the 5 T+1 post-trade processes.
+    Drives the daily EDP billing pipeline across all 7 trade segments
+    (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF — sequential, N
+    can't start until N-1 is COMPLETED/SKIPPED; MTF isn't special-cased),
+    then the 5 T+1 post-trade processes (COLVAL, COLALLOC, MTFFT, DMRPT,
+    DMSTMT — sequential among themselves, NOT gated on the 7 segments,
+    only on their own wall-clock window; see _process_post_trade_chain()).
 
-    Segments run sequentially, in this fixed order (see utils/constants.py):
-      CASH/EQ → F&O/DR → CD/CUR → SLBM/SL → MCX → NCDEX → MTF
-    Segment N cannot start until N-1 is COMPLETED or SKIPPED. MTF is not
-    special-cased — it runs through the exact same generic 7-step pipeline
-    as every other segment.
-
-    Independently of that chain, the 5 post-trade processes (COLVAL →
-    COLALLOC → MTFFT → DMRPT → DMSTMT) are seeded and driven every cycle too
-    — they are sequential among themselves (process N waits for N-1) but are
-    NOT gated on the 7 segments' completion, only on their own wall-clock
-    window (see _process_post_trade_chain()). Their process_code order is a
-    fixed code constant (POST_TRADE_ORDER, same reasoning as SEGMENT_ORDER),
-    but each process's login_id, CBOS ProcessName, and opening window are
-    resolved from the same ops-uploaded workflow_json used for the 7
-    segments (workflow_json["post_trade_processes"]).
+    Both orders are fixed code constants; login_id/CBOS ProcessName/window
+    are resolved from the ops-uploaded workflow_json.
     """
 
     def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient):
         self.config = config
         self.cbos = cbos
         self._tz = ZoneInfo(config.timezone)
-        # Set once per wake cycle in run_wake_cycle() and read by
-        # _process_one_segment() for every segment in that cycle, instead of
-        # being re-passed as arguments on each of the (possibly many) calls.
+        # Snapshot for the current wake cycle — shared by every segment
+        # processed within it instead of re-passing as arguments.
         self._cycle_active_date = None
         self._cycle_now: Optional[datetime] = None
 
@@ -84,9 +74,6 @@ class EdpOrchestrator:
         active_date = resolve_active_date(
             now, self.config.active_date_cutoff_hour, self.config.timezone
         )
-        # Snapshot for this cycle — every segment processed below shares the
-        # same active_date/now instead of each _process_one_segment() call
-        # needing them re-passed as arguments.
         self._cycle_active_date = active_date
         self._cycle_now = now
         summary = {
@@ -125,10 +112,8 @@ class EdpOrchestrator:
             ))
 
         # ------ Ensure workflow config exists for today ----------------------
-        # Ops does NOT need to upload a config every day — only when something
-        # changes (segments, windows, login IDs, etc). If nothing was uploaded
-        # specifically for today, we carry forward the most recently uploaded
-        # config (from any earlier date) and keep using it as-is.
+        # Ops only uploads when something changes; if nothing's uploaded for
+        # today, carry forward the most recently uploaded config as-is.
         async with get_session() as session:
             workflow = await repository.get_active(session, active_date)
             if not workflow:
@@ -174,20 +159,13 @@ class EdpOrchestrator:
             ))
 
         # ------ Fetch ordered segments and drive each one -------------------
-        # get_all_for_date() returns EVERY segment_execution row for the date
-        # — including the 5 post-trade pseudo-segments once they've been
-        # seeded by a previous cycle's _process_post_trade_chain() — so this
-        # loop must filter down to just the 7 real segments; post-trade rows
-        # are driven separately below, independent of this loop entirely.
+        # get_all_for_date() also returns post-trade rows once seeded; filter
+        # to just the 7 real segments (post-trade is driven separately below).
         async with get_session() as session:
             segments = await repository.get_all_for_date(session, active_date)
         segments = [s for s in segments if s.segment_code in SEGMENT_ORDER]
 
-        # ------ Log any stale heartbeats — diagnostic only, nothing persisted.
-        # (runtime_health used to be a column written here; it's now computed
-        # live at read time in utils/serializers.py, so this is just a log
-        # signal for ops and reuses the `segments` list already fetched
-        # above instead of an extra DB round trip.)
+        # Log any stale heartbeats — diagnostic only, nothing persisted.
         for seg in segments:
             if (
                 seg.segment_status == SegmentStatus.IN_PROGRESS
@@ -229,9 +207,7 @@ class EdpOrchestrator:
             if outcome not in ("completed", "skipped"):
                 break
 
-        # ------ Drive the 5 T+1 post-trade processes — independent of the ---
-        # 7 segments' status above (see class docstring); gated only by
-        # their own fixed wall-clock window (Process 1 @ 02:30 IST T+1).
+        # Drive the 5 T+1 post-trade processes, independent of the segments above.
         await self._process_post_trade_chain(summary)
 
         return summary
@@ -246,12 +222,8 @@ class EdpOrchestrator:
         segment_code: str,
     ) -> str:
         """
-        Lock → run pipeline executor → release lock.
+        Lock -> run pipeline executor -> release lock.
         Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
-
-        active_date/now are read from the self._cycle_* snapshot taken once
-        at the top of run_wake_cycle() — identical for every segment driven
-        within that cycle.
         """
         active_date = self._cycle_active_date
         now = self._cycle_now
@@ -263,9 +235,6 @@ class EdpOrchestrator:
 
             workflow = await repository.get_active(session, active_date)
             if not workflow:
-                # Same carry-forward fallback as run_wake_cycle — a config
-                # uploaded on an earlier date is still the "active" one for
-                # today until ops uploads a change.
                 workflow = await repository.get_latest_effective(session, active_date)
             if not workflow:
                 logger.error(seg_log(segment_code, active_date, "No active workflow found"))
@@ -384,17 +353,10 @@ class EdpOrchestrator:
     @otel_trace
     async def _process_post_trade_chain(self, summary: dict) -> None:
         """
-        Seed (if needed) and drive the 5 T+1 post-trade processes for the
-        current cycle's active_date, in fixed POST_TRADE_ORDER, halting the
-        post-trade chain (not the whole wake cycle) on the first FAILED one.
-
-        Deliberately NOT gated on the 7 real segments' status — see class
-        docstring. Only Process 1 (COLVAL) has its own wall-clock window
-        gate by default (see _resolve_post_trade_window()) — which
-        process(es) actually carry a window, and each one's login_id /
-        gtg_process_name, are resolved from the same active workflow config
-        used for the 7 segments (workflow_json["post_trade_processes"]);
-        mutates `summary` in place with post_trade_* counters.
+        Seed (if needed) and drive the 5 T+1 post-trade processes for
+        active_date, in fixed POST_TRADE_ORDER, halting the post-trade
+        chain (not the whole wake cycle) on the first FAILED one. Not
+        gated on the 7 segments' status. Mutates `summary` in place.
         """
         active_date = self._cycle_active_date
 
@@ -450,15 +412,12 @@ class EdpOrchestrator:
     @otel_trace
     async def _process_one_post_trade(self, segment_code: str) -> str:
         """
-        Lock → run pipeline executor (post-trade phase handlers) → release lock.
+        Lock -> run pipeline executor (post-trade phase handlers) -> release lock.
         Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
 
-        Mirrors _process_one_segment() — login_id, gtg_process_name, and the
-        opening window are resolved from the same active workflow config's
-        `post_trade_processes` list (falling back to bootstrap config /
-        fixed code constants for anything a config entry doesn't specify,
-        or for a legacy config with no such list at all — see
-        _find_post_trade_cfg() / _resolve_post_trade_window()).
+        Mirrors _process_one_segment(); login_id/gtg_process_name/window
+        are resolved from the active config's post_trade_processes list,
+        falling back to bootstrap config / fixed constants otherwise.
         """
         active_date = self._cycle_active_date
         now = self._cycle_now
@@ -470,7 +429,6 @@ class EdpOrchestrator:
 
             workflow = await repository.get_active(session, active_date)
             if not workflow:
-                # Same carry-forward fallback as _process_one_segment.
                 workflow = await repository.get_latest_effective(session, active_date)
             if not workflow:
                 logger.error(seg_log(segment_code, active_date, "No active workflow found for post-trade process"))
@@ -570,15 +528,9 @@ def _resolve_window(
     trade_date: date,
     tz: ZoneInfo,
 ) -> tuple[Optional[datetime], Optional[datetime]]:
-    """
-    Resolve (window_start, window_end) for a segment on demand.
-
-    This used to be two columns (window_start_at/window_end_at) computed
-    once at seed time; they were a pure function of
-    (segment_code, workflow_json, trade_date, tz) the whole time, so
-    resolving them here means a config re-upload takes effect immediately
-    instead of only for segments that haven't been seeded yet.
-    """
+    """Resolve (window_start, window_end) for a segment on demand — a pure
+    function of (segment_code, workflow_json, trade_date, tz), so a config
+    re-upload takes effect immediately."""
     seg_cfg = _find_segment_cfg(workflow_json, segment_code)
     if not seg_cfg:
         return None, None
@@ -590,13 +542,10 @@ def _resolve_window(
 
 
 def _post_trade_configs(workflow_json: dict) -> list[dict]:
-    """
-    The active config's post_trade_processes list, or the fixed legacy
-    default (POST_TRADE_ORDER order, no per-process login_id/window
-    override) if the config predates this becoming ops-configurable at all
-    — distinct from an explicitly-uploaded EMPTY list, which means ops
-    wants no post-trade processes seeded/resolved for that config.
-    """
+    """The active config's post_trade_processes list, or the fixed legacy
+    default (POST_TRADE_ORDER, no overrides) if the config predates this
+    field entirely. An explicit EMPTY list means "seed none" and is kept
+    as-is."""
     if "post_trade_processes" in workflow_json:
         return workflow_json["post_trade_processes"]
     return [{"process_code": code} for code in POST_TRADE_ORDER]
@@ -610,13 +559,8 @@ def _find_post_trade_cfg(workflow_json: dict, process_code: str) -> dict | None:
 
 
 def _resolve_post_trade_process_name(process_code: str, workflow_json: dict) -> str:
-    """
-    CBOS file_process_status ProcessName used for this process's GTG/confirm
-    polls — an explicit `gtg_process_name` in the config entry wins, else
-    falls back to the fixed default mapping (utils/constants
-    .POST_TRADE_GTG_PROCESS_NAME), else the raw process_code itself as a
-    last resort so an unmapped code can't crash the cycle.
-    """
+    """CBOS ProcessName for this process's GTG/confirm polls: explicit
+    gtg_process_name > fixed default mapping > raw process_code."""
     proc_cfg = _find_post_trade_cfg(workflow_json, process_code)
     if proc_cfg and proc_cfg.get("gtg_process_name"):
         return proc_cfg["gtg_process_name"]
@@ -630,23 +574,12 @@ def _resolve_post_trade_window(
     tz: ZoneInfo,
 ) -> Optional[datetime]:
     """
-    Resolve the opening gate (if any) for a post-trade process from the
-    active config's post_trade_processes list — mirrors _resolve_window()
-    for the 7 real segments. Per spec, only Process 1 (COLVAL) has a
-    window_start ("T+1, 2:30am-6am"); the remaining 4 simply start as soon
-    as the previous one in the chain completes. Which process(es) actually
-    carry a window is now entirely config-driven rather than hardcoded to
-    POST_TRADE_ORDER[0] — build_default_workflow_json() still defaults to
-    putting it only on the first one, matching the original spec, but ops
-    can move/add/remove it via a re-upload.
-
-    Falls back to the fixed 02:30 IST T+1 gate on POST_TRADE_ORDER[0] only
-    when NO process in the config specifies a window_start at all — i.e.
-    either a legacy config that predates this feature, or a new config that
-    simply didn't bother configuring any window. If ops explicitly
-    configures a window_start anywhere in the list (even on a different
-    process), that explicit choice is trusted as-is and no default is
-    silently added elsewhere.
+    Resolve the opening gate (if any) for a post-trade process, mirroring
+    _resolve_window(). Per spec only Process 1 (COLVAL) gates on a window
+    ("T+1, 2:30am-6am"); the rest start as soon as the prior one completes.
+    Config-driven: an explicit window_start anywhere in the list is trusted
+    as-is; the fixed 02:30 IST T+1 default only applies when no process in
+    the config specifies a window_start at all.
     """
     proc_cfg = _find_post_trade_cfg(workflow_json, segment_code)
     if proc_cfg and proc_cfg.get("window_start"):

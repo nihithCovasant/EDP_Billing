@@ -10,42 +10,19 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# On Windows (and anywhere stdout/stderr isn't attached to an interactive
-# TTY — e.g. piped into a file, IDE terminal capture, or `--reload`'s
-# parent/child process split), the C stdio layer defaults to fully
-# block-buffered instead of line-buffered. logging.StreamHandler.flush()
-# still forces a write syscall per record, but on some Windows pipe/console
-# configurations that write can itself sit in an OS-level pipe buffer that
-# isn't drained until it fills or the process exits — which is exactly why
-# "Running Alembic migrations..." can be the last visible line for tens of
-# seconds even though the process is alive and working underneath. Forcing
-# line buffering here (Python 3.7+) makes every logger.info(...)/print(...)
-# show up immediately, regardless of how stdout ended up connected.
+# Force line-buffered stdout/stderr (Windows/piped terminals default to
+# fully block-buffered), so log lines show up immediately instead of
+# sitting in a buffer that only flushes when it fills or the process exits.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(line_buffering=True)
     except (AttributeError, ValueError):
-        pass  # stream doesn't support reconfigure (e.g. redirected to a non-file object)
+        pass  # stream doesn't support reconfigure
 
-# The real root cause of "logs stop appearing after migrations" on Windows:
-# a console/terminal pane that isn't actively being read (IDE terminal
-# capture, a detached/backgrounded process, `--reload`'s parent/child pipe,
-# etc.) lets the OS-level stdout/stderr pipe buffer fill up. The next
-# `write()` syscall then blocks *forever* waiting for a reader that never
-# comes — and since logging.Logger.callHandlers() invokes every handler
-# synchronously on the calling thread, that one blocked console write also
-# stops any other handler (e.g. a file handler) from ever running, even
-# though the app itself (event loop, DB, HTTP server) is completely healthy.
-#
-# Fix: route ALL logging through a QueueHandler. The actual handlers
-# (console + file) run on a dedicated QueueListener thread instead of the
-# app's own threads/event loop, so a stuck console pipe can only stall that
-# one listener thread — it can never block migrations, the wake loop, or
-# incoming requests, and the file handler (attached to the same listener)
-# keeps writing regardless of what the console is doing.
-#
-# The file on disk can always be tailed directly with no lag:
-#   powershell: Get-Content -Wait -Tail 50 logs\agent.log
+# Route logging through a QueueHandler: the real handlers (console + file)
+# run on a dedicated QueueListener thread, so a stuck/unread console pipe
+# can block only that listener thread — never migrations, the wake loop,
+# or incoming requests. Tail logs\agent.log directly for a lag-free view.
 import logging as _logging
 import queue as _queue
 from logging.handlers import QueueHandler as _QueueHandler, QueueListener as _QueueListener

@@ -18,13 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field
 # =============================================================================
 
 class WorkflowUploadRequest(BaseModel):
-    # No trade_date field: ops does not pick/compute a trading date. The
-    # server always targets "today's trading date" (resolve_active_date(),
-    # same cutoff-hour logic the orchestrator itself uses) — or tomorrow if
-    # today already has processing underway (see upload_workflow()'s
-    # deferral logic). A config always applies going forward until
-    # superseded, so there is never a reason for ops to pre-stage a config
-    # for an arbitrary future date.
+    # No trade_date field — server always targets "today's trading date"
+    # (resolve_active_date()), or tomorrow if today's already underway.
     workflow_json: Dict[str, Any]
     uploaded_by: str = "ops"
 
@@ -38,25 +33,16 @@ class WorkflowResponse(BaseModel):
     uploaded_by: str
     uploaded_at: Optional[datetime]
     segment_count: int = 0
-    # Present only when workflow_json explicitly carries a
-    # "post_trade_processes" list; None for a legacy config that predates
-    # this field (falls back to fixed defaults at seed/resolve time instead
-    # — see repository.segment.seed_post_trade_processes()).
+    # None for a legacy config with no "post_trade_processes" list at all.
     post_trade_process_count: Optional[int] = None
 
 
 class WorkflowUploadResponse(WorkflowResponse):
     is_new: bool
-    # True when today's trading date (auto-resolved server-side — see
-    # resolved_trade_date) already had processing underway (some segment
-    # left PENDING) — the config was NOT applied to today; it was saved
-    # instead for resolved_trade_date + 1 day (see `trade_date` above for
-    # where it actually landed) so today's in-flight run is not disrupted
-    # mid-way.
+    # True if today's trading date already had processing underway, so the
+    # config was deferred to `trade_date` (+1 day) instead of applied today.
     deferred: bool = False
-    # Today's trading date as the server computed it (resolve_active_date())
-    # BEFORE any deferral — i.e. what ops implicitly targeted by uploading
-    # right now, not something ops specified.
+    # Today's trading date as resolved server-side, before any deferral.
     resolved_trade_date: date
 
 
