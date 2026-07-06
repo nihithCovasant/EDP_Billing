@@ -44,8 +44,8 @@ def main() -> int:
         return 0
 
     config = load_email_config()
-    if not config.smtp_username and not config.default_to:
-        print("[demo] No SMTP config found — forcing dry_run=True.\n")
+    if not (config.graph_tenant_id and config.graph_client_id and config.graph_client_secret):
+        print("[demo] No Microsoft Graph config found — forcing dry_run=True.\n")
         config.dry_run = True
 
     try:

@@ -1,0 +1,8 @@
+# global_email_service — self-contained dependency list (public PyPI only,
+# no CAMS/GCP-private packages), so this module can be built/deployed on
+# its own. See docker/Dockerfile.
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+jinja2>=3.1.0
+python-dotenv>=1.0.0
+httpx>=0.27.0

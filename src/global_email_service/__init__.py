@@ -1,4 +1,4 @@
-"""JSON payload -> color-coded HTML table email over SMTP."""
+"""JSON payload -> color-coded HTML table email via Microsoft Graph."""
 
 from __future__ import annotations
 

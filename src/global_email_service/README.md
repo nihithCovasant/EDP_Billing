@@ -1,7 +1,7 @@
 # global_email_service
 
 A small, standalone module: **JSON in → color-coded HTML table → email out
-over SMTP.**
+via Microsoft Graph.**
 
 Built for the EDP Billing use case (notify the MOFSL ops team when a
 segment/process fails, is skipped, or completes) but it is intentionally
@@ -11,8 +11,8 @@ email it" use case. **Not integrated into the existing app** — call it
 directly wherever/whenever you need it.
 
 Rendering uses **Jinja2** templates (`templates/email.html.j2` /
-`templates/email.txt.j2`); sending uses only `smtplib`/`email` from the
-standard library.
+`templates/email.txt.j2`); sending uses the **Microsoft Graph `sendMail`**
+API (OAuth2 client-credentials) via `graph_client.py` — no SMTP.
 
 Can be used either as a **Python library** (import and call directly) or
 run as a **standalone HTTP service** (see "Run as a standalone service"
@@ -20,15 +20,15 @@ below) with a `POST /send` endpoint that takes the same JSON payload.
 
 ## Install / setup
 
-Nothing to install. This module has its **own `.env` file, separate from
-the repo-root `.env`**, so the whole folder is self-contained and portable
-(drop it into another project and it still works):
+This module has its **own `.env` file, separate from the repo-root `.env`**,
+so the whole folder is self-contained and portable (drop it into another
+project and it still works):
 
 - `src/global_email_service/.env.example` — template, committed to git.
 - `src/global_email_service/.env` — your actual local config (gitignored,
   same rule as the repo-root `.env`). Ships with `EMAIL_DRY_RUN=true` and a
   placeholder recipient so the demo works out of the box with zero setup.
-  Fill in real `EMAIL_SMTP_*` values and flip `EMAIL_DRY_RUN=false` to
+  Fill in real `EMAIL_GRAPH_*` values and flip `EMAIL_DRY_RUN=false` to
   actually send.
 
 `config.py` loads this file via `python-dotenv` at import time.
@@ -37,15 +37,14 @@ environment, so a real deployment's actual env vars always win over
 whatever is in this `.env` file.
 
 ```env
-EMAIL_SMTP_HOST=smtp.yourcompany.com
-EMAIL_SMTP_PORT=587
-EMAIL_SMTP_USERNAME=alerts@yourcompany.com
-EMAIL_SMTP_PASSWORD=********
-EMAIL_SMTP_USE_TLS=true          # STARTTLS (typical for port 587)
-EMAIL_SMTP_USE_SSL=false         # implicit TLS (typical for port 465)
-EMAIL_SMTP_TIMEOUT_SECONDS=15
+# Azure AD app registration with application permission Mail.Send
+# (admin-consented), scoped to the sender mailbox below.
+EMAIL_GRAPH_TENANT_ID=<azure-ad-tenant-id>
+EMAIL_GRAPH_CLIENT_ID=<app-registration-client-id>
+EMAIL_GRAPH_CLIENT_SECRET=********
+EMAIL_GRAPH_SENDER=rms@covasant.com
+EMAIL_GRAPH_TIMEOUT_SECONDS=15
 
-EMAIL_FROM_ADDRESS=alerts@yourcompany.com
 EMAIL_FROM_NAME=EDP Billing Alerts
 
 EMAIL_DEFAULT_TO=mofsl-ops@example.com,team-lead@example.com
@@ -54,8 +53,17 @@ EMAIL_DEFAULT_CC=
 EMAIL_MAX_RETRIES=2
 EMAIL_RETRY_BACKOFF_SECONDS=2
 
-EMAIL_DRY_RUN=false              # true -> log the rendered email instead of sending
+EMAIL_DRY_RUN=false              # true -> log the rendered email instead of calling Graph
 ```
+
+### Getting Graph credentials
+
+1. Register an app in Azure AD (Entra ID) → API permissions → add
+   **Mail.Send** (Application, not Delegated) → grant admin consent.
+2. Create a client secret under Certificates & secrets.
+3. The sender mailbox (`EMAIL_GRAPH_SENDER`, default `rms@covasant.com`)
+   must be a real mailbox in that same tenant — Graph sends *as* that
+   mailbox, it does not need its own password.
 
 ## Quick usage
 
@@ -93,7 +101,7 @@ send_alert_email({
 
 Both calls return an `EmailSendResult(success, message, subject, to, cc, dry_run)`
 and raise `InvalidPayloadError` / `EmailSendError` (see `exceptions.py`) on
-bad input / SMTP failure.
+bad input / Graph send failure.
 
 ## Run as a standalone service
 
@@ -107,9 +115,11 @@ python -m src.global_email_service.main
 uvicorn src.global_email_service.main:app --host 0.0.0.0 --port 9200 --reload
 ```
 
-| Endpoint | Method | SMTP needed? | Purpose |
+| Endpoint | Method | Graph needed? | Purpose |
 |---|---|---|---|
-| `/health` | GET | no | Liveness + shows which SMTP host/dry-run mode is active |
+| `/health` | GET | no | Shows Graph sender/config status + dry-run mode |
+| `/health/ready` | GET | no | CAMS-style readiness probe |
+| `/health/live` | GET | no | CAMS-style liveness probe |
 | `/send` | POST | yes | Full flow: validate → render → email |
 | `/preview` | POST | no | Same payload, returns the rendered HTML body directly (no send) |
 | `/preview.text` | POST | no | Same, plain-text fallback body |
@@ -120,9 +130,10 @@ curl -X POST http://localhost:9200/send \
   -d @src/global_email_service/examples/sample_mcx_recon_failure.json
 ```
 
-Port/host are overridable via `EMAIL_SERVICE_PORT` / `EMAIL_SERVICE_HOST`
-env vars (defaults `9200` / `0.0.0.0`). Swagger UI is available at
-`/docs` for manual testing.
+Host/port/log level are read from `HOST` / `PORT` / `LOG_LEVEL` (CAMS
+convention), falling back to this module's own `EMAIL_SERVICE_HOST` /
+`EMAIL_SERVICE_PORT` for backward compatibility — defaults are `0.0.0.0` /
+`9200` / `INFO`. Swagger UI is available at `/docs` for manual testing.
 
 ## Payload contract
 
@@ -208,7 +219,7 @@ Each row's background color is resolved (`colors.py::resolve_row_style`) by:
 ## Try it without any setup
 
 ```powershell
-# Render only (no SMTP):
+# Render only (no Graph call):
 python -m src.global_email_service.demo --render-only
 
 # Cash segment success example:
@@ -225,18 +236,83 @@ python -m src.global_email_service.demo --file src/global_email_service/examples
 
 | File | Purpose |
 |---|---|
-| `config.py` | `EmailServiceConfig` + `load_email_config()` — SMTP settings from env vars |
+| `config.py` | `EmailServiceConfig` + `load_email_config()` — Graph/env settings; `load_server_settings()` for host/port/log level |
 | `colors.py` | Status/severity → row color resolution |
 | `table_renderer.py` | Derives columns/cell text/colors/severity from rows; hands them to the Jinja templates |
 | `templating.py` | Jinja2 `Environment` + template loading |
 | `templates/email.html.j2` | HTML email body template (autoescaped) |
-| `templates/email.txt.j2` | Plain-text email body template |
-| `smtp_client.py` | Builds the MIME message and sends it via `smtplib`, with retry on transient errors |
+| `templates/email.txt.j2` | Plain-text email body template (CLI/preview use; Graph itself is only sent HTML) |
+| `graph_client.py` | Microsoft Graph `sendMail` — OAuth2 client-credentials token + retry on transient errors |
 | `service.py` | `send_alert_email()` / `send_segment_alert()` — payload validation + orchestration |
-| `main.py` | Standalone FastAPI app (`/send`, `/preview`, `/health`) — run this to expose the service over HTTP |
+| `main.py` | Standalone FastAPI app (`/send`, `/preview`, `/health*`) — run this to expose the service over HTTP |
 | `exceptions.py` | `InvalidPayloadError`, `EmailSendError` |
 | `demo.py` | Standalone CLI demo (see above) |
 | `examples/*.json` | Sample payloads: cash success, SLB GTG failure, MCX recon EOD summary |
+| `requirements.txt` | This module's own (public-only) dependencies, for standalone build/deploy |
+| `docker/Dockerfile`, `docker/docker-entrypoint.sh` | CAMS-style container build for deploying this module as its own service |
+
+## Reviewed: `mofsl_common_lib-main` (what's reused, what isn't)
+
+`mofsl_common_lib-main/` in this folder is MOFSL's shared automation
+framework (workflow engine, executors, scheduler, DB state store, etc.) —
+much bigger in scope than this module needs. What was actually useful and
+adopted:
+
+- **`infra/graph.py`'s `GraphClient`** — the OAuth2 client-credentials +
+  `sendMail` flow is exactly what `graph_client.py` here implements
+  (adapted to be synchronous and dependency-free, since this module
+  intentionally avoids taking a hard dependency on the whole
+  `mofsl-automation` package for a single HTTP call).
+- **`infra/errors.py`'s transient/permanent classification** — the same
+  idea (401/403/400/404/422 = fail fast, everything else = retry) is
+  applied to Graph's HTTP responses in `graph_client.send_message()`.
+
+Not adopted (out of scope for a single email-sending module): the
+workflow/step engine, `StateStore`/DB persistence, `SecretProvider`
+(AWS Secrets Manager) — this module reads credentials straight from env
+vars/`.env`, matching how the rest of this repo's config works. If this
+service is later deployed with a real secrets manager, swap
+`load_email_config()`'s `os.getenv()` calls for that provider without
+touching `graph_client.py` or `service.py`.
+
+## Deploying into CAMS
+
+This module is a self-contained FastAPI service, so it deploys the same
+way as the main agent (see repo-root `docker/Dockerfile`), just scoped to
+its own folder:
+
+```powershell
+docker build -f src/global_email_service/docker/Dockerfile -t global-email-service .
+docker run -p 9200:9200 --env-file src/global_email_service/.env global-email-service
+```
+
+- `/health`, `/health/ready`, `/health/live` follow the same probe
+  convention as `src/agent/__main__.py`. `/health` and `/health/ready`
+  return **503** if the service is not in `EMAIL_DRY_RUN=true` mode and any
+  of the three required Graph credentials are missing — so CAMS won't
+  route traffic to (or will restart) an instance that can't actually send
+  mail.
+- `HOST` / `PORT` / `LOG_LEVEL` env vars match CAMS naming (see
+  `.env.example`).
+- `requirements.txt` is self-contained by design: build pulls only public
+  PyPI packages (`fastapi`, `uvicorn`, `jinja2`, `python-dotenv`, `httpx`),
+  so no GCP Artifact Registry credentials are needed for this module's
+  image.
+- Supply real `EMAIL_GRAPH_*` secrets via the CAMS secrets/config
+  injection mechanism — either as plain env vars, or as mounted secret
+  files, in which case point `EMAIL_GRAPH_TENANT_ID_FILE` /
+  `EMAIL_GRAPH_CLIENT_ID_FILE` / `EMAIL_GRAPH_CLIENT_SECRET_FILE` at the
+  mounted path instead (each `_FILE` variant is read and stripped at
+  startup). Never bake secrets into the image.
+- `uvicorn --reload` is **off** by default and must stay off in the
+  container (set only via `UVICORN_RELOAD=true` for local dev outside
+  Docker) — it's a dev-only file-watcher feature and unsafe/wasteful in a
+  production container.
+- If `cams_otel_lib` is present in the runtime environment (CAMS injects
+  it), this service auto-detects it at startup and initializes OTEL
+  tracing/logging via `Otel_Client.initialize_otel_client(...)`; outside
+  CAMS it silently falls back to plain stdlib logging. No code changes or
+  extra requirements needed either way.
 
 ## Future integration (not done yet, by design)
 

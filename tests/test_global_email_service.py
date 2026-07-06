@@ -1,14 +1,14 @@
 """
 Tests for src/global_email_service — fully standalone, no DB and no real
-network calls. SMTP sending itself is exercised by monkeypatching
-smtp_client._send_once so we can assert retry/non-retry behaviour without
-a real mail server.
+network calls. Microsoft Graph sending itself is exercised by monkeypatching
+httpx.post so we can assert retry/non-retry behaviour without a real tenant.
 """
 
 from __future__ import annotations
 
-import smtplib
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Optional
 
 import pytest
 
@@ -19,7 +19,7 @@ from src.global_email_service import (
     send_alert_email,
     send_segment_alert,
 )
-from src.global_email_service import smtp_client
+from src.global_email_service import graph_client
 from src.global_email_service.colors import resolve_row_style
 from src.global_email_service.service import parse_payload
 from src.global_email_service.table_renderer import (
@@ -52,6 +52,24 @@ def dry_run_config(**overrides) -> EmailServiceConfig:
     for k, v in overrides.items():
         setattr(cfg, k, v)
     return cfg
+
+
+def graph_config(**overrides) -> EmailServiceConfig:
+    """A non-dry-run config with fake Graph credentials, for send-path tests."""
+    cfg = EmailServiceConfig(
+        dry_run=False,
+        default_to=["mofsl-ops@example.com"],
+        graph_tenant_id="fake-tenant",
+        graph_client_id="fake-client",
+        graph_client_secret="fake-secret",
+    )
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+def _fake_response(status_code: int, json_body: Optional[dict] = None, text: str = "") -> SimpleNamespace:
+    return SimpleNamespace(status_code=status_code, json=lambda: json_body or {}, text=text)
 
 
 # ---------------------------------------------------------------------------
@@ -293,54 +311,69 @@ def test_send_alert_email_requires_recipients_when_none_configured():
 
 
 # ---------------------------------------------------------------------------
-# SMTP retry/non-retry classification (regression test for the
-# SMTPException/OSError ordering bug — SMTPException subclasses OSError,
-# so a naive `except OSError` before `except smtplib.SMTPException` would
-# incorrectly treat auth failures as retryable transient errors)
+# Microsoft Graph send path — token acquisition + sendMail, with retry/
+# non-retry classification (401/403/400/404/422 fail fast; everything else
+# transient is retried up to max_retries).
 # ---------------------------------------------------------------------------
 
-def test_non_transient_smtp_auth_failure_is_not_retried(monkeypatch):
+def test_non_transient_graph_auth_failure_is_not_retried(monkeypatch):
+    graph_client._token_cache.clear()
     call_count = {"n": 0}
 
-    def fake_send_once(config, msg, all_recipients):
+    def fake_post(url, **kwargs):
+        if "oauth2" in url:
+            return _fake_response(200, {"access_token": "fake-token", "expires_in": 3600})
         call_count["n"] += 1
-        raise smtplib.SMTPAuthenticationError(535, b"bad credentials")
+        return _fake_response(401, text="Unauthorized")
 
-    monkeypatch.setattr(smtp_client, "_send_once", fake_send_once)
+    monkeypatch.setattr(graph_client.httpx, "post", fake_post)
 
-    config = dry_run_config(dry_run=False, max_retries=3)
+    config = graph_config(max_retries=3)
     with pytest.raises(EmailSendError):
         send_segment_alert(MCX_RECON_ROW, config=config)
 
-    assert call_count["n"] == 1, "non-transient SMTPException must NOT be retried"
+    assert call_count["n"] == 1, "non-transient Graph error (401) must NOT be retried"
 
 
-def test_transient_connection_error_is_retried_then_succeeds(monkeypatch):
+def test_transient_graph_error_is_retried_then_succeeds(monkeypatch):
+    graph_client._token_cache.clear()
     call_count = {"n": 0}
 
-    def flaky_send_once(config, msg, all_recipients):
+    def flaky_post(url, **kwargs):
+        if "oauth2" in url:
+            return _fake_response(200, {"access_token": "fake-token", "expires_in": 3600})
         call_count["n"] += 1
         if call_count["n"] < 3:
-            raise ConnectionError("connection refused")
-        return None  # third attempt succeeds
+            return _fake_response(503, text="Service Unavailable")
+        return _fake_response(202)
 
-    monkeypatch.setattr(smtp_client, "_send_once", flaky_send_once)
-    monkeypatch.setattr(smtp_client.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(graph_client.httpx, "post", flaky_post)
+    monkeypatch.setattr(graph_client.time, "sleep", lambda _seconds: None)
 
-    config = dry_run_config(dry_run=False, max_retries=3)
+    config = graph_config(max_retries=3)
     result = send_segment_alert(MCX_RECON_ROW, config=config)
 
     assert result.success is True
     assert call_count["n"] == 3
 
 
-def test_transient_error_exhausting_retries_raises_email_send_error(monkeypatch):
-    def always_fails(config, msg, all_recipients):
-        raise TimeoutError("timed out")
+def test_transient_graph_error_exhausting_retries_raises_email_send_error(monkeypatch):
+    graph_client._token_cache.clear()
 
-    monkeypatch.setattr(smtp_client, "_send_once", always_fails)
-    monkeypatch.setattr(smtp_client.time, "sleep", lambda _seconds: None)
+    def always_fails(url, **kwargs):
+        if "oauth2" in url:
+            return _fake_response(200, {"access_token": "fake-token", "expires_in": 3600})
+        return _fake_response(503, text="Service Unavailable")
 
-    config = dry_run_config(dry_run=False, max_retries=2)
+    monkeypatch.setattr(graph_client.httpx, "post", always_fails)
+    monkeypatch.setattr(graph_client.time, "sleep", lambda _seconds: None)
+
+    config = graph_config(max_retries=2)
+    with pytest.raises(EmailSendError):
+        send_segment_alert(MCX_RECON_ROW, config=config)
+
+
+def test_send_alert_email_raises_when_graph_not_configured():
+    config = dry_run_config(dry_run=False)  # no graph_tenant_id/client_id/client_secret
     with pytest.raises(EmailSendError):
         send_segment_alert(MCX_RECON_ROW, config=config)

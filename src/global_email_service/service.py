@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from .colors import resolve_row_style
 from .config import EmailServiceConfig, load_email_config
 from .exceptions import EmailSendError, InvalidPayloadError
-from .smtp_client import build_message, send_message
+from .graph_client import send_message
 from .table_renderer import render_email_body
 
 logger = logging.getLogger("global_email_service")
@@ -136,13 +136,10 @@ def send_alert_email(
             subject=subject, to=to, cc=cc, dry_run=True,
         )
 
-    msg, all_recipients = build_message(
-        config, to=to, subject=subject, html_body=html_body, text_body=text_body,
-        cc=cc, bcc=request.bcc,
-    )
-
     try:
-        send_message(config, msg, all_recipients)
+        send_message(config, to=to, cc=cc, bcc=request.bcc, subject=subject, html_body=html_body)
+    except EmailSendError:
+        raise
     except Exception as exc:
         logger.error("[global_email_service] Failed to send alert email: %s", exc)
         raise EmailSendError(f"Failed to send alert email: {exc}") from exc
