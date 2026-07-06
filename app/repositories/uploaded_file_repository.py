@@ -1,81 +1,65 @@
+import logging
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
 from app.models import UploadedFile
 
+logger = logging.getLogger("uploaded_file_repository")
+
 
 class UploadedFileRepository:
-    """Data-access layer for the uploaded_files table. Callers own the
-    Session lifecycle (create it, commit/close it) - this class only knows
-    how to query and mutate rows through the session it's given."""
+    """Audit-log writer for the uploaded_files table. This is pure
+    record-keeping - nothing here drives skip/retry/dedup decisions. Every
+    processing attempt gets its own row; dedup is handled entirely by the
+    filesystem (a moved file can't be rediscovered) and the in-memory
+    in-flight guard in app/core/queue.py. Callers own the Session lifecycle
+    (create it, commit/close it) - this class only knows how to write rows
+    through the session it's given."""
 
     def __init__(self, session: Session):
         self.session = session
-
-    def get_by_id(self, record_id: int) -> UploadedFile | None:
-        return self.session.query(UploadedFile).filter_by(id=record_id).first()
-
-    def get_by_path(self, file_path) -> UploadedFile | None:
-        return self.session.query(UploadedFile).filter_by(file_path=str(file_path)).first()
-
-    def get_pending(self) -> list[UploadedFile]:
-        return self.session.query(UploadedFile).filter_by(status="pending").all()
-
-    def get_failed(self) -> list[UploadedFile]:
-        return self.session.query(UploadedFile).filter_by(status="failed").all()
-
-    def is_uploaded(self, file_path) -> bool:
-        return (
-            self.session.query(UploadedFile)
-            .filter_by(file_path=str(file_path), status="uploaded")
-            .first()
-            is not None
-        )
 
     def insert(self, **fields) -> UploadedFile:
         record = UploadedFile(**fields)
         self.session.add(record)
         self.session.flush()
+        logger.debug("insert: new record id=%s file_path=%s status=%s", record.id, record.file_path, record.status)
         return record
 
-    def get_or_create(self, file_path, folder_date: str, segment: str) -> UploadedFile:
-        record = self.get_by_path(file_path)
-        if record is None:
-            record = self.insert(
-                file_name=Path(file_path).name,
-                file_path=str(file_path),
-                folder_date=folder_date,
-                segment=segment,
-                status="pending",
-            )
-        return record
+    def create_audit_record(self, file_path, folder_date: str, segment: str, exchange: str) -> UploadedFile:
+        """Called at the start of process_task - one fresh 'pending' audit
+        row per processing attempt, no lookup/reuse of prior rows."""
+        return self.insert(
+            file_name=Path(file_path).name,
+            file_path=str(file_path),
+            folder_date=folder_date,
+            segment=segment,
+            exchange=exchange,
+            status="pending",
+        )
 
-    def upsert_pending(self, file_path, folder_date: str, segment: str) -> UploadedFile:
-        """Create a new row as pending, or reset an existing one back to
-        pending. Used by the manual /upload endpoint."""
-        record = self.get_by_path(file_path)
-        if record is None:
-            record = self.insert(
-                file_name=Path(file_path).name,
-                file_path=str(file_path),
-                folder_date=folder_date,
-                segment=segment,
-                status="pending",
-            )
-        else:
-            record.status = "pending"
-            record.cbos_response = None
-            record.uploaded_at = None
-
+    def create_pending_record(self, file_path, folder_date: str, segment: str, exchange: str) -> UploadedFile:
+        """Used by POST /upload - one fresh 'pending' audit row for the
+        manually-saved file."""
+        record = self.insert(
+            file_name=Path(file_path).name,
+            file_path=str(file_path),
+            folder_date=folder_date,
+            segment=segment,
+            exchange=exchange,
+            status="pending",
+        )
         self.commit()
         self.session.refresh(record)
         return record
 
     def update(self, record: UploadedFile, **fields) -> UploadedFile:
+        logger.debug("update: record id=%s <- %s", record.id, fields)
         for key, value in fields.items():
             setattr(record, key, value)
         return record
 
     def commit(self) -> None:
         self.session.commit()
+        logger.debug("commit: transaction committed")

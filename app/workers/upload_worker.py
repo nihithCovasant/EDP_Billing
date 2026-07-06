@@ -16,6 +16,7 @@ def run() -> None:
     logger.info("Queue worker started")
     while True:
         task = file_queue.get()
+        logger.debug("Worker picked up task: %s (queue size now %d)", task.file_path, file_queue.qsize())
         try:
             upload_service.process_task(task)
         except Exception:
@@ -23,3 +24,4 @@ def run() -> None:
         finally:
             file_queue.task_done()
             release(task.file_path)
+            logger.debug("Worker finished task: %s", task.file_path)

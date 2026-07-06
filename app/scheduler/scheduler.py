@@ -16,7 +16,12 @@ def _scan_job() -> None:
     discovery/enqueue logic lives in upload_service.discover_and_enqueue -
     the scheduler never uploads or touches the database directly."""
     logger.info("Running scheduled file discovery job")
-    discover_and_enqueue()
+    try:
+        discover_and_enqueue()
+    except Exception:
+        logger.exception("Scheduled file discovery job failed")
+        raise
+    logger.debug("Scheduled file discovery job finished")
 
 
 def start_scheduler() -> BackgroundScheduler:

@@ -12,6 +12,7 @@ class FileTask:
     file_path: str
     folder_date: str
     segment: str
+    exchange: str
 
 
 file_queue: "Queue[FileTask]" = Queue()
