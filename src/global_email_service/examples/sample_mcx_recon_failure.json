@@ -1,77 +1,125 @@
 {
-  "subject": "EDP Alert: MCX segment FAILED at RECON — 2026-07-04",
+  "subject": "EDP Alert: MCX segment Failed at Reconciliation — 2026-07-04",
   "title": "EDP Daily Status — 2026-07-04",
-  "summary": "MCX failed while reconciling (3rd process in sequence: fileupload -> BillPost -> Reconn -> ContractNote). The chain has halted at MCX — NSECOM, MF and MTFOPS have not started.",
+  "summary": "MCX failed during reconciliation (3rd process: File Upload → Bill Posting → Reconciliation → Contract Note). Processing has halted at MCX — NSECOM, MF and MTFOPS have not started.",
   "to": ["mofsl-ops@example.com"],
-  "columns": [
-    "segment_code", "segment_name", "segment_status",
-    "current_process", "current_phase", "process_id",
-    "skip_category", "skip_reason", "started_at", "completed_at"
-  ],
   "rows": [
     {
-      "trade_date": "2026-07-04", "segment_code": "EQ", "segment_name": "Cash",
-      "sequence_order": 1, "segment_status": "COMPLETED",
-      "current_process": null, "current_phase": "DONE", "process_id": "17001",
-      "skip_category": null, "skip_reason": null,
-      "started_at": "2026-07-04T17:00:05+05:30", "completed_at": "2026-07-04T17:04:22+05:30"
+      "trade_date": "2026-07-04",
+      "segment_code": "EQ",
+      "segment_name": "Cash",
+      "segment_status": "COMPLETED",
+      "current_process": null,
+      "current_phase": "DONE",
+      "process_id": "17001",
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": "2026-07-04T17:00:05+05:30",
+      "completed_at": "2026-07-04T17:04:22+05:30"
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "DR", "segment_name": "Derivative",
-      "sequence_order": 2, "segment_status": "COMPLETED",
-      "current_process": null, "current_phase": "DONE", "process_id": "17002",
-      "skip_category": null, "skip_reason": null,
-      "started_at": "2026-07-04T17:04:23+05:30", "completed_at": "2026-07-04T17:09:47+05:30"
+      "trade_date": "2026-07-04",
+      "segment_code": "DR",
+      "segment_name": "Derivative",
+      "segment_status": "COMPLETED",
+      "current_process": null,
+      "current_phase": "DONE",
+      "process_id": "17002",
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": "2026-07-04T17:04:23+05:30",
+      "completed_at": "2026-07-04T17:09:47+05:30"
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "CUR", "segment_name": "Currency",
-      "sequence_order": 3, "segment_status": "COMPLETED",
-      "current_process": null, "current_phase": "DONE", "process_id": "17003",
-      "skip_category": null, "skip_reason": null,
-      "started_at": "2026-07-04T17:09:48+05:30", "completed_at": "2026-07-04T17:13:10+05:30"
+      "trade_date": "2026-07-04",
+      "segment_code": "CUR",
+      "segment_name": "Currency",
+      "segment_status": "COMPLETED",
+      "current_process": null,
+      "current_phase": "DONE",
+      "process_id": "17003",
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": "2026-07-04T17:09:48+05:30",
+      "completed_at": "2026-07-04T17:13:10+05:30"
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "SL", "segment_name": "SLB",
-      "sequence_order": 4, "segment_status": "SKIPPED",
-      "current_process": null, "current_phase": "DONE", "process_id": null,
-      "skip_category": "CBOS_SKIP", "skip_reason": "BeginFileUpload returned SKIP — market holiday",
-      "started_at": "2026-07-04T17:13:11+05:30", "completed_at": "2026-07-04T17:13:15+05:30"
+      "trade_date": "2026-07-04",
+      "segment_code": "SL",
+      "segment_name": "SLB",
+      "segment_status": "SKIPPED",
+      "current_process": null,
+      "current_phase": "DONE",
+      "process_id": null,
+      "skip_category": "CBOS_SKIP",
+      "skip_reason": "Market holiday — file upload not required for this trade date",
+      "started_at": "2026-07-04T17:13:11+05:30",
+      "completed_at": "2026-07-04T17:13:15+05:30"
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "NCDEX", "segment_name": "NCDEX Commodity",
-      "sequence_order": 5, "segment_status": "COMPLETED",
-      "current_process": null, "current_phase": "DONE", "process_id": "17005",
-      "skip_category": null, "skip_reason": null,
-      "started_at": "2026-07-04T17:13:16+05:30", "completed_at": "2026-07-04T17:18:02+05:30"
+      "trade_date": "2026-07-04",
+      "segment_code": "NCDEX",
+      "segment_name": "NCDEX Commodity",
+      "segment_status": "COMPLETED",
+      "current_process": null,
+      "current_phase": "DONE",
+      "process_id": "17005",
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": "2026-07-04T17:13:16+05:30",
+      "completed_at": "2026-07-04T17:18:02+05:30"
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "MCX", "segment_name": "MCX Commodity",
-      "sequence_order": 6, "segment_status": "FAILED",
-      "current_process": "RECON", "current_phase": "AWAIT_RECON", "process_id": "17006",
+      "trade_date": "2026-07-04",
+      "segment_code": "MCX",
+      "segment_name": "MCX Commodity",
+      "segment_status": "FAILED",
+      "current_process": "RECON",
+      "current_phase": "AWAIT_RECON",
+      "process_id": "17006",
       "skip_category": "CBOS_ERROR",
-      "skip_reason": "RECON check error: CBOS Status=RECON_MISMATCH — reconciliation could not be completed",
-      "started_at": "2026-07-04T17:18:03+05:30", "completed_at": "2026-07-04T17:26:40+05:30"
+      "skip_reason": "Reconciliation failed — trade data mismatch detected (CBOS Status: RECON_MISMATCH)",
+      "started_at": "2026-07-04T17:18:03+05:30",
+      "completed_at": "2026-07-04T17:26:40+05:30"
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "NSECOM", "segment_name": "NSE Commodity",
-      "sequence_order": 7, "segment_status": "PENDING",
-      "current_process": null, "current_phase": null, "process_id": null,
-      "skip_category": null, "skip_reason": null,
-      "started_at": null, "completed_at": null
+      "trade_date": "2026-07-04",
+      "segment_code": "NSECOM",
+      "segment_name": "NSE Commodity",
+      "segment_status": "PENDING",
+      "current_process": null,
+      "current_phase": null,
+      "process_id": null,
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": null,
+      "completed_at": null
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "MF", "segment_name": "Mutual Fund",
-      "sequence_order": 8, "segment_status": "PENDING",
-      "current_process": null, "current_phase": null, "process_id": null,
-      "skip_category": null, "skip_reason": null,
-      "started_at": null, "completed_at": null
+      "trade_date": "2026-07-04",
+      "segment_code": "MF",
+      "segment_name": "Mutual Fund",
+      "segment_status": "PENDING",
+      "current_process": null,
+      "current_phase": null,
+      "process_id": null,
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": null,
+      "completed_at": null
     },
     {
-      "trade_date": "2026-07-04", "segment_code": "MTFOPS", "segment_name": "MTF Operations (Collateral / Fund Transfer / Buy-Sell)",
-      "sequence_order": 900, "segment_status": "PENDING",
-      "current_process": null, "current_phase": null, "process_id": null,
-      "skip_category": null, "skip_reason": null,
-      "started_at": null, "completed_at": null
+      "trade_date": "2026-07-04",
+      "segment_code": "MTFOPS",
+      "segment_name": "MTF Operations (Collateral / Fund Transfer / Buy-Sell)",
+      "segment_status": "PENDING",
+      "current_process": null,
+      "current_phase": null,
+      "process_id": null,
+      "skip_category": null,
+      "skip_reason": null,
+      "started_at": null,
+      "completed_at": null
     }
   ]
 }

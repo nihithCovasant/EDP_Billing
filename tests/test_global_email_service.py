@@ -110,9 +110,11 @@ def test_explicit_color_override_wins():
 
 def test_render_email_body_single_row_mcx_recon_failure():
     html_body, text_body = render_email_body([MCX_RECON_ROW], title="EDP Alert")
-    assert "MCX" in html_body and "RECON" in html_body
-    assert "#f8d7da" in html_body  # the FAILED row must actually be colored red
-    assert "FAILED" in text_body
+    assert "MCX" in html_body and "Reconciliation" in html_body
+    assert "#f8d7da" in html_body
+    assert "Failed" in html_body
+    assert "Completion" in html_body
+    assert "Remarks" in html_body
     assert "RECON check error" in text_body
 
 
@@ -153,22 +155,27 @@ def test_derive_columns_falls_back_to_discovery_for_non_segment_rows():
     assert derive_columns(rows) == ["name", "status", "extra"]
 
 
-def test_derive_columns_never_shows_sequence_order():
+def test_derive_columns_never_shows_sequence_order_or_skip_category():
     assert "sequence_order" not in DEFAULT_SEGMENT_COLUMNS
+    assert "skip_category" not in DEFAULT_SEGMENT_COLUMNS
     assert "sequence_order" not in derive_columns([MCX_RECON_ROW])
+    assert "skip_category" not in derive_columns([MCX_RECON_ROW])
     html_body, text_body = render_email_body([MCX_RECON_ROW])
     assert "Sequence Order" not in html_body
     assert "Sequence Order" not in text_body
+    assert "Outcome" not in html_body
+    assert "Skip Category" not in html_body
 
 
-def test_explicit_columns_still_drop_sequence_order():
+def test_explicit_columns_still_drop_sequence_order_and_skip_category():
     html_body, text_body = render_email_body(
         [MCX_RECON_ROW],
-        columns=["segment_code", "sequence_order", "segment_status", "current_process"],
+        columns=["segment_code", "sequence_order", "skip_category", "segment_status", "current_process"],
     )
     assert "Sequence Order" not in html_body
-    assert "Sequence Order" not in text_body
-    assert "Current Process" in html_body
+    assert "Outcome" not in html_body
+    assert "Skip Category" not in html_body
+    assert "Process" in html_body
 
 
 def test_minimal_payload_email_body_shows_placeholder_for_missing_timing():
@@ -176,6 +183,42 @@ def test_minimal_payload_email_body_shows_placeholder_for_missing_timing():
     html_body, text_body = render_email_body([minimal_row])
     assert "Started At" in html_body and "Completed At" in html_body
     assert "Started At" in text_body and "Completed At" in text_body
+
+
+def test_customer_facing_status_labels():
+    html_body, _ = render_email_body([
+        {"segment_code": "EQ", "segment_status": "COMPLETED"},
+        {"segment_code": "MCX", "segment_status": "FAILED"},
+    ])
+    assert "Succeeded" in html_body
+    assert "Failed" in html_body
+    assert "COMPLETED" not in html_body
+    assert ">FAILED<" not in html_body
+
+
+def test_customer_facing_column_headers_and_phase_labels():
+    html_body, _ = render_email_body([MCX_RECON_ROW])
+    assert "Remarks" in html_body
+    assert "Stage" in html_body
+    assert "Outcome" not in html_body
+    assert "Skip Category" not in html_body
+    assert "Skip Reason" not in html_body
+    assert "Current Phase" not in html_body
+    assert "Completion" in html_body
+    assert "Timed Out" not in html_body
+    assert "AWAIT_RECON" not in html_body
+
+
+def test_stage_good_to_go_for_file_upload_failure():
+    row = {
+        "segment_code": "SL",
+        "segment_status": "FAILED",
+        "current_process": "FILEUPLOAD",
+        "current_phase": "AWAIT_FILE_UPLOAD",
+    }
+    html_body, _ = render_email_body([row])
+    assert "Good to Go" in html_body
+    assert "Timed Out" not in html_body
 
 
 # ---------------------------------------------------------------------------

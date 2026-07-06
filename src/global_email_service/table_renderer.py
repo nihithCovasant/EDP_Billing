@@ -9,7 +9,7 @@ from .colors import RowStyle, resolve_row_style
 from .templating import render_html_template, render_text_template
 
 # Never shown in the email table (internal styling / pipeline ordering).
-_LOW_SIGNAL_KEYS = frozenset({"color", "row_color", "sequence_order"})
+_LOW_SIGNAL_KEYS = frozenset({"color", "row_color", "sequence_order", "skip_category"})
 
 DEFAULT_SEGMENT_COLUMNS: List[str] = [
     "trade_date",
@@ -19,11 +19,90 @@ DEFAULT_SEGMENT_COLUMNS: List[str] = [
     "current_process",
     "current_phase",
     "process_id",
-    "skip_category",
     "skip_reason",
     "started_at",
     "completed_at",
 ]
+
+# Customer-facing column headers (internal field keys unchanged in payload).
+_COLUMN_HEADERS: Dict[str, str] = {
+    "segment_status": "Segment Status",
+    "skip_reason": "Remarks",
+    "current_phase": "Stage",
+    "current_process": "Process",
+    "process_id": "Process ID",
+    "trade_date": "Trade Date",
+    "segment_code": "Segment Code",
+    "segment_name": "Segment Name",
+    "started_at": "Started At",
+    "completed_at": "Completed At",
+}
+
+_SEGMENT_STATUS_DISPLAY: Dict[str, str] = {
+    "COMPLETED": "Succeeded",
+    "COMPLETE": "Succeeded",
+    "SUCCESS": "Succeeded",
+    "SUCCEEDED": "Succeeded",
+    "OK": "Succeeded",
+    "DONE": "Succeeded",
+    "FAILED": "Failed",
+    "FAIL": "Failed",
+    "ERROR": "Failed",
+    "CRITICAL": "Failed",
+    "SKIPPED": "Skipped",
+    "SKIP": "Skipped",
+    "PENDING": "Pending",
+    "IN_PROGRESS": "In Progress",
+    "RUNNING": "In Progress",
+    "BLOCKED": "Blocked",
+    "TIMEOUT": "Timed Out",
+    "WARNING": "Warning",
+    "WARN": "Warning",
+}
+
+_PROCESS_DISPLAY: Dict[str, str] = {
+    "FILEUPLOAD": "File Upload",
+    "BILLPOSTING": "Bill Posting",
+    "RECON": "Reconciliation",
+    "CONTRACTNOTEGENERATION": "Contract Note",
+    "CONTRACT_NOTE": "Contract Note",
+    "BEGINFILEUPLOAD": "Begin File Upload",
+    "CollateralValuation": "Collateral Valuation",
+    "CollateralAllocation": "Collateral Allocation",
+    "FundTransfer": "Fund Transfer",
+    "EARLYPAYIN": "Early Pay-in",
+    "WEEKLYAUTOCLOSURE": "Weekly Auto Closure",
+}
+
+# Customer-facing pipeline stage (current_phase -> readable label).
+_STAGE_DISPLAY: Dict[str, str] = {
+    "HOLIDAY_CHECK": "Good to Go",
+    "AWAIT_FILE_UPLOAD": "Good to Go",
+    "AWAIT_GTG": "Good to Go",
+    "RESERVE_PID": "Triggering",
+    "TRIGGER": "Triggering",
+    "TRIGGER_JOB": "Triggering",
+    "AWAIT_BILLPOSTING": "Completion",
+    "AWAIT_RECON": "Completion",
+    "AWAIT_CONTRACT_NOTE": "Completion",
+    "AWAIT_CONFIRM": "Completion",
+    "DONE": "—",
+}
+
+# Fallback when phase is missing but current_process is set.
+_PROCESS_STAGE_DISPLAY: Dict[str, str] = {
+    "FILEUPLOAD": "Good to Go",
+    "BEGINFILEUPLOAD": "Good to Go",
+    "BILLPOSTING": "Completion",
+    "RECON": "Completion",
+    "CONTRACTNOTEGENERATION": "Completion",
+    "CONTRACT_NOTE": "Completion",
+    "CollateralValuation": "Good to Go",
+    "CollateralAllocation": "Good to Go",
+    "FundTransfer": "Good to Go",
+    "EARLYPAYIN": "Completion",
+    "WEEKLYAUTOCLOSURE": "Completion",
+}
 
 _SEVERITY_RANK = {
     "FAILED": 0, "FAIL": 0, "ERROR": 0, "CRITICAL": 0, "CBOS_ERROR": 0,
@@ -71,7 +150,47 @@ def derive_columns(rows: Sequence[dict]) -> List[str]:
 
 
 def _prettify_header(column: str) -> str:
-    return column.replace("_", " ").strip().title()
+    return _COLUMN_HEADERS.get(column, column.replace("_", " ").strip().title())
+
+
+def _display_token(value: str, mapping: Dict[str, str]) -> str:
+    return mapping.get(value.strip().upper(), mapping.get(value.strip(), value))
+
+
+def _format_stage(phase: Any, row: Optional[dict] = None) -> str:
+    if phase is not None and str(phase).strip():
+        key = str(phase).strip().upper()
+        if key in _STAGE_DISPLAY:
+            return _STAGE_DISPLAY[key]
+    if row:
+        process = row.get("current_process")
+        if process:
+            proc_key = str(process).strip()
+            stage = _PROCESS_STAGE_DISPLAY.get(
+                proc_key, _PROCESS_STAGE_DISPLAY.get(proc_key.upper()),
+            )
+            if stage:
+                return stage
+    if phase is None or phase == "":
+        return "—"
+    return str(phase).replace("_", " ").title()
+
+
+def _format_segment_cell(column: str, value: Any, row: Optional[dict] = None) -> str:
+    if column == "current_phase":
+        return _format_stage(value, row)
+
+    if value is None or value == "":
+        return "—"
+
+    if column == "segment_status":
+        return _display_token(str(value), _SEGMENT_STATUS_DISPLAY)
+
+    if column == "current_process":
+        key = str(value).strip()
+        return _PROCESS_DISPLAY.get(key, _PROCESS_DISPLAY.get(key.upper(), key.replace("_", " ").title()))
+
+    return _format_scalar(value)
 
 
 def _format_scalar(value: Any) -> str:
@@ -84,7 +203,11 @@ def _format_scalar(value: Any) -> str:
     return str(value)
 
 
-def format_cell_value(value: Any) -> str:
+def format_cell_value(value: Any, *, column: Optional[str] = None, row: Optional[dict] = None) -> str:
+    if column in _COLUMN_HEADERS and column not in ("trade_date", "started_at", "completed_at"):
+        if not isinstance(value, (dict, list, tuple)):
+            return _format_segment_cell(column, value, row=row)
+
     if isinstance(value, dict):
         if not value:
             return "—"
@@ -131,7 +254,7 @@ def _build_table_rows(
         table_rows.append({
             "background": style.background,
             "text_color": style.text_color,
-            "cells": [format_cell_value(row.get(c)) for c in columns],
+            "cells": [format_cell_value(row.get(c), column=c, row=row) for c in columns],
         })
     return table_rows
 
@@ -160,7 +283,7 @@ def render_text_table(
     lines = [header, "-" * len(header)]
     for row in rows:
         style = resolve_row_style(row, color_overrides)
-        values = [style.label] + [format_cell_value(row.get(c)) for c in cols]
+        values = [style.label] + [format_cell_value(row.get(c), column=c, row=row) for c in cols]
         lines.append(" | ".join(values))
     return "\n".join(lines)
 

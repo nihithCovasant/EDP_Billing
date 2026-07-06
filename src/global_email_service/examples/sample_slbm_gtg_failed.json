@@ -1,19 +1,18 @@
 {
-  "subject": "EDP Alert: SL segment FAILED at FILEUPLOAD — 2026-07-04",
+  "subject": "EDP Alert: SL segment Failed at File Upload — 2026-07-04",
   "title": "EDP Segment Alert — SLB (SL)",
-  "summary": "SLB segment failed during the Good-to-Go check for file upload. Prior segments (EQ, DR, CUR) completed successfully; downstream segments are blocked.",
+  "summary": "SLB segment failed during the Good-to-Go check for file upload. Prior segments (EQ, DR, CUR) succeeded; downstream segments are blocked.",
   "to": ["mofsl-ops@example.com"],
   "row": {
     "trade_date": "2026-07-04",
     "segment_code": "SL",
     "segment_name": "SLB",
-    "sequence_order": 4,
     "segment_status": "FAILED",
     "current_process": "FILEUPLOAD",
-    "current_phase": "AWAIT_FILEUPLOAD",
+    "current_phase": "AWAIT_FILE_UPLOAD",
     "process_id": "17004",
     "skip_category": "CBOS_ERROR",
-    "skip_reason": "FILEUPLOAD GTG error: CBOS Status=NOT_READY — exchange files not available for upload",
+    "skip_reason": "File upload Good-to-Go check failed — exchange files not available for upload (CBOS Status: NOT_READY)",
     "started_at": "2026-07-04T17:13:11+05:30",
     "completed_at": "2026-07-04T17:15:28+05:30"
   }

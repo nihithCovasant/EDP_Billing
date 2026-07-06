@@ -1,13 +1,12 @@
 {
-  "subject": "EDP Alert: EQ segment COMPLETED — 2026-07-04",
+  "subject": "EDP Alert: EQ segment Succeeded — 2026-07-04",
   "title": "EDP Segment Status — Cash (EQ)",
-  "summary": "Cash segment completed all processes successfully (fileupload → BillPost → Reconn → ContractNote).",
+  "summary": "Cash segment succeeded. All processes completed: File Upload → Bill Posting → Reconciliation → Contract Note.",
   "to": ["mofsl-ops@example.com"],
   "row": {
     "trade_date": "2026-07-04",
     "segment_code": "EQ",
     "segment_name": "Cash",
-    "sequence_order": 1,
     "segment_status": "COMPLETED",
     "current_process": null,
     "current_phase": "DONE",

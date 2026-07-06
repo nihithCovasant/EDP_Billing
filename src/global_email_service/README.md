@@ -152,7 +152,7 @@ payload":
 
 ```
 trade_date, segment_code, segment_name, segment_status,
-current_process, current_phase, process_id, skip_category, skip_reason,
+current_process, current_phase, process_id, skip_reason,
 started_at, completed_at
 ```
 
@@ -160,7 +160,15 @@ Any field missing from a given row is shown as `—` rather than the
 column disappearing — so a customer-facing email always shows *when*
 something happened, even if the caller only supplied a couple of fields.
 Any extra keys not in this list are appended after it, still shown.
-`sequence_order` is always omitted from the table (internal pipeline detail).
+`sequence_order` and `skip_category` are always omitted from the table
+(internal pipeline detail).
+
+Customer-facing display labels are applied at render time (payload keys stay
+unchanged): `COMPLETED` → **Succeeded**, `FAILED` → **Failed**,
+`skip_reason` → **Remarks**,
+`current_phase` → **Stage** (Good to Go / Triggering / Completion),
+and process names are expanded (e.g. `RECON` → Reconciliation).
+
 Non-segment payloads (no `segment_code`) fall back to the union of every
 row's keys, first-seen order, exactly as before.
 
