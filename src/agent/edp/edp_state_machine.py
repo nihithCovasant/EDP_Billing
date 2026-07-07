@@ -7,7 +7,7 @@ EDP_STATES = ["INITIALIZING", "WAITING_FOR_FILE_UPLOAD", "WAITING_FOR_BILL_POSTI
 SEGMENTS = ["CASH","DR","SLBM","MCX","NCDEX","MTF","COL_VAL"]
 
 
-def move_to_state(segment: str, new_state: str):
+def move_to_state(segment: str, new_state: str, remarks: str = None) -> None:
     if segment not in SEGMENTS:
         logger.error(f"Unknown segment: {segment}")
         raise ValueError(f"Unknown segment: {segment}")
@@ -68,7 +68,8 @@ async def state_machine_loop() -> None:
                 fn(segment,segment_state,current_time)
             except Exception as e:
                 logger.error(f"Error occurred while processing segment {segment} in function {fn.__name__}: {e}")
-
+        elif current_time > st_time:
+            move_to_state(segment, "FAILED", f"Segment {segment} in state {segment_state} has exceeded its processing time window. Marking as FAILED.",segment,segment_state)
         else:
             logger.info(f"Segment {segment} is not in the time range. Skipping.")
     
