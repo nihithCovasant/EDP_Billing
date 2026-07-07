@@ -33,7 +33,7 @@ from ..utils.json_helpers import (
     record_post_trade_trigger_failed,
 )
 from ..utils.log_fmt import stage_log
-from .stages import StageResult, _fail, _skip
+from .stages import StageResult, _fail, _skip, _log_transient
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
@@ -66,11 +66,7 @@ async def handle_await_gtg(
 
     if result.is_error:
         if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, "AWAIT_GTG",
-                "Transient CBOS error — will retry next cycle",
-                error=result.error, poll=poll_count,
-            ))
+            _log_transient(row.segment_code, "AWAIT_GTG", result.error, poll_count)
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, "AWAIT_GTG",
@@ -241,11 +237,7 @@ async def handle_await_confirm(
 
     if result.is_error:
         if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, "AWAIT_CONFIRM",
-                "Transient CBOS error — will retry next cycle",
-                error=result.error, poll=poll_count,
-            ))
+            _log_transient(row.segment_code, "AWAIT_CONFIRM", result.error, poll_count)
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, "AWAIT_CONFIRM",

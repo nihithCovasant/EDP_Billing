@@ -5,9 +5,10 @@ machine. Shared by both pipelines that live in this table:
     SLBM/SL, MCX, NCDEX, MTF) — MTF is not special-cased.
   - the 3-step pipeline for the 5 T+1 post-trade processes (COLVAL, COLALLOC,
     MTFFT, DMRPT, DMSTMT).
-The two are distinguished purely by which phase_handlers dict is passed in —
-the loop mechanics (window deadline check, terminal signals, ADVANCE chaining)
-are identical either way.
+The two are distinguished by is_post_trade. Dispatch is an explicit
+switch-on-family-then-switch-on-phase (match/case) — the loop mechanics
+(window deadline check, terminal signals, ADVANCE chaining) are identical
+either way.
 """
 
 from __future__ import annotations
@@ -38,26 +39,44 @@ from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
 
-_PHASE_HANDLERS = {
-    # 7-step pipeline — shared by all 7 segments (EQ, DR, CUR, SL, MCX, NCDEX, MTF)
-    SegmentPhase.HOLIDAY_CHECK:         handle_holiday_check,
-    SegmentPhase.RESERVE_PID:           handle_reserve_pid,
-    SegmentPhase.AWAIT_FILE_UPLOAD:     handle_await_file_upload,
-    SegmentPhase.TRIGGER:               handle_trigger,
-    SegmentPhase.AWAIT_BILLPOSTING:     handle_await_billposting,
-    SegmentPhase.AWAIT_RECON:           handle_await_recon,
-    SegmentPhase.AWAIT_CONTRACT_NOTE:   handle_await_contract_note,
-}
-
-_POST_TRADE_PHASE_HANDLERS = {
-    # 3-step pipeline — shared by all 5 T+1 post-trade processes
-    # (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT)
-    SegmentPhase.AWAIT_GTG:      handle_await_gtg,
-    SegmentPhase.TRIGGER_JOB:    handle_trigger_job,
-    SegmentPhase.AWAIT_CONFIRM:  handle_await_confirm,
-}
-
 _TERMINAL_SIGNALS = {StageResult.COMPLETED, StageResult.SKIPPED, StageResult.FAILED}
+
+
+def _dispatch(phase: SegmentPhase | None, is_post_trade: bool):
+    """
+    Switch on segment family first (real 7-step segments vs the 5 T+1
+    post-trade processes — each has its own disjoint set of valid phases),
+    then switch on phase within that family. Returns None for a phase that
+    isn't valid for the given family (caller marks the row FAILED).
+    """
+    if is_post_trade:
+        match phase:
+            case SegmentPhase.AWAIT_GTG:
+                return handle_await_gtg
+            case SegmentPhase.TRIGGER_JOB:
+                return handle_trigger_job
+            case SegmentPhase.AWAIT_CONFIRM:
+                return handle_await_confirm
+            case _:
+                return None
+    else:
+        match phase:
+            case SegmentPhase.HOLIDAY_CHECK:
+                return handle_holiday_check
+            case SegmentPhase.RESERVE_PID:
+                return handle_reserve_pid
+            case SegmentPhase.AWAIT_FILE_UPLOAD:
+                return handle_await_file_upload
+            case SegmentPhase.TRIGGER:
+                return handle_trigger
+            case SegmentPhase.AWAIT_BILLPOSTING:
+                return handle_await_billposting
+            case SegmentPhase.AWAIT_RECON:
+                return handle_await_recon
+            case SegmentPhase.AWAIT_CONTRACT_NOTE:
+                return handle_await_contract_note
+            case _:
+                return None
 
 
 async def advance_pipeline(
@@ -67,18 +86,16 @@ async def advance_pipeline(
     login_id: str,
     now: datetime,
     window_end: datetime | None = None,
-    phase_handlers: dict | None = None,
+    is_post_trade: bool = False,
 ) -> str:
     """
     Execute pipeline stages for a segment_execution row until it blocks,
-    completes, or fails. phase_handlers selects which pipeline drives this
-    row — defaults to the 7-step real-segment pipeline; pass
-    POST_TRADE_PHASE_HANDLERS for the 5 post-trade processes. window_end
-    is None for post-trade rows (no deadline).
+    completes, or fails. is_post_trade selects which of the two families
+    drives this row's phase dispatch. window_end is None for post-trade
+    rows (no deadline).
 
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
-    handlers = phase_handlers if phase_handlers is not None else _PHASE_HANDLERS
     window_end = ensure_aware(window_end)
     while True:
         # Refresh every iteration so a chain of instant ADVANCEs doesn't run
@@ -113,7 +130,7 @@ async def advance_pipeline(
             return "skipped"
 
         phase = row.current_phase
-        handler = handlers.get(phase)
+        handler = _dispatch(phase, is_post_trade)
 
         if handler is None:
             if phase == SegmentPhase.DONE:
@@ -141,10 +158,7 @@ async def advance_pipeline(
         if result == StageResult.STOP_NEXT:
             return "advanced"
 
-        # ADVANCE — log the transition and run the next phase immediately
-        next_phase = row.current_phase
-        logger.info(stage_log(
-            row.segment_code,
-            phase.value,
-            f"Phase complete — advancing to {next_phase.value}",
-        ))
+        # ADVANCE — the handler already logged the specific transition
+        # (with its own context: response, poll count, etc). Loop straight
+        # into the next phase rather than logging a second, generic line
+        # for the same transition.

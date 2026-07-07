@@ -47,6 +47,34 @@ class StageResult(str, Enum):
     FAILED = "failed"
 
 
+# A stage stuck on a transient CBOS error (timeout, network blip, 5xx) polls
+# every wake cycle until it clears or the window deadline hits — logging a
+# WARNING on every single one of those cycles is exactly the "log every
+# time in the loop" noise to avoid. Throttled the same way as the ordinary
+# "still waiting" polls, plus an ERROR escalation if it never clears —
+# quiet by default, loud if it looks like a real CBOS outage.
+_TRANSIENT_LOG_EVERY_N_POLLS = 5
+_TRANSIENT_ESCALATE_AFTER_POLLS = 30
+
+
+def _log_transient(segment_code: str, stage_name: str, error: str | None, poll_count: int) -> None:
+    if poll_count >= _TRANSIENT_ESCALATE_AFTER_POLLS:
+        if poll_count % _TRANSIENT_ESCALATE_AFTER_POLLS == 0:
+            logger.error(stage_log(
+                segment_code, stage_name,
+                f"CBOS still failing after {poll_count} consecutive attempts — "
+                "likely outage, needs attention",
+                error=error, poll=poll_count,
+            ))
+        return
+    if poll_count == 1 or poll_count % _TRANSIENT_LOG_EVERY_N_POLLS == 0:
+        logger.warning(stage_log(
+            segment_code, stage_name,
+            "Transient CBOS error — will retry next cycle",
+            error=error, poll=poll_count,
+        ))
+
+
 # ---------------------------------------------------------------------------
 # Stage 1 — Holiday Check
 # ---------------------------------------------------------------------------
@@ -76,12 +104,7 @@ async def handle_holiday_check(
 
     if result.is_error:
         if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, "HOLIDAY_CHECK",
-                "Transient CBOS error — will retry next cycle",
-                error=result.error,
-                poll=poll_count,
-            ))
+            _log_transient(row.segment_code, "HOLIDAY_CHECK", result.error, poll_count)
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, "HOLIDAY_CHECK",
@@ -267,11 +290,7 @@ async def handle_await_file_upload(
 
     if result.is_error:
         if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, "AWAIT_FILE_UPLOAD",
-                "Transient CBOS error — will retry next cycle",
-                error=result.error, poll=poll_count,
-            ))
+            _log_transient(row.segment_code, "AWAIT_FILE_UPLOAD", result.error, poll_count)
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, "AWAIT_FILE_UPLOAD",
@@ -589,11 +608,7 @@ async def handle_await_contract_note(
 
     if result.is_error:
         if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, "AWAIT_CONTRACT_NOTE",
-                "Transient CBOS error — will retry next cycle",
-                error=result.error, poll=poll_count,
-            ))
+            _log_transient(row.segment_code, "AWAIT_CONTRACT_NOTE", result.error, poll_count)
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, "AWAIT_CONTRACT_NOTE",
@@ -667,11 +682,7 @@ async def _poll_confirmation(
 
     if result.is_error:
         if result.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, stage_name,
-                "Transient CBOS error — will retry next cycle",
-                error=result.error, poll=poll_count,
-            ))
+            _log_transient(row.segment_code, stage_name, result.error, poll_count)
             return StageResult.BLOCKED
         logger.error(stage_log(
             row.segment_code, stage_name,

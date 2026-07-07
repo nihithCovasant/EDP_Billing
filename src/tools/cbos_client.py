@@ -77,6 +77,20 @@ import httpx
 from cams_otel_lib import Logger as logger, otel_trace
 
 
+def _classify_exception(exc: Exception) -> str:
+    """
+    Distinguishes a CBOS call timing out from other network failures, so
+    logs/status can tell "CBOS is slow/unresponsive" apart from "CBOS is
+    unreachable" apart from some other client-side bug — all three used to
+    collapse into one generic "EXCEPTION" error string.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return "CBOS_TIMEOUT"
+    if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
+        return "CBOS_UNREACHABLE"
+    return "CBOS_CLIENT_ERROR"
+
+
 # =============================================================================
 # Result dataclasses
 # =============================================================================
@@ -286,11 +300,12 @@ class CbosClient:
                 return FileStatusResult(response=msg, raw_body=body, http_status=200)
         except Exception as exc:
             elapsed_ms = int((_time.monotonic() - t0) * 1000)
-            logger.error(
+            category = _classify_exception(exc)
+            logger.warning(
                 f"[CBOS] segment={segment} api=file_process_status process={process_name} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| {category} elapsed_ms={elapsed_ms} error={exc}"
             )
-            return FileStatusResult(response="FALSE", error=str(exc), is_transient=True)
+            return FileStatusResult(response="FALSE", error=f"{category}: {exc}", is_transient=True)
 
     # -------------------------------------------------------------------------
     # 2 & 4. get_new_trade_process — reserve PID then trigger
@@ -360,11 +375,12 @@ class CbosClient:
                 return result
         except Exception as exc:
             elapsed_ms = int((_time.monotonic() - t0) * 1000)
-            logger.error(
+            category = _classify_exception(exc)
+            logger.warning(
                 f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| {category} elapsed_ms={elapsed_ms} error={exc}"
             )
-            return NewTradeProcessResult(success=False, error=str(exc), is_transient=True)
+            return NewTradeProcessResult(success=False, error=f"{category}: {exc}", is_transient=True)
 
     # -------------------------------------------------------------------------
     # 3. get_existing_process_id — Step 2 "get-or-reserve" check
@@ -449,11 +465,12 @@ class CbosClient:
                 )
         except Exception as exc:
             elapsed_ms = int((_time.monotonic() - t0) * 1000)
-            logger.error(
+            category = _classify_exception(exc)
+            logger.warning(
                 f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| {category} elapsed_ms={elapsed_ms} error={exc}"
             )
-            return ExistingProcessResult(found=False, error=str(exc), is_transient=True)
+            return ExistingProcessResult(found=False, error=f"{category}: {exc}", is_transient=True)
 
     # -------------------------------------------------------------------------
     # 5. Post-trade (T+1) triggers — Collateral Valuation / Allocation,
@@ -565,11 +582,12 @@ class CbosClient:
                 return PostTradeTriggerResult(success=True, message=message, raw_body=body)
         except Exception as exc:
             elapsed_ms = int((_time.monotonic() - t0) * 1000)
-            logger.error(
+            category = _classify_exception(exc)
+            logger.warning(
                 f"[CBOS] segment={segment} api={endpoint_name} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| {category} elapsed_ms={elapsed_ms} error={exc}"
             )
-            return PostTradeTriggerResult(success=False, error=str(exc), is_transient=True)
+            return PostTradeTriggerResult(success=False, error=f"{category}: {exc}", is_transient=True)
 
     # =========================================================================
     # Mock implementations — used when use_mock=True

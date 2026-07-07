@@ -22,6 +22,10 @@ _STALE_CYCLE_MULTIPLIER = 3
 # Floor for the above, so a very short wake_interval_seconds (e.g. in tests)
 # can't make the liveness check flap on ordinary cycle-to-cycle jitter.
 _MIN_STALE_THRESHOLD_SECONDS = 120
+# An idle cycle (nothing processed) still gets one INFO "still alive" line
+# every this-many cycles, so quiet != "is it hung" in the logs — everything
+# in between is DEBUG-only to avoid flooding logs every wake_interval.
+_HEARTBEAT_EVERY_N_CYCLES = 30
 
 
 class EdpWakeLoop:
@@ -110,18 +114,27 @@ class EdpWakeLoop:
                 pass  # normal case — time for the next cycle
 
     async def _run_one_cycle(self) -> None:
-        """Run exactly one wake cycle: orchestrator pass + START/END/ERROR logging."""
+        """
+        Run exactly one wake cycle: orchestrator pass + START/END/ERROR
+        logging. Most cycles do nothing (waiting on a window, market
+        closed, etc) — those log at DEBUG only, plus a periodic INFO
+        heartbeat, instead of an INFO line every single tick forever.
+        Any cycle with real activity, or an error, is always INFO/ERROR.
+        """
         self._last_cycle_started_at = time.monotonic()
         self._cycle_count += 1
         cycle_no = self._cycle_count
         t0 = time.monotonic()
-        logger.info(edp_log(f"── Wake cycle #{cycle_no} START ──"))
+        logger.debug(edp_log(f"── Wake cycle #{cycle_no} START ──"))
 
         try:
             if self._orchestrator:
                 summary = await self._orchestrator.run_wake_cycle()
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
-                logger.info(edp_log(
+                activity = summary.get("segments_processed", 0) + summary.get("post_trade_processed", 0)
+                is_heartbeat = cycle_no % _HEARTBEAT_EVERY_N_CYCLES == 0
+                log = logger.info if (activity or is_heartbeat) else logger.debug
+                log(edp_log(
                     f"── Wake cycle #{cycle_no} END ──",
                     elapsed_ms=elapsed_ms,
                     date=summary.get("active_date"),

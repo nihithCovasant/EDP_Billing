@@ -27,7 +27,7 @@ from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
 from .models import SegmentPhase, SegmentStatus
 from . import repository
-from .pipeline import advance_pipeline, POST_TRADE_PHASE_HANDLERS
+from .pipeline import advance_pipeline
 from .utils.constants import (
     STALE_HEARTBEAT_THRESHOLD,
     SEGMENT_ORDER,
@@ -253,9 +253,10 @@ class EdpOrchestrator:
                 segment_code, workflow.workflow_json, active_date, self._tz
             )
 
-            # Window not yet open
+            # Window not yet open — this repeats every wake cycle until it
+            # opens (potentially hours), so debug-only to avoid log spam.
             if window_start and now < window_start:
-                logger.info(seg_log(
+                logger.debug(seg_log(
                     segment_code, active_date,
                     "Segment window not yet open — skipping this cycle",
                     window_opens=window_start.strftime("%H:%M:%S %Z"),
@@ -442,7 +443,7 @@ class EdpOrchestrator:
             )
 
             if window_start and now < window_start:
-                logger.info(seg_log(
+                logger.debug(seg_log(
                     segment_code, active_date,
                     "Post-trade process window not yet open — skipping this cycle",
                     window_opens=window_start.strftime("%H:%M:%S %Z"),
@@ -498,7 +499,7 @@ class EdpOrchestrator:
                     login_id=login_id,
                     now=now,
                     window_end=None,
-                    phase_handlers=POST_TRADE_PHASE_HANDLERS,
+                    is_post_trade=True,
                 )
             finally:
                 terminal = row.segment_status in (
