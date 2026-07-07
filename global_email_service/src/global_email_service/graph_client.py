@@ -1,13 +1,9 @@
 """Send email via Microsoft Graph `sendMail` (OAuth2 client-credentials).
 
-Replaces SMTP. The sender is a mailbox (`config.graph_sender`, e.g.
-`rms@covasant.com`) that the Azure AD app registration has been granted
-`Mail.Send` application permission for.
-
-Adapted from mofsl_common_lib's `GraphClient`/`GraphNotifier`
-(mofsl.automation.common.infra.graph) — same token/sendMail flow, but kept
-synchronous and dependency-free (plain `httpx`, no mofsl-automation
-package) so this module stays standalone per its own design goals.
+The sender is a mailbox (`config.graph_sender`, e.g. `rms@covasant.com`)
+that the Azure AD app registration has been granted `Mail.Send`
+application permission for. Kept synchronous and dependency-free (plain
+`httpx`) so this module stays standalone.
 """
 
 from __future__ import annotations
@@ -44,7 +40,7 @@ def _require_graph_config(config: EmailServiceConfig) -> None:
     if missing:
         raise EmailSendError(
             f"Microsoft Graph is not configured — missing {', '.join(missing)}. "
-            "Set them in src/global_email_service/.env or the process environment "
+            "Set them in this project's .env or the process environment "
             "(or set EMAIL_DRY_RUN=true for local testing)."
         )
 

@@ -1,4 +1,5 @@
-"""Service settings loaded from src/global_email_service/.env.
+"""Service settings loaded from environment variables (optionally via a
+`.env` file — see below).
 
 Email is delivered via Microsoft Graph `sendMail` (OAuth2 client-credentials),
 not SMTP — see graph_client.py.
@@ -13,7 +14,15 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
+# Deliberately *not* a package-relative path — this is a library, and a
+# `.env` file shipped inside the installed package would be both wrong (it's
+# a deployment concern, not code) and impossible to override per-consumer.
+# `load_dotenv()` with no args searches the current working directory and
+# its parents, so running `python -m global_email_service.main` from this
+# project's own root (which has its own `.env` — see .env.example) still
+# works for local dev, while a real deployment's actual process env vars
+# always take precedence (load_dotenv never overrides already-set vars).
+load_dotenv()
 
 
 def _split_addresses(raw: str) -> List[str]:

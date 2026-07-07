@@ -14,4 +14,3 @@ logs/
 # Local SQLite dev DB (Postgres is the real backing store — see .env)
 *.db
 *.sqlite3
-/src/global_email_service/mofsl_common_lib-main

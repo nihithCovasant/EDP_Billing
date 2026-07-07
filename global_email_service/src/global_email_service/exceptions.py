@@ -12,4 +12,4 @@ class InvalidPayloadError(EmailServiceError):
 
 
 class EmailSendError(EmailServiceError):
-    """The SMTP send failed (after any configured retries)."""
+    """The Microsoft Graph send failed (after any configured retries)."""

@@ -1,7 +1,8 @@
 """
-Tests for src/global_email_service — fully standalone, no DB and no real
-network calls. Microsoft Graph sending itself is exercised by monkeypatching
-httpx.post so we can assert retry/non-retry behaviour without a real tenant.
+Tests for the global_email_service package — fully standalone, no DB and no
+real network calls. Microsoft Graph sending itself is exercised by
+monkeypatching httpx.post so we can assert retry/non-retry behaviour without
+a real tenant.
 """
 
 from __future__ import annotations
@@ -12,24 +13,24 @@ from typing import Optional
 
 import pytest
 
-from src.global_email_service import (
+from global_email_service import (
     EmailSendError,
     EmailServiceConfig,
     InvalidPayloadError,
     send_alert_email,
     send_segment_alert,
 )
-from src.global_email_service import graph_client
-from src.global_email_service.colors import resolve_row_style
-from src.global_email_service.service import parse_payload
-from src.global_email_service.table_renderer import (
+from global_email_service import graph_client
+from global_email_service.colors import resolve_row_style
+from global_email_service.service import parse_payload
+from global_email_service.table_renderer import (
     DEFAULT_SEGMENT_COLUMNS,
     derive_columns,
     render_email_body,
     resolve_severity,
 )
 
-EXAMPLES_DIR = Path(__file__).parent.parent / "src" / "global_email_service" / "examples"
+EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
 MCX_RECON_ROW = {
     "trade_date": "2026-07-04",

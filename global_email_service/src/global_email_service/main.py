@@ -3,6 +3,7 @@ own CAMS service (see README "Deploying into CAMS")."""
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict
@@ -56,8 +57,6 @@ def _is_misconfigured(config) -> bool:
 
 @app.get("/health")
 async def health() -> Response:
-    import json
-
     config = load_email_config()
     misconfigured = _is_misconfigured(config)
     body = {
@@ -81,8 +80,6 @@ async def health() -> Response:
 async def readiness() -> Response:
     """CAMS-style readiness probe. Not ready when Graph isn't configured and
     dry-run is off — `/send` would fail on every request in that state."""
-    import json
-
     config = load_email_config()
     ready = not _is_misconfigured(config)
     return Response(
@@ -158,6 +155,6 @@ if __name__ == "__main__":
     # image are a common source of "why isn't my change live" confusion).
     reload_enabled = os.getenv("UVICORN_RELOAD", "false").strip().lower() in ("1", "true", "yes")
     uvicorn.run(
-        "src.global_email_service.main:app",
+        "global_email_service.main:app",
         host=host, port=port, reload=reload_enabled, log_level=log_level.lower(),
     )

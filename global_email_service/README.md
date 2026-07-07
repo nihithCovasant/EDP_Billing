@@ -1,12 +1,32 @@
 # global_email_service
 
-A small, standalone module: **JSON in → color-coded HTML table → email out
-via Microsoft Graph.**
+A small, standalone, **pip-installable library/service**: **JSON in →
+color-coded HTML table → email out via Microsoft Graph.**
+
+This is its own self-contained project — not nested inside the main
+EDP agent's `src/` tree — laid out the way any standalone Python
+library/service is:
+
+```
+global_email_service/            <- this project's own root
+├── pyproject.toml               <- build config + dependencies (single source of truth)
+├── README.md                    <- this file
+├── .env / .env.example           <- local dev config (gitignored .env)
+├── src/
+│   └── global_email_service/    <- the actual importable package
+│       ├── __init__.py
+│       ├── config.py, service.py, graph_client.py, ...
+│       └── templates/*.j2
+├── tests/
+│   └── test_global_email_service.py
+├── examples/*.json               <- sample payloads
+└── docker/                       <- Dockerfile + entrypoint for standalone deploys
+```
 
 Built for the EDP Billing use case (notify the MOFSL ops team when a
 segment/process fails, is skipped, or completes) but it is intentionally
-generic — it doesn't import anything from `src/agent/edp`, so it can be
-reused for any "turn this record (or list of records) into a table and
+generic — it doesn't import anything from the main agent's code, so it can
+be reused for any "turn this record (or list of records) into a table and
 email it" use case. **Not integrated into the existing app** — call it
 directly wherever/whenever you need it.
 
@@ -14,27 +34,37 @@ Rendering uses **Jinja2** templates (`templates/email.html.j2` /
 `templates/email.txt.j2`); sending uses the **Microsoft Graph `sendMail`**
 API (OAuth2 client-credentials) via `graph_client.py` — no SMTP.
 
-Can be used either as a **Python library** (import and call directly) or
-run as a **standalone HTTP service** (see "Run as a standalone service"
-below) with a `POST /send` endpoint that takes the same JSON payload.
+Can be used either as a **Python library** (`pip install`, then
+`from global_email_service import send_alert_email`) or run as a
+**standalone HTTP service** (see "Run as a standalone service" below) with
+a `POST /send` endpoint that takes the same JSON payload.
 
 ## Install / setup
 
-This module has its **own `.env` file, separate from the repo-root `.env`**,
-so the whole folder is self-contained and portable (drop it into another
-project and it still works):
+Everything lives under this one project root, separate from the main
+agent's `.env`, so this whole folder is self-contained and portable (copy
+it out into its own repo and it still works as-is):
 
-- `src/global_email_service/.env.example` — template, committed to git.
-- `src/global_email_service/.env` — your actual local config (gitignored,
-  same rule as the repo-root `.env`). Ships with `EMAIL_DRY_RUN=true` and a
-  placeholder recipient so the demo works out of the box with zero setup.
-  Fill in real `EMAIL_GRAPH_*` values and flip `EMAIL_DRY_RUN=false` to
-  actually send.
+```powershell
+cd global_email_service
+python -m venv .venv
+.\.venv\Scripts\pip install -e ".[api,dev]"   # editable install: code + HTTP-service extra + pytest
+```
 
-`config.py` loads this file via `python-dotenv` at import time.
-`load_dotenv()` never overrides variables already set in the real process
-environment, so a real deployment's actual env vars always win over
-whatever is in this `.env` file.
+- `.env.example` — template, committed to git.
+- `.env` — your actual local config (gitignored, same rule as the main
+  agent's own `.env`). Ships with `EMAIL_DRY_RUN=true` and a placeholder
+  recipient so the demo works out of the box with zero setup. Fill in real
+  `EMAIL_GRAPH_*` values and flip `EMAIL_DRY_RUN=false` to actually send.
+
+`config.py` calls `load_dotenv()` (no explicit path) at import time, which
+searches the current working directory and its parents — so running
+anything from this project's own root (`global_email_service/`) picks up
+`.env` here automatically. `load_dotenv()` never overrides variables
+already set in the real process environment, so a real deployment's actual
+env vars always win over whatever is in this `.env` file. Note the `.env`
+file is a local-dev convenience only — it is **not** bundled into the
+wheel (see "Building as a library" below).
 
 ```env
 # Azure AD app registration with application permission Mail.Send
@@ -68,7 +98,7 @@ EMAIL_DRY_RUN=false              # true -> log the rendered email instead of cal
 ## Quick usage
 
 ```python
-from src.global_email_service import send_alert_email, send_segment_alert
+from global_email_service import send_alert_email, send_segment_alert
 
 # Option A — a single "row" (matches segment_execution shape)
 send_segment_alert({
@@ -110,9 +140,10 @@ bad input / Graph send failure.
 Python code directly:
 
 ```powershell
-python -m src.global_email_service.main
+# from global_email_service/ (this project's own root), with the [api] extra installed:
+python -m global_email_service.main
 # or explicitly:
-uvicorn src.global_email_service.main:app --host 0.0.0.0 --port 9200 --reload
+uvicorn global_email_service.main:app --host 0.0.0.0 --port 9200 --reload
 ```
 
 | Endpoint | Method | Graph needed? | Purpose |
@@ -127,7 +158,7 @@ uvicorn src.global_email_service.main:app --host 0.0.0.0 --port 9200 --reload
 ```bash
 curl -X POST http://localhost:9200/send \
   -H "Content-Type: application/json" \
-  -d @src/global_email_service/examples/sample_mcx_recon_failure.json
+  -d @examples/sample_mcx_recon_failure.json
 ```
 
 Host/port/log level are read from `HOST` / `PORT` / `LOG_LEVEL` (CAMS
@@ -219,85 +250,124 @@ Each row's background color is resolved (`colors.py::resolve_row_style`) by:
 ## Try it without any setup
 
 ```powershell
+# from global_email_service/ (this project's own root):
+
 # Render only (no Graph call):
-python -m src.global_email_service.demo --render-only
+python -m global_email_service.demo --render-only
 
 # Cash segment success example:
-python -m src.global_email_service.demo
+python -m global_email_service.demo
 
 # MCX recon failure (multi-row EOD summary):
-python -m src.global_email_service.demo --file src/global_email_service/examples/sample_mcx_recon_failure.json
+python -m global_email_service.demo --file examples/sample_mcx_recon_failure.json
 
 # SLB Good-to-Go failure:
-python -m src.global_email_service.demo --file src/global_email_service/examples/sample_slbm_gtg_failed.json
+python -m global_email_service.demo --file examples/sample_slbm_gtg_failed.json
 ```
 
 ## Files
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `config.py` | `EmailServiceConfig` + `load_email_config()` — Graph/env settings; `load_server_settings()` for host/port/log level |
-| `colors.py` | Status/severity → row color resolution |
-| `table_renderer.py` | Derives columns/cell text/colors/severity from rows; hands them to the Jinja templates |
-| `templating.py` | Jinja2 `Environment` + template loading |
-| `templates/email.html.j2` | HTML email body template (autoescaped) |
-| `templates/email.txt.j2` | Plain-text email body template (CLI/preview use; Graph itself is only sent HTML) |
-| `graph_client.py` | Microsoft Graph `sendMail` — OAuth2 client-credentials token + retry on transient errors |
-| `service.py` | `send_alert_email()` / `send_segment_alert()` — payload validation + orchestration |
-| `main.py` | Standalone FastAPI app (`/send`, `/preview`, `/health*`) — run this to expose the service over HTTP |
-| `exceptions.py` | `InvalidPayloadError`, `EmailSendError` |
-| `demo.py` | Standalone CLI demo (see above) |
+| `pyproject.toml` | Package metadata + dependencies (core + `api`/`dev` extras) — single source of truth for what this needs |
+| `src/global_email_service/config.py` | `EmailServiceConfig` + `load_email_config()` — Graph/env settings; `load_server_settings()` for host/port/log level |
+| `src/global_email_service/colors.py` | Status/severity → row color resolution |
+| `src/global_email_service/table_renderer.py` | Derives columns/cell text/colors/severity from rows; hands them to the Jinja templates |
+| `src/global_email_service/templating.py` | Jinja2 `Environment` + template loading |
+| `src/global_email_service/templates/email.html.j2` | HTML email body template (autoescaped) |
+| `src/global_email_service/templates/email.txt.j2` | Plain-text email body template (CLI/preview use; Graph itself is only sent HTML) |
+| `src/global_email_service/graph_client.py` | Microsoft Graph `sendMail` — OAuth2 client-credentials token + retry on transient errors |
+| `src/global_email_service/service.py` | `send_alert_email()` / `send_segment_alert()` — payload validation + orchestration |
+| `src/global_email_service/main.py` | Standalone FastAPI app (`/send`, `/preview`, `/health*`) — run this to expose the service over HTTP (needs the `api` extra) |
+| `src/global_email_service/exceptions.py` | `InvalidPayloadError`, `EmailSendError` |
+| `src/global_email_service/demo.py` | Standalone CLI demo (see above) |
+| `tests/test_global_email_service.py` | Full unit/integration test suite (`pytest tests`) |
 | `examples/*.json` | Sample payloads: cash success, SLB GTG failure, MCX recon EOD summary |
-| `requirements.txt` | This module's own (public-only) dependencies, for standalone build/deploy |
 | `docker/Dockerfile`, `docker/docker-entrypoint.sh` | CAMS-style container build for deploying this module as its own service |
 
-## Reviewed: `mofsl_common_lib-main` (what's reused, what isn't)
+## What was reused from MOFSL's shared automation framework
 
-`mofsl_common_lib-main/` in this folder is MOFSL's shared automation
-framework (workflow engine, executors, scheduler, DB state store, etc.) —
-much bigger in scope than this module needs. What was actually useful and
-adopted:
+Reviewed MOFSL's `mofsl_common_lib` (workflow engine, executors, scheduler,
+DB state store, etc. — much bigger in scope than this module needs) before
+building the Graph integration. What was actually useful and adopted:
 
-- **`infra/graph.py`'s `GraphClient`** — the OAuth2 client-credentials +
-  `sendMail` flow is exactly what `graph_client.py` here implements
-  (adapted to be synchronous and dependency-free, since this module
-  intentionally avoids taking a hard dependency on the whole
-  `mofsl-automation` package for a single HTTP call).
-- **`infra/errors.py`'s transient/permanent classification** — the same
-  idea (401/403/400/404/422 = fail fast, everything else = retry) is
-  applied to Graph's HTTP responses in `graph_client.send_message()`.
+- **Its `GraphClient`'s** OAuth2 client-credentials + `sendMail` flow is
+  exactly what `graph_client.py` here implements (adapted to be
+  synchronous and dependency-free, since this module intentionally avoids
+  taking a hard dependency on the whole `mofsl-automation` package for a
+  single HTTP call).
+- **Its transient/permanent error classification** — the same idea
+  (401/403/400/404/422 = fail fast, everything else = retry) is applied to
+  Graph's HTTP responses in `graph_client.send_message()`.
 
 Not adopted (out of scope for a single email-sending module): the
 workflow/step engine, `StateStore`/DB persistence, `SecretProvider`
 (AWS Secrets Manager) — this module reads credentials straight from env
-vars/`.env`, matching how the rest of this repo's config works. If this
-service is later deployed with a real secrets manager, swap
+vars/`.env`, matching how the rest of the parent repo's config works. If
+this service is later deployed with a real secrets manager, swap
 `load_email_config()`'s `os.getenv()` calls for that provider without
 touching `graph_client.py` or `service.py`.
 
-## Deploying into CAMS
+## Building as a library (wheel)
 
-This module is a self-contained FastAPI service, so it deploys the same
-way as the main agent (see repo-root `docker/Dockerfile`), just scoped to
-its own folder:
+For teams that want to call this **in-process** — no HTTP hop, just
+`from global_email_service import send_alert_email` inside their own
+agent — build it as a wheel from this project's own root:
 
 ```powershell
-docker build -f src/global_email_service/docker/Dockerfile -t global-email-service .
-docker run -p 9200:9200 --env-file src/global_email_service/.env global-email-service
+cd global_email_service
+python -m build --wheel --outdir dist .
+# -> dist/global_email_service-1.0.0-py3-none-any.whl
 ```
 
+- **Core dependencies only** (`jinja2`, `python-dotenv`, `httpx`) are
+  installed by default — no `fastapi`/`uvicorn` unless the consumer opts
+  into the `api` extra (`pip install "global-email-service[api]"`), which
+  is only needed to run this module as its own HTTP service via `main.py`.
+- The wheel only contains `src/global_email_service/**` (code + Jinja
+  templates) — `docker/`, `examples/`, `.env*`, and `tests/` are
+  deployment/dev-only and are not shipped inside the package.
+- Publish the wheel to the same private index other internal packages use
+  (e.g. `platform-sdk-common`) so consumers add one line to their
+  `requirements.txt`: `global-email-service==1.0.0`.
+- **Each consumer needs its own Microsoft Graph credentials.** Calling
+  `send_alert_email(...)` in-process means Graph is called under that
+  process's own identity — there's no shared service to route through, so
+  every consuming team must set `EMAIL_GRAPH_TENANT_ID` /
+  `EMAIL_GRAPH_CLIENT_ID` / `EMAIL_GRAPH_CLIENT_SECRET` /
+  `EMAIL_GRAPH_SENDER` in their own environment (their `.env` /
+  `agent_config.json` / secret manager — not ours).
+- Verified end-to-end: built the wheel, installed it into a clean venv
+  outside this repo, and called `send_segment_alert(...)` successfully
+  with no dependency on any particular parent-repo package layout.
+
+## Deploying into CAMS
+
+This module is a self-contained FastAPI service with its own Dockerfile —
+build context is this project's own root, not the parent repo root:
+
+```powershell
+cd global_email_service
+docker build -f docker/Dockerfile -t global-email-service .
+docker run -p 9200:9200 --env-file .env global-email-service
+```
+
+The Dockerfile installs via `pip install ".[api]"` against `pyproject.toml`
+(no separate `requirements.txt` — the package metadata is the single
+source of truth for dependencies, same as any other pip-installable
+library) and copies only the resulting venv into the final image.
+
 - `/health`, `/health/ready`, `/health/live` follow the same probe
-  convention as `src/agent/__main__.py`. `/health` and `/health/ready`
-  return **503** if the service is not in `EMAIL_DRY_RUN=true` mode and any
-  of the three required Graph credentials are missing — so CAMS won't
-  route traffic to (or will restart) an instance that can't actually send
-  mail.
+  convention as the main agent's own health checks. `/health` and
+  `/health/ready` return **503** if the service is not in
+  `EMAIL_DRY_RUN=true` mode and any of the three required Graph
+  credentials are missing — so CAMS won't route traffic to (or will
+  restart) an instance that can't actually send mail.
 - `HOST` / `PORT` / `LOG_LEVEL` env vars match CAMS naming (see
   `.env.example`).
-- `requirements.txt` is self-contained by design: build pulls only public
-  PyPI packages (`fastapi`, `uvicorn`, `jinja2`, `python-dotenv`, `httpx`),
-  so no GCP Artifact Registry credentials are needed for this module's
-  image.
+- Build pulls only public PyPI packages (`fastapi`, `uvicorn`, `jinja2`,
+  `python-dotenv`, `httpx`), so no GCP Artifact Registry credentials are
+  needed for this module's image.
 - Supply real `EMAIL_GRAPH_*` secrets via the CAMS secrets/config
   injection mechanism — either as plain env vars, or as mounted secret
   files, in which case point `EMAIL_GRAPH_TENANT_ID_FILE` /
