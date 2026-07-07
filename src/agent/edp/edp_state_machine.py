@@ -8,6 +8,8 @@ EDP_STATES = ["INITIALIZING", "WAITING_FOR_FILE_UPLOAD", "WAITING_FOR_BILL_POSTI
 
 SEGMENTS = ["CASH","DR","SLBM","MCX","NCDEX","MTF","COL_VAL"]
 
+atomic_loop_start_time = None
+atomic_loop_end_time = None
 
 def move_to_state(segment: str, new_state: str, remarks: str = None) -> None:
     if segment not in SEGMENTS:
@@ -58,6 +60,7 @@ def get_segment_state_handler(segment: str, segment_state:str):
 async def state_machine_loop() -> None:
     try:
         current_time = time.time()
+        atomic_loop_start_time = current_time
         for segment in SEGMENTS:
             if is_handled(segment):
                 logger.info(f"Segment {segment} is already handled. Skipping.")
@@ -82,6 +85,7 @@ async def state_machine_loop() -> None:
         # schedule the next run of the state machine loop after a delay using asyncio
         asyncio.sleep(60)  # Wait for 60 seconds
         asyncio.create_task(state_machine_loop())  # Recursively call the loop to continue processing
+        atomic_loop_end_time = time.time()
 
 
 
