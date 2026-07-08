@@ -50,7 +50,6 @@ def _workflow_variant(cfg, login_id: str) -> dict:
             "login_id": login_id,
             "window_start": "00:00",
             "window_end": "23:59",
-            "window_end_next_day": True,
         }
         for code in helpers.SEGMENT_ORDER
     ]

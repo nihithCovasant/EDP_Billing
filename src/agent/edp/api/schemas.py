@@ -110,8 +110,6 @@ class SegmentDetailResponse(BaseModel):
     last_heartbeat_at: Optional[str] = None
     # Computed live (not stored) — see utils/serializers._runtime_health().
     runtime_health: str = "ACTIVE"
-    lock_state: str = "UNLOCKED"
-    lock_owner: Optional[str] = None
     config_id_used: Optional[str] = None
     processes_json: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[str] = None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..models import LockState, SegmentExecution, SegmentStatus
+from ..models import SegmentExecution, SegmentStatus
 from .constants import STALE_HEARTBEAT_THRESHOLD, get_segment_name, get_sequence_order
 from .datetime_utils import ensure_aware, now_ist
 
@@ -38,8 +38,6 @@ def serialize_segment(row: SegmentExecution) -> dict:
         "completed_at": _dt(row.completed_at),
         "last_heartbeat_at": _dt(row.last_heartbeat_at),
         "runtime_health": _runtime_health(row),
-        "lock_state": (row.lock_json or {}).get("state", LockState.UNLOCKED.value),
-        "lock_owner": (row.lock_json or {}).get("owner"),
         "config_id_used": row.config_id_used,
         "processes_json": row.processes_json or {},
         "created_at": _dt(row.created_at),

@@ -29,14 +29,14 @@ ALL_POST_TRADE_CODES = list(POST_TRADE_ORDER)
 
 def build_all_day_open_workflow_json() -> dict:
     """A workflow_json where every segment's window is wide open (00:00 ->
-    23:59 next day) so tests are never gated by window checks."""
+    23:59 next day, per the fixed overnight rule in _resolve_window()) so
+    tests are never gated by window checks."""
     segments = [
         {
             "segment_code": code,
             "login_id": "CV0001",
             "window_start": "00:00",
             "window_end": "23:59",
-            "window_end_next_day": True,
         }
         for code in SEGMENT_ORDER
     ]

@@ -214,6 +214,10 @@ def build_default_workflow_json(
     display names are fixed code constants, not part of the config — this
     only carries segment/process identity + timing metadata. Passing
     post_trade_processes=None builds the fixed legacy defaults.
+
+    No window_end_next_day field either — segment windows always run
+    overnight into the next calendar day, a fixed rule enforced in
+    orchestrator._resolve_window(), not something a config states.
     """
     built_segments = []
     for seg in segments:
@@ -223,7 +227,6 @@ def build_default_workflow_json(
             "login_id": seg.get("login_id", "CV0001"),
             "window_start": seg.get("window_start", "17:00"),
             "window_end": seg.get("window_end", "06:00"),
-            "window_end_next_day": seg.get("window_end_next_day", True),
         })
 
     if post_trade_processes is None:
@@ -231,7 +234,6 @@ def build_default_workflow_json(
         post_trade_processes[0] = {
             **post_trade_processes[0],
             "window_start": POST_TRADE_FIRST_WINDOW_START,
-            "window_start_next_day": True,
         }
 
     built_post_trade = []
@@ -244,7 +246,6 @@ def build_default_workflow_json(
             entry["gtg_process_name"] = proc["gtg_process_name"]
         if proc.get("window_start"):
             entry["window_start"] = proc["window_start"]
-            entry["window_start_next_day"] = proc.get("window_start_next_day", True)
         built_post_trade.append(entry)
 
     return {

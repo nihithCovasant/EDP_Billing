@@ -1,6 +1,6 @@
 """
-JSON dict columns (processes_json, lock_json, workflow_json) are wrapped
-with MutableDict.as_mutable(JSON) so an in-place mutation
+JSON dict columns (processes_json, workflow_json) are wrapped with
+MutableDict.as_mutable(JSON) so an in-place mutation
 (row.processes_json["x"] = y) is tracked and flushed correctly, not just
 the "reassign the whole dict" convention json_helpers.py uses. This test
 proves that: mutate in place, flush, reload in a new session, see the change.
@@ -29,19 +29,6 @@ async def test_in_place_mutation_of_processes_json_is_persisted(cfg, session_fac
     assert row.processes_json.get("probe") == {"touched": True}, (
         "in-place mutation of processes_json was lost — MutableDict wrapping is missing/broken"
     )
-
-
-async def test_in_place_mutation_of_lock_json_is_persisted(cfg, session_factory, test_date):
-    await helpers.seed_day(session_factory, test_date, cfg)
-
-    async with session_factory() as session:
-        row = await repository.get_one(session, test_date, "CUR")
-        row.lock_json["probe"] = "touched"
-        await session.commit()
-
-    async with session_factory() as session:
-        row = await repository.get_one(session, test_date, "CUR")
-    assert row.lock_json.get("probe") == "touched"
 
 
 async def test_in_place_mutation_of_workflow_json_is_persisted(cfg, session_factory, test_date):

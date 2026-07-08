@@ -79,14 +79,14 @@ async def test_post_trade_process_uses_configured_login_id_and_process_name(
     assert user_id == "CUSTOM_LID", "must use the configured login_id, not the fixed default"
 
 
-async def test_post_trade_no_default_window_gate_when_configured_elsewhere(
+async def test_post_trade_default_window_gate_applies_independently_per_process(
     cfg, session_factory, test_date,
 ):
     """
-    The fixed "only COLVAL gets a 02:30 gate" legacy default must NOT be
-    silently applied when ops has explicitly configured a window_start
-    somewhere else in post_trade_processes (here: COLALLOC) — COLVAL should
-    start immediately with no gate at all.
+    The default 02:30 IST (T+1) gate applies to EVERY post-trade process
+    that doesn't have its own explicit window_start — an override on one
+    process (here: COLALLOC's 03:00) must have no effect on another
+    process's (COLVAL's) default gate.
     """
     workflow_json = build_default_workflow_json(
         [],
@@ -94,7 +94,7 @@ async def test_post_trade_no_default_window_gate_when_configured_elsewhere(
             {"process_code": "COLVAL", "login_id": "G_LID"},
             {
                 "process_code": "COLALLOC", "login_id": "G_LID",
-                "window_start": "03:00", "window_start_next_day": True,
+                "window_start": "03:00",
             },
             {"process_code": "MTFFT", "login_id": "G_LID"},
             {"process_code": "DMRPT", "login_id": "G_LID"},
@@ -113,16 +113,20 @@ async def test_post_trade_no_default_window_gate_when_configured_elsewhere(
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
     orchestrator._cycle_active_date = test_date
-    # Well before the OLD fixed 02:30 default would have opened.
-    orchestrator._cycle_now = datetime.combine(
+
+    # Before COLVAL's default 02:30 gate opens — must stay blocked, even
+    # though COLALLOC's own override is a different, unrelated time.
+    before_window = datetime.combine(
         test_date + timedelta(days=1), dtime(0, 30), tzinfo=orchestrator._tz
     )
-
+    orchestrator._cycle_now = before_window
     outcome = await orchestrator._process_one_post_trade("COLVAL")
-    assert outcome in ("advanced", "completed"), (
-        "COLVAL must not be gated by the legacy default window once ops has "
-        "explicitly configured a window elsewhere in post_trade_processes"
-    )
+    assert outcome == "blocked", "COLVAL must still default-gate at 02:30 T+1"
+
+    # Past 02:30 T+1 — COLVAL proceeds normally.
+    orchestrator._cycle_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
+    outcome = await orchestrator._process_one_post_trade("COLVAL")
+    assert outcome in ("advanced", "completed")
 
 
 async def test_seed_post_trade_processes_skips_unknown_process_code(cfg, session_factory, test_date):

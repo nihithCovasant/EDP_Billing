@@ -4,8 +4,8 @@ MTFFT -> DMRPT -> DMSTMT) that runs once per trade_date through the
 generic 3-step GTG -> trigger -> confirm pipeline.
 
 Covers: happy path, a mid-chain failure not blocking independent
-processes, the chain running standalone (no segments seeded), and
-Process 1's wall-clock window gate.
+processes, the chain running standalone (no segments seeded), and the
+default T+1 02:30 wall-clock window gate (applies to all 5 processes).
 """
 
 from __future__ import annotations
@@ -127,6 +127,32 @@ async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
     orchestrator._cycle_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome in ("advanced", "completed")
+
+
+async def test_all_post_trade_processes_gated_by_default_when_no_window_configured(
+    cfg, session_factory, test_date,
+):
+    """
+    Every one of the 5 post-trade processes — not just COLVAL — must default
+    to the 02:30 IST (T+1) gate when workflow_json doesn't specify its own
+    window_start. Regression test for a bug where COLALLOC/MTFFT/DMRPT/
+    DMSTMT started (and called CBOS) immediately, same-day, ungated.
+    """
+    cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
+    cbos.mock_set_ready_after(1)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+
+    await helpers.seed_post_trade_day(session_factory, test_date)
+
+    orchestrator._cycle_active_date = test_date
+    orchestrator._cycle_now = datetime.combine(test_date, dtime(15, 0), tzinfo=orchestrator._tz)
+
+    for code in POST_TRADE_ORDER:
+        outcome = await orchestrator._process_one_post_trade(code)
+        assert outcome == "blocked", f"{code} must be gated before 02:30 T+1, got {outcome}"
+
+    rows = await helpers.get_post_trade_rows(session_factory, test_date)
+    assert all(r.segment_status == SegmentStatus.PENDING for r in rows)
 
 
 async def _prime_triggering_post_trade_row(session_factory, test_date, fixed_now, *, code: str = "COLVAL") -> None:

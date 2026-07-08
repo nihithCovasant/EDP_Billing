@@ -39,7 +39,7 @@ Enum agent_control_action {
 Table edpb_properties {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null, note: 'Trading calendar date']
-  workflow_json json [not null, note: 'segments: segment_code, login_id, window_start, window_end, window_end_next_day. Always IST — no per-config timezone field.']
+  workflow_json json [not null, note: 'segments: segment_code, login_id, window_start, window_end (always resolves overnight into the next day — fixed rule, not a field). Always IST — no per-config timezone field.']
   is_active boolean [not null, default: true, note: 'One active row per trade_date']
   uploaded_by varchar(256) [not null, default: 'system']
   uploaded_at timestamp [not null, default: `now()`]
@@ -61,7 +61,6 @@ Table edpb_segment_execution {
   current_phase segment_phase [note: 'Active pipeline stage — see segment_phase enum note']
   process_id varchar(64) [note: 'From getNewTradeProcess PROCESSID=0 (real segments only)']
   process_id_reserved_at timestamp
-  lock_json json [not null, note: 'Vestigial — no pod-to-pod locking in the current single-instance design (an IN_PROGRESS row just resumes at its persisted current_phase on restart). Kept only for API response backward compatibility (lock_state/lock_owner fields); always UNLOCKED/None.']
   processes_json json [not null, note: 'Real segments: holiday_check file_upload_ready trigger bill_posting recon contract_note | Post-trade: gtg trigger confirm | Real-segment "trigger" substate is PID_RESERVED -> TRIGGERING -> TRIGGERED/FAILED; TRIGGERING is committed (session.commit, not just flush) BEFORE the CBOS trigger call so a crash can never lose it (double-trigger crash protection, see pipeline.stages.handle_trigger / _recover_trigger). Post-trade "trigger" substate is the same TRIGGERING marker + commit before the call, but since post-trade CBOS endpoints have no Table2-equivalent status check, a resume that finds TRIGGERING already set refuses to re-fire and marks the process FAILED for manual verification instead (pipeline.post_trade_stages.handle_trigger_job).']
   started_at timestamp [note: 'PENDING to IN_PROGRESS']
   completed_at timestamp [note: 'COMPLETED FAILED or SKIPPED']

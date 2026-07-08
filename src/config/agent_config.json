@@ -87,37 +87,37 @@
         {
           "segment_code": "EQ",
           "login_id": "CV0001",
-          "window_start": "17:00",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "17:00",  "window_end": "06:00"
         },
         {
           "segment_code": "DR",
           "login_id": "CV0001",
-          "window_start": "17:15",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "17:15",  "window_end": "06:00"
         },
         {
           "segment_code": "CUR",
           "login_id": "CV0001",
-          "window_start": "17:30",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "17:30",  "window_end": "06:00"
         },
         {
           "segment_code": "SL",
           "login_id": "CV0001",
-          "window_start": "17:45",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "17:45",  "window_end": "06:00"
         },
         {
           "segment_code": "MCX",
           "login_id": "CV0001",
-          "window_start": "18:00",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "18:00",  "window_end": "06:00"
         },
         {
           "segment_code": "NCDEX",
           "login_id": "CV0001",
-          "window_start": "18:15",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "18:15",  "window_end": "06:00"
         },
         {
           "segment_code": "MTF",
           "login_id": "CV0001",
-          "window_start": "18:30",  "window_end": "06:00", "window_end_next_day": true
+          "window_start": "18:30",  "window_end": "06:00"
         }
       ],
       "post_trade_processes": [
@@ -125,7 +125,7 @@
           "process_code": "COLVAL",
           "login_id": "G_LID",
           "gtg_process_name": "CollateralValuation",
-          "window_start": "02:30", "window_start_next_day": true
+          "window_start": "02:30"
         },
         {
           "process_code": "COLALLOC",

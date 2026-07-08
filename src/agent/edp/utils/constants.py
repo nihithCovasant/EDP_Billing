@@ -55,11 +55,11 @@ POST_TRADE_GTG_PROCESS_NAME: dict[str, str] = {
     "DMSTMT": "DailyMarginStatements",
 }
 
-# Only the FIRST post-trade process (Collateral Valuation) has an explicit
-# opening gate per the spec ("T+1, 2:30am-6am window") — it won't start
-# polling before this time on trade_date+1. The remaining 4 simply start as
-# soon as the previous one in the chain completes; there is no window_end
-# deadline for any of them (they poll indefinitely until CBOS confirms).
+# Default opening gate for all 5 post-trade processes ("T+1, 2:30am" per
+# spec) — none of them start polling before this time on trade_date+1 unless
+# a process has its own explicit window_start in workflow_json. There is no
+# window_end deadline for any of them (they poll indefinitely until CBOS
+# confirms).
 POST_TRADE_FIRST_WINDOW_START = "02:30"
 
 # Heartbeat staleness threshold — a segment is considered STALE (for display

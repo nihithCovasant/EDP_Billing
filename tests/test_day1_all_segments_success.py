@@ -109,8 +109,8 @@ async def test_day_summary_and_serializers_have_no_removed_fields(cfg, session_f
     Gap-check for the recent segment_execution simplification: the day
     summary and per-segment serializers must not leak domain/window_*_at
     columns that no longer exist on the model, and must compute
-    segment_name/sequence_order/runtime_health/lock_state instead of
-    reading them off stored columns.
+    segment_name/sequence_order/runtime_health instead of reading them off
+    stored columns.
     """
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     cbos.mock_set_ready_after(1)
@@ -137,8 +137,6 @@ async def test_day_summary_and_serializers_have_no_removed_fields(cfg, session_f
     assert detail["segment_name"] == "Cash"
     assert detail["sequence_order"] == get_sequence_order("EQ") == 1
     assert detail["runtime_health"] == "ACTIVE"
-    assert detail["lock_state"] == "UNLOCKED"
-    assert detail["lock_owner"] is None
     for removed_field in ("domain", "window_start_at", "window_end_at"):
         assert removed_field not in detail
         assert removed_field not in summary_row

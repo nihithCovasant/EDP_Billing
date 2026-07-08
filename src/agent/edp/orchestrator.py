@@ -446,14 +446,16 @@ def _resolve_window(
 ) -> tuple[Optional[datetime], Optional[datetime]]:
     """Resolve (window_start, window_end) for a segment on demand — a pure
     function of (segment_code, workflow_json, trade_date, tz), so a config
-    re-upload takes effect immediately."""
+    re-upload takes effect immediately. Segment windows always run
+    overnight (evening window_start through early-morning window_end the
+    next calendar day) — that's a fixed business rule, not something a
+    config uploader needs to state, so window_end is always resolved on
+    trade_date+1."""
     seg_cfg = _find_segment_cfg(workflow_json, segment_code)
     if not seg_cfg:
         return None, None
     window_start = parse_window_dt(trade_date, seg_cfg["window_start"], False, tz)
-    window_end = parse_window_dt(
-        trade_date, seg_cfg["window_end"], seg_cfg.get("window_end_next_day", False), tz
-    )
+    window_end = parse_window_dt(trade_date, seg_cfg["window_end"], True, tz)
     return window_start, window_end
 
 
@@ -490,23 +492,21 @@ def _resolve_post_trade_window(
     tz: ZoneInfo,
 ) -> Optional[datetime]:
     """
-    Resolve the opening gate (if any) for a post-trade process, mirroring
-    _resolve_window(). Per spec only Process 1 (COLVAL) gates on a window
-    ("T+1, 2:30am-6am"); the rest start as soon as the prior one completes.
-    Config-driven: an explicit window_start anywhere in the list is trusted
-    as-is; the fixed 02:30 IST T+1 default only applies when no process in
-    the config specifies a window_start at all.
+    Resolve the opening gate for a post-trade process, mirroring
+    _resolve_window(). Every one of the 5 processes defaults to the fixed
+    T+1 02:30 IST gate — none of them may start before then — unless that
+    specific process has its own explicit window_start in workflow_json,
+    which takes priority. Resolved independently per process, so one
+    process's override has no effect on the others' default gate.
+
+    Post-trade processing is T+1 by definition — a config can override the
+    gate *time*, but not that it falls on trade_date+1, so this always
+    resolves against the next calendar day.
     """
     proc_cfg = _find_post_trade_cfg(workflow_json, segment_code)
     if proc_cfg and proc_cfg.get("window_start"):
-        return parse_window_dt(
-            trade_date, proc_cfg["window_start"], proc_cfg.get("window_start_next_day", True), tz
-        )
-    if segment_code == POST_TRADE_ORDER[0] and not any(
-        p.get("window_start") for p in _post_trade_configs(workflow_json)
-    ):
-        return parse_window_dt(trade_date, POST_TRADE_FIRST_WINDOW_START, True, tz)
-    return None
+        return parse_window_dt(trade_date, proc_cfg["window_start"], True, tz)
+    return parse_window_dt(trade_date, POST_TRADE_FIRST_WINDOW_START, True, tz)
 
 
 def _log_segment_outcome(

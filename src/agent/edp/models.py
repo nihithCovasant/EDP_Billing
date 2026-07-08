@@ -81,12 +81,6 @@ class SegmentPhase(str, enum.Enum):
     DONE = "DONE"
 
 
-class LockState(str, enum.Enum):
-    """Values stored inside lock_json's "state" key."""
-    UNLOCKED = "UNLOCKED"
-    LOCKED = "LOCKED"
-
-
 class AgentControlAction(str, enum.Enum):
     START = "START"
     STOP = "STOP"
@@ -110,13 +104,16 @@ class EdpProperties(Base):
           "segment_code": "EQ",
           "login_id": "CV0001",
           "window_start": "17:00",
-          "window_end": "18:00",
-          "window_end_next_day": false
+          "window_end": "06:00"
         },
         ...7 segments: EQ, DR, CUR, SL, MCX, NCDEX, MTF...
       ],
       "post_trade_processes": [...5 processes: COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT...]
     }
+
+    Segment windows always run overnight into the next calendar day and
+    post-trade processes always gate on T+1 — both are fixed rules in
+    orchestrator.py, not fields a config uploader needs to state.
 
     sequence_order and segment_name are fixed code constants (see
     utils/constants.py), not stored.
@@ -235,12 +232,6 @@ class SegmentExecution(Base):
     process_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     process_id_reserved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
-    )
-
-    # Legacy column, unused by the current single-instance design (kept for
-    # backward compatibility with existing rows/API consumers).
-    lock_json: Mapped[dict] = mapped_column(
-        _MutableJSON, nullable=False, default=dict,
     )
 
     processes_json: Mapped[dict] = mapped_column(
