@@ -96,10 +96,7 @@ class EdpBootstrapConfig:
     # Database
     database_url: str = "sqlite+aiosqlite:///./edp_agent.db"
 
-    # Lock TTL for double-trigger prevention
-    lock_ttl_seconds: int = 300
-
-    # Unique ID for this agent pod (used as lock_owner)
+    # Identifies this agent instance in logs
     agent_instance_id: str = "agent-1"
 
     # Auto-seed defaults, used when no config has been uploaded yet.
@@ -199,7 +196,6 @@ def load_edp_config() -> EdpBootstrapConfig:
             "POST_TRADE_LOGIN_ID", edp_raw.get("post_trade_login_id", "G_LID")
         ),
         database_url=db_url,
-        lock_ttl_seconds=int(edp_raw.get("lock_ttl_seconds", 300)),
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),
         default_segments=edp_raw.get("segments", []),
         default_post_trade_processes=edp_raw.get("post_trade_processes", []),

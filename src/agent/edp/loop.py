@@ -1,5 +1,10 @@
 """
 24/7 EDP wake loop — sleeps N seconds between cycles.
+
+Self-rescheduling asyncio.create_task() chain: each cycle schedules the
+next one itself (see _cycle_wrapper()). Shutdown-safe via _stop_event
+checks at every re-entry point + an atomic task handoff in stop(), so a
+task can never be orphaned by a race with shutdown.
 """
 
 from __future__ import annotations
@@ -57,7 +62,7 @@ class EdpWakeLoop:
         self._config = config
         self._stop_event.clear()
         self._cycle_count = 0
-        self._task = asyncio.create_task(self._loop_forever(), name="edp-wake-loop")
+        self._task = asyncio.create_task(self._cycle_wrapper(), name="edp-wake-loop")
         logger.info(edp_log(
             "Wake loop started",
             interval_s=config.wake_interval_seconds,
@@ -70,44 +75,46 @@ class EdpWakeLoop:
     @otel_trace
     async def stop(self) -> None:
         self._stop_event.set()
-        if self._task:
-            self._task.cancel()
+        # Atomic capture so a task created concurrently with this call is
+        # never dropped — it self-terminates on its own _stop_event check.
+        task, self._task = self._task, None
+        if task and not task.done():
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
         await close_database()
         logger.info(edp_log(
             "Wake loop stopped",
             total_cycles=self._cycle_count,
         ))
 
-    async def _loop_forever(self) -> None:
-        """
-        One persistent Task for the process lifetime — created once in
-        start() and never reassigned; runs wake cycles back-to-back until
-        stop() cancels it. A single `while True`, not a chain of
-        self-rescheduling tasks, so there's always exactly one Task to
-        point at (asyncio.all_tasks(), debugger, incident review).
+    async def _cycle_wrapper(self) -> None:
+        """Run one cycle, then reschedule itself unless stopped. Every
+        re-entry checks _stop_event first, so a task created in a race
+        with stop() self-terminates instead of running unmanaged."""
+        if self._stop_event.is_set():
+            return
 
-        The cancellable sleep (`asyncio.wait_for` on `_stop_event`) yields
-        control every cycle so other coroutines keep running in between.
-        """
-        while not self._stop_event.is_set():
-            await self._run_one_cycle()
+        await self._run_one_cycle()
 
-            if self._stop_event.is_set():
-                return
+        if self._stop_event.is_set():
+            return
 
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=self._config.wake_interval_seconds,
-                )
-                return  # stop_event was set while sleeping
-            except asyncio.TimeoutError:
-                pass  # normal case — time for the next cycle
+        try:
+            await asyncio.wait_for(
+                self._stop_event.wait(),
+                timeout=self._config.wake_interval_seconds,
+            )
+            return  # stop_event was set while sleeping
+        except asyncio.TimeoutError:
+            pass  # normal case — time for the next cycle
+
+        if self._stop_event.is_set():
+            return
+
+        self._task = asyncio.create_task(self._cycle_wrapper(), name="edp-wake-loop")
 
     async def _run_one_cycle(self) -> None:
         """Run exactly one wake cycle: orchestrator pass + START/END/ERROR logging."""

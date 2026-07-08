@@ -1,17 +1,11 @@
 """
-T+1 post-trade processes — the 5-process chain (Collateral Valuation ->
-Collateral Allocation -> MTF Fund Transfer -> Daily Margin Reporting ->
-Daily Margin Statements) that runs once per trade_date, sequentially,
-through the generic 3-step GTG -> trigger -> confirm pipeline.
+T+1 post-trade processes — the 5-process chain (COLVAL -> COLALLOC ->
+MTFFT -> DMRPT -> DMSTMT) that runs once per trade_date through the
+generic 3-step GTG -> trigger -> confirm pipeline.
 
-Two scenarios, mirroring test_day1_all_segments_success.py /
-test_day2_segment_process_failure.py for the 7-segment pipeline:
-  1. All 5 post-trade processes complete successfully.
-  2. The 2nd process (Collateral Allocation) fails partway through ->
-     halts the remaining post-trade chain (MTFFT/DMRPT/DMSTMT stay PENDING).
-
-Also covers: the chain is independent of the 7 real segments' status (no
-segments are even seeded here), and Process 1's wall-clock window gate.
+Covers: happy path, a mid-chain failure not blocking independent
+processes, the chain running standalone (no segments seeded), and
+Process 1's wall-clock window gate.
 """
 
 from __future__ import annotations
@@ -23,8 +17,6 @@ from src.agent.edp.models import SegmentPhase, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.repository import get_day_summary
 from src.agent.edp.utils.constants import POST_TRADE_ORDER, get_sequence_order
-from src.agent.edp.utils.datetime_utils import now_ist
-from src.agent.edp.utils.locking import lock_state
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
@@ -32,12 +24,8 @@ from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
-    """
-    Deliberately does NOT seed/run the 7 real segments at all — the
-    post-trade chain must be fully drivable on its own, per the
-    "independent of segment status" design (see EdpOrchestrator class
-    docstring / orchestrator._process_post_trade_chain()).
-    """
+    """Deliberately does NOT seed the 7 real segments — the post-trade
+    chain must be fully drivable on its own."""
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     cbos.mock_set_ready_after(1)  # every poll succeeds first try -> fastest happy path
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -75,14 +63,9 @@ async def test_all_post_trade_processes_complete_successfully(cfg, session_facto
     assert summary["completed"] == 5
 
 
-async def test_post_trade_process_failure_halts_remaining_chain(cfg, session_factory, test_date):
-    """
-    Collateral Allocation (2nd process)'s GTG check fails permanently ->
-    it's marked FAILED, and MTF Fund Transfer / Daily Margin Reporting /
-    Daily Margin Statements (3rd-5th) are never started (stay PENDING) —
-    same halt-on-FAILED semantics as the 7-segment chain, scoped to just
-    the post-trade chain.
-    """
+async def test_post_trade_process_failure_does_not_block_others(cfg, session_factory, test_date):
+    """COLALLOC's GTG check fails permanently -> marked FAILED, but
+    MTFFT/DMRPT/DMSTMT are independent and still run to COMPLETED."""
     cbos = FailingCbosClient(
         cfg.cbos_status_url, cfg.cbos_process_url,
         fail_segment="COLALLOC", fail_process="CollateralAllocation",
@@ -104,17 +87,17 @@ async def test_post_trade_process_failure_halts_remaining_chain(cfg, session_fac
 
     for code in ("MTFFT", "DMRPT", "DMSTMT"):
         row = by_code[code]
-        assert row.segment_status == SegmentStatus.PENDING, (
-            f"{code} should remain PENDING after the chain halts on COLALLOC, "
+        assert row.segment_status == SegmentStatus.COMPLETED, (
+            f"{code} is independent of COLALLOC's failure and should still complete, "
             f"got {row.segment_status}"
         )
 
     async with session_factory() as session:
         summary = await get_day_summary(session, test_date)
     assert summary["total"] == 5
-    assert summary["completed"] == 1
+    assert summary["completed"] == 4
     assert summary["failed"] == 1
-    assert summary["pending"] == 3
+    assert summary["pending"] == 0
 
 
 async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
@@ -147,14 +130,8 @@ async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
 
 
 async def _prime_triggering_post_trade_row(session_factory, test_date, fixed_now, *, code: str = "COLVAL") -> None:
-    """
-    Simulate a pod crash right after handle_trigger_job() committed the
-    pre-commit "TRIGGERING" marker but before the CBOS call's outcome was
-    ever recorded — i.e. Steps up to GTG are done, phase=TRIGGER_JOB, and
-    processes_json["trigger"] durably shows "TRIGGERING" from this test's
-    perspective, without this test itself ever having called CBOS's
-    trigger endpoint.
-    """
+    """Simulate a crash right after handle_trigger_job() committed the
+    pre-commit "TRIGGERING" marker but before the outcome was recorded."""
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, code)
         row.segment_status = SegmentStatus.IN_PROGRESS
@@ -169,16 +146,10 @@ async def _prime_triggering_post_trade_row(session_factory, test_date, fixed_now
 
 
 async def test_post_trade_trigger_resume_fails_instead_of_retriggering(cfg, session_factory, test_date):
-    """
-    Post-trade triggers have no CBOS-side status check (no PROCESSID/Table2
-    equivalent like the 7-segment TRIGGER step has) — so an unconfirmed
-    prior attempt can never be safely auto-recovered. Resuming into
-    handle_trigger_job() with processes_json["trigger"]["status"] already
-    "TRIGGERING" must mark the process FAILED (explicit "needs manual
-    verification" reason) and must NEVER call the trigger endpoint again —
-    the one behaviour that can't possibly double-trigger a real
-    trading/collateral operation when no verification is possible.
-    """
+    """Post-trade triggers have no CBOS-side status check, so an
+    unconfirmed prior attempt can never be safely auto-recovered. Resuming
+    with "TRIGGERING" already set must mark the process FAILED and must
+    NEVER call the trigger endpoint again."""
     cbos = CountingPostTradeTriggerCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
     orchestrator = EdpOrchestrator(cfg, cbos)
 
@@ -202,46 +173,9 @@ async def test_post_trade_trigger_resume_fails_instead_of_retriggering(cfg, sess
         "only segment_status/skip_reason record the FAILED outcome"
     )
 
-    # Chain halts here — nothing after COLVAL should have started.
+    # Only COLVAL was driven in this test (single _process_one_post_trade
+    # call) — the rest were never touched, hence still PENDING.
     rows = await helpers.get_post_trade_rows(session_factory, test_date)
     for code in ("COLALLOC", "MTFFT", "DMRPT", "DMSTMT"):
         row = next(r for r in rows if r.segment_code == code)
         assert row.segment_status == SegmentStatus.PENDING
-
-
-async def test_post_trade_stale_lock_at_triggering_is_unlocked_not_skipped(cfg, session_factory, test_date):
-    """
-    Same crash scenario as above, but via a genuinely stale (expired,
-    never-released) lock rather than directly calling _process_one_post_trade
-    — proving repository.recover_stale_locks() makes the same TRIGGER_JOB
-    exception it makes for real segments' TRIGGER phase: unlock, don't
-    silently SKIP, so the next cycle can reach the FAILED-with-explicit-
-    reason outcome above instead of a generic AGENT_RESTART skip.
-    """
-    orchestrator = EdpOrchestrator(cfg, CountingPostTradeTriggerCbosClient(cfg.cbos_status_url, cfg.cbos_process_url))
-    await helpers.seed_post_trade_day(session_factory, test_date)
-    fixed_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
-    await _prime_triggering_post_trade_row(session_factory, test_date, fixed_now)
-
-    real_now = now_ist()
-    async with session_factory() as session:
-        row = await repository.get_one(session, test_date, "COLVAL")
-        row.lock_json = {
-            "state": "LOCKED",
-            "owner": "dead-pod",
-            "acquired_at": (real_now - timedelta(minutes=10)).isoformat(),
-            "expires_at": (real_now - timedelta(minutes=5)).isoformat(),
-        }
-        await session.commit()
-
-    async with session_factory() as session:
-        affected = await repository.recover_stale_locks(session)
-        await session.commit()
-    assert affected == 1
-
-    async with session_factory() as session:
-        row = await repository.get_one(session, test_date, "COLVAL")
-    assert row.segment_status == SegmentStatus.IN_PROGRESS, "must NOT be SKIPPED"
-    assert row.current_phase == SegmentPhase.TRIGGER_JOB
-    assert row.processes_json["trigger"]["status"] == "TRIGGERING"
-    assert lock_state(row) == "UNLOCKED"

@@ -47,13 +47,12 @@ async def get_day_status(trade_date: date):
 @otel_trace
 async def get_segment_status(trade_date: date, segment_code: str):
     """
-    Single segment detail — full processes_json and lock info included.
+    Single segment detail — full processes_json included.
 
     Answers:
     - Which stage of a segment failed and why?
     - When was the trigger sent exactly?
     - How many times did we poll BILLPOSTING before it completed?
-    - Is there a stale lock (crash recovery)?
     """
     async with get_session() as session:
         row = await get_one(session, trade_date, segment_code)

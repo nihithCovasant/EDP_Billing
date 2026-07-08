@@ -1,34 +1,34 @@
 """
-edpb_segment_execution table — CRUD, seeding, locking, heartbeat, and queries.
+edpb_segment_execution table — CRUD, seeding, state transitions, heartbeat,
+and queries.
+
+No pod-to-pod locking (single-instance deployment) — an IN_PROGRESS row
+resumes at its persisted current_phase on restart. The TRIGGERING
+pre-commit marker (utils/json_helpers.py) still protects the CBOS trigger
+call itself from double-firing.
 """
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import asyncio
+from datetime import date, datetime
 from typing import List, Optional
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     EdpProperties,
-    LockState,
     SegmentExecution,
     SegmentPhase,
     SegmentStatus,
 )
 from ..utils.constants import get_sequence_order, POST_TRADE_ORDER
 from ..utils.datetime_utils import now_ist
-from ..utils.json_helpers import get_proc
-from ..utils.locking import (
-    lock_expires_at,
-    lock_owner,
-    lock_state,
-    set_unlocked,
-)
 from cams_otel_lib import Logger as logger, otel_trace
 
-DEFAULT_LOCK_TTL = 300  # seconds
+# Terminal statuses — once here, a row is "handled" and won't be revisited.
+_TERMINAL_STATUSES = (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED)
 
 
 # =============================================================================
@@ -80,46 +80,60 @@ async def get_in_progress(
 # =============================================================================
 
 @otel_trace
+async def get_or_create(
+    session: AsyncSession,
+    workflow: EdpProperties,
+    trade_date: date,
+    segment_code: str,
+) -> SegmentExecution:
+    """
+    Lazy per-segment record creation — creates the row only if missing,
+    else reconciles config_id_used if it's still PENDING under a stale
+    config reference. Called once per segment/process per cycle from the
+    orchestrator, right before dispatching to a state handler.
+    """
+    row = await get_one(session, trade_date, segment_code)
+    if row:
+        if row.segment_status == SegmentStatus.PENDING and row.config_id_used != workflow.id:
+            row.config_id_used = workflow.id
+            await session.flush()
+            logger.info(
+                f"[OPS] segment={segment_code} trade_date={trade_date} | "
+                f"Segment row's config reference updated (was PENDING)"
+            )
+        return row
+
+    row = SegmentExecution(
+        trade_date=trade_date,
+        segment_code=segment_code,
+        config_id_used=workflow.id,
+        segment_status=SegmentStatus.PENDING,
+        processes_json={},
+    )
+    session.add(row)
+    await session.flush()
+    logger.info(f"[OPS] segment={segment_code} trade_date={trade_date} | Segment row created")
+    return row
+
+
+@otel_trace
 async def seed_from_workflow(
     session: AsyncSession,
     workflow: EdpProperties,
     trade_date: date,
 ) -> List[SegmentExecution]:
     """
-    Create PENDING segment_execution rows from the active workflow config.
-    Idempotent for rows that have already started — those are left
-    untouched except reconciling config_id_used for audit.
+    Bulk equivalent of get_or_create() for every segment in the workflow
+    config. Not called by the orchestrator (which seeds lazily); kept for
+    test setup and other bulk-seeding callers.
     """
     created: List[SegmentExecution] = []
-
     for seg_cfg in workflow.workflow_json.get("segments", []):
         code = seg_cfg["segment_code"]
-        existing = await get_one(session, trade_date, code)
-        if existing:
-            if (
-                existing.segment_status == SegmentStatus.PENDING
-                and existing.config_id_used != workflow.id
-            ):
-                existing.config_id_used = workflow.id
-                logger.info(
-                    f"[OPS] segment={code} trade_date={trade_date} | "
-                    f"Segment row's config reference updated (was PENDING)"
-                )
-            continue  # already seeded
-
-        row = SegmentExecution(
-            trade_date=trade_date,
-            segment_code=code,
-            config_id_used=workflow.id,
-            segment_status=SegmentStatus.PENDING,
-            processes_json={},
-        )
-        session.add(row)
-        created.append(row)
-
-    if created:
-        await session.flush()
-        logger.info(f"Seeded {len(created)} segment_execution rows for {trade_date}")
+        existed = await is_record_exists(session, trade_date, code)
+        row = await get_or_create(session, workflow, trade_date, code)
+        if not existed:
+            created.append(row)
     return created
 
 
@@ -130,12 +144,10 @@ async def seed_post_trade_processes(
     trade_date: date,
 ) -> List[SegmentExecution]:
     """
-    Create PENDING segment_execution rows for the 5 T+1 post-trade
-    processes from workflow_json["post_trade_processes"] — mirrors
-    seed_from_workflow(). process_code must be one of POST_TRADE_ORDER
-    (unrecognized codes are skipped with a warning); a missing
-    "post_trade_processes" key falls back to the fixed 5 for backward
-    compatibility, while an explicit empty list means "seed none."
+    Bulk equivalent of get_or_create() for the 5 T+1 post-trade processes.
+    Missing "post_trade_processes" key falls back to the fixed
+    POST_TRADE_ORDER; an explicit empty list means "seed none." Not called
+    by the orchestrator (which seeds lazily); kept for test setup.
     """
     if "post_trade_processes" in workflow.workflow_json:
         proc_configs = workflow.workflow_json["post_trade_processes"]
@@ -143,7 +155,6 @@ async def seed_post_trade_processes(
         proc_configs = [{"process_code": code} for code in POST_TRADE_ORDER]
 
     created: List[SegmentExecution] = []
-
     for proc_cfg in proc_configs:
         code = proc_cfg.get("process_code", "")
         if code not in POST_TRADE_ORDER:
@@ -153,31 +164,12 @@ async def seed_post_trade_processes(
             )
             continue
 
-        existing = await get_one(session, trade_date, code)
-        if existing:
-            if (
-                existing.segment_status == SegmentStatus.PENDING
-                and existing.config_id_used != workflow.id
-            ):
-                existing.config_id_used = workflow.id
-                logger.info(
-                    f"[OPS] post_trade_process={code} trade_date={trade_date} | "
-                    f"Process row's config reference updated (was PENDING)"
-                )
-            continue  # already seeded
-
-        row = SegmentExecution(
-            trade_date=trade_date,
-            segment_code=code,
-            config_id_used=workflow.id,
-            segment_status=SegmentStatus.PENDING,
-            processes_json={},
-        )
-        session.add(row)
-        created.append(row)
+        existed = await is_record_exists(session, trade_date, code)
+        row = await get_or_create(session, workflow, trade_date, code)
+        if not existed:
+            created.append(row)
 
     if created:
-        await session.flush()
         logger.info(f"Seeded {len(created)} post-trade process rows for {trade_date}")
     return created
 
@@ -202,154 +194,88 @@ async def has_processing_started(session: AsyncSession, trade_date: date) -> boo
     return result.scalar_one_or_none() is not None
 
 
+@otel_trace
+async def is_record_exists(
+    session: AsyncSession,
+    trade_date: date,
+    segment_code: str,
+) -> bool:
+    """True if a segment_execution row already exists for (trade_date, segment_code)."""
+    return await get_one(session, trade_date, segment_code) is not None
+
+
+def is_handled(row: SegmentExecution) -> bool:
+    """True once a row has reached a terminal status (COMPLETED/SKIPPED/FAILED)."""
+    return row.segment_status in _TERMINAL_STATUSES
+
+
 # =============================================================================
-# Lock management
+# State transitions — the single place terminal transitions happen
 # =============================================================================
 
 @otel_trace
-async def acquire_lock(
+async def move_to_state(
     session: AsyncSession,
     row: SegmentExecution,
-    owner: str,
-    ttl_seconds: int = DEFAULT_LOCK_TTL,
-) -> bool:
+    new_status: SegmentStatus,
+    category: Optional[str] = None,
+    reason: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> None:
     """
-    Atomically acquire a lock via a single conditional UPDATE ... WHERE
-    (not read-then-write), so two racing pods/tasks can't both believe
-    they hold the lock — only one UPDATE can ever match the row.
-
-    The WHERE clause matches a row marked "UNLOCKED" and a freshly-seeded
-    row that's never been locked (lock_json={}, no "state" key yet).
-
-    Returns True on success. Returns False if held by another owner with
-    a valid TTL, or if stale — a stale lock is NOT taken over here;
-    recover_stale_locks() (run earlier in the same cycle) owns resolving
-    stale locks, so seeing one here means it hasn't caught up yet.
+    Move a row to a new status, updating terminal bookkeeping fields
+    (phase/process/completed_at/category/reason), then fire a best-effort
+    alert email on a genuine change into a terminal status.
     """
-    now = now_ist()
-    expires_at = now + timedelta(seconds=ttl_seconds)
-    new_lock = {
-        "state": LockState.LOCKED.value,
-        "owner": owner,
-        "acquired_at": now.isoformat(),
-        "expires_at": expires_at.isoformat(),
-    }
-    stmt = (
-        update(SegmentExecution)
-        .where(
-            SegmentExecution.id == row.id,
-            or_(
-                SegmentExecution.lock_json["state"].as_string() == LockState.UNLOCKED.value,
-                SegmentExecution.lock_json["state"].as_string().is_(None),
-            ),
-        )
-        .values(lock_json=new_lock)
-        .execution_options(synchronize_session=False)
-    )
-    result = await session.execute(stmt)
+    now = now or now_ist()
+    prev_status = row.segment_status
+    row.segment_status = new_status
 
-    if result.rowcount == 0:
-        # Lost the race, or genuinely already locked — refresh from DB
-        # (our in-memory `row` may be stale) purely to log which case it is.
-        await session.refresh(row, attribute_names=["lock_json"])
-        held_expires_at = lock_expires_at(row)
-        if held_expires_at and now < held_expires_at:
-            logger.info(
-                f"[LOCK] segment={row.segment_code} | Lock held by owner={lock_owner(row)} "
-                f"expires={held_expires_at.isoformat()} — not acquired"
-            )
-        else:
-            logger.warning(
-                f"[LOCK] segment={row.segment_code} | Lock stale (expired={held_expires_at}) "
-                f"but not yet cleaned up by recover_stale_locks() — not acquiring"
-            )
-        return False
-
-    row.lock_json = new_lock
-    logger.info(
-        f"[LOCK] segment={row.segment_code} | Lock ACQUIRED by owner={owner} "
-        f"ttl={ttl_seconds}s expires={expires_at.isoformat()}"
-    )
-    return True
-
-
-@otel_trace
-async def release_lock(session: AsyncSession, row: SegmentExecution) -> None:
-    logger.info(
-        f"[LOCK] segment={row.segment_code} | Lock RELEASED by owner={lock_owner(row)}"
-    )
-    set_unlocked(row)
-    await session.flush()
-
-
-@otel_trace
-async def recover_stale_locks(session: AsyncSession) -> int:
-    """
-    Called at the start of every wake cycle, before any segment is processed.
-
-    A stale lock means the agent crashed/restarted while IN_PROGRESS. Per
-    policy an interrupted segment is generally marked SKIPPED (category
-    AGENT_RESTART), not resumed.
-
-    Two exceptions — a row stuck with trigger.status == "TRIGGERING" is
-    never skipped here, since the crash happened right around the actual
-    trigger call and we don't know if CBOS received it:
-      - Real segments (phase=TRIGGER): unlocked so handle_trigger() runs
-        _recover_trigger() next cycle, which checks CBOS's Table2 and only
-        re-triggers if CBOS confirms it never received the original call.
-      - Post-trade processes (phase=TRIGGER_JOB): no Table2 equivalent, so
-        unlocked purely so handle_trigger_job() can mark it FAILED with a
-        "needs manual CBOS verification" reason next cycle.
-
-    Returns the number of rows affected (skipped or unlocked-for-resume).
-    """
-    now = now_ist()
-    stmt = select(SegmentExecution).where(
-        SegmentExecution.segment_status == SegmentStatus.IN_PROGRESS,
-    )
-    rows = list((await session.execute(stmt)).scalars().all())
-    affected = 0
-    for row in rows:
-        if lock_state(row) != "LOCKED":
-            continue
-        expires_at = lock_expires_at(row)
-        if expires_at and now < expires_at:
-            continue  # still validly locked — some other live instance owns it
-
-        old_owner = lock_owner(row)
-        stale_phase = row.current_phase.value if row.current_phase else "UNKNOWN"
-
-        if (
-            row.current_phase in (SegmentPhase.TRIGGER, SegmentPhase.TRIGGER_JOB)
-            and get_proc(row, "trigger").get("status") == "TRIGGERING"
-        ):
-            set_unlocked(row)
-            affected += 1
-            logger.warning(
-                f"[LOCK] segment={row.segment_code} | Stale lock found mid-TRIGGERING "
-                f"(phase={stale_phase}, old_owner={old_owner}) — NOT skipping; unlocked "
-                f"for recovery next cycle"
-            )
-            continue
-
-        row.segment_status = SegmentStatus.SKIPPED
-        row.skip_category = "AGENT_RESTART"
-        row.skip_reason = (
-            f"Interrupted mid-{stale_phase} — agent restarted/crashed "
-            f"(stale lock held by owner={old_owner})"
-        )
+    if new_status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
         row.current_phase = SegmentPhase.DONE
         row.current_process = None
+    if new_status in _TERMINAL_STATUSES:
+        # FAILED deliberately leaves current_phase/current_process untouched
+        # (frozen where the pipeline broke) for diagnostics.
         row.completed_at = now
-        set_unlocked(row)
-        affected += 1
-        logger.warning(
-            f"[LOCK] segment={row.segment_code} | Stale lock found — SKIPPING segment "
-            f"(was mid-{stale_phase}), old_owner={old_owner}"
+    if category is not None:
+        row.skip_category = category
+    if reason is not None:
+        row.skip_reason = reason
+
+    await session.flush()
+    # updated_at has onupdate=func.now() (server-side) — after the UPDATE
+    # above, SQLAlchemy expires it, and a later plain attribute read (e.g.
+    # in serialize_segment()) would try a synchronous reload that crashes
+    # under the async engine. Re-set it locally so it's never expired.
+    row.updated_at = now
+    logger.info(
+        f"[STATE] segment={row.segment_code} | {prev_status.value} -> {new_status.value} "
+        f"category={category} reason={reason}"
+    )
+
+    if prev_status != new_status and new_status in _TERMINAL_STATUSES:
+        await _send_terminal_alert(row)
+
+
+async def _send_terminal_alert(row: SegmentExecution) -> None:
+    """Best-effort email alert — failures are logged, never raised."""
+    try:
+        from global_email_service import send_segment_alert
+        from ..utils.serializers import serialize_segment
+
+        payload = serialize_segment(row)
+        await asyncio.to_thread(send_segment_alert, payload)
+        logger.info(
+            f"[ALERT] segment={row.segment_code} | Alert email sent for "
+            f"status={row.segment_status.value}"
         )
-    if rows:
-        await session.flush()
-    return affected
+    except Exception as exc:
+        logger.error(
+            f"[ALERT] segment={row.segment_code} | Failed to send alert email "
+            f"(status={row.segment_status.value}): {exc}",
+            exc_info=True,
+        )
 
 
 # =============================================================================
@@ -387,7 +313,7 @@ async def retry_segment(
     ops-approved manual override) land a segment in SKIPPED, not FAILED —
     ops still needs a way to re-drive it without directly touching the DB.
 
-    Clears: status, phase, process_id, lock, error fields, processes_json.
+    Clears: status, phase, process_id, error fields, processes_json.
     Returns None if segment not found or not in FAILED/SKIPPED status.
     """
     row = await get_one(session, trade_date, segment_code)
@@ -399,7 +325,6 @@ async def retry_segment(
     row.current_process = None
     row.process_id = None
     row.process_id_reserved_at = None
-    set_unlocked(row)
     row.skip_category = None
     row.skip_reason = None
     row.started_at = None
@@ -427,20 +352,14 @@ async def skip_segment_manually(
     Returns None if segment not found or already COMPLETED/SKIPPED/FAILED.
     """
     row = await get_one(session, trade_date, segment_code)
-    if not row or row.segment_status in (
-        SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED
-    ):
+    if not row or is_handled(row):
         return None
 
-    now = now_ist()
-    row.segment_status = SegmentStatus.SKIPPED
-    row.skip_category = "MANUAL_SKIP"
-    row.skip_reason = f"Manually skipped by {skipped_by}: {reason}"
-    row.current_phase = SegmentPhase.DONE
-    row.current_process = None
-    row.completed_at = now
-    set_unlocked(row)
-    await session.flush()
+    await move_to_state(
+        session, row, SegmentStatus.SKIPPED,
+        category="MANUAL_SKIP",
+        reason=f"Manually skipped by {skipped_by}: {reason}",
+    )
     logger.info(
         f"[OPS] segment={segment_code} trade_date={trade_date} | "
         f"Segment manually SKIPPED by={skipped_by} reason={reason}"

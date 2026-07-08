@@ -22,7 +22,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import SegmentExecution, SegmentPhase, SegmentStatus
+from ..models import SegmentExecution, SegmentPhase
 from ..utils.constants import POST_TRADE_GTG_PROCESS_NAME
 from ..utils.json_helpers import (
     get_proc,
@@ -33,7 +33,7 @@ from ..utils.json_helpers import (
     record_post_trade_trigger_failed,
 )
 from ..utils.log_fmt import stage_log
-from .stages import StageResult, _fail, _skip
+from .stages import StageResult, _complete, _fail, _skip
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
@@ -77,7 +77,7 @@ async def handle_await_gtg(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"{process_name} GTG check error: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"{process_name} GTG check error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -87,7 +87,7 @@ async def handle_await_gtg(
             f"CBOS returned SKIP for {process_name} — process will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
+        await _skip(session, row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -147,7 +147,7 @@ async def handle_trigger_job(
     method_name = _TRIGGER_DISPATCH.get(code)
     if not method_name:
         logger.error(stage_log(code, "TRIGGER_JOB", "Unknown post-trade process code — marking FAILED"))
-        await _fail(row, "CBOS_ERROR", f"Unknown post-trade process code {code}", now)
+        await _fail(session, row, "CBOS_ERROR", f"Unknown post-trade process code {code}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -158,7 +158,7 @@ async def handle_trigger_job(
             "re-fire; marking FAILED for manual verification",
         ))
         await _fail(
-            row, "CBOS_ERROR",
+            session, row, "CBOS_ERROR",
             "Unconfirmed trigger attempt after restart — verify with CBOS "
             "directly before retrying",
             now,
@@ -197,7 +197,7 @@ async def handle_trigger_job(
             "Trigger FAILED — marking process FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"{method_name} failed: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"{method_name} failed: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -252,7 +252,7 @@ async def handle_await_confirm(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"{process_name} confirm check error: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"{process_name} confirm check error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -262,7 +262,7 @@ async def handle_await_confirm(
             f"CBOS returned SKIP for {process_name} — process will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
+        await _skip(session, row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -283,9 +283,5 @@ async def handle_await_confirm(
         confirmed_at=now.strftime("%H:%M:%S %Z"),
     ))
     mark_stage_done(row, "confirm", result.response, now)
-    row.segment_status = SegmentStatus.COMPLETED
-    row.current_process = None
-    row.current_phase = SegmentPhase.DONE
-    row.completed_at = now
-    await session.flush()
+    await _complete(session, row, now)
     return StageResult.COMPLETED

@@ -17,6 +17,8 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
+from ..repository.segment import move_to_state
+from ..utils.constants import is_post_trade_process
 from ..utils.datetime_utils import ensure_aware, now_ist
 from ..utils.log_fmt import stage_log
 from .stages import (
@@ -60,6 +62,13 @@ _POST_TRADE_PHASE_HANDLERS = {
 _TERMINAL_SIGNALS = {StageResult.COMPLETED, StageResult.SKIPPED, StageResult.FAILED}
 
 
+def get_segment_state_handler(segment_code: str, phase: SegmentPhase | None):
+    """Resolve the handler for (segment_code, phase). Returns None for DONE
+    or an unmapped/corrupt phase."""
+    handlers = _POST_TRADE_PHASE_HANDLERS if is_post_trade_process(segment_code) else _PHASE_HANDLERS
+    return handlers.get(phase)
+
+
 async def advance_pipeline(
     cbos: CbosClient,
     row: SegmentExecution,
@@ -67,18 +76,12 @@ async def advance_pipeline(
     login_id: str,
     now: datetime,
     window_end: datetime | None = None,
-    phase_handlers: dict | None = None,
 ) -> str:
     """
-    Execute pipeline stages for a segment_execution row until it blocks,
-    completes, or fails. phase_handlers selects which pipeline drives this
-    row — defaults to the 7-step real-segment pipeline; pass
-    POST_TRADE_PHASE_HANDLERS for the 5 post-trade processes. window_end
-    is None for post-trade rows (no deadline).
-
+    Execute pipeline stages for a row until it blocks, completes, or fails.
+    window_end is None for post-trade rows (no deadline).
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
-    handlers = phase_handlers if phase_handlers is not None else _PHASE_HANDLERS
     window_end = ensure_aware(window_end)
     while True:
         # Refresh every iteration so a chain of instant ADVANCEs doesn't run
@@ -86,6 +89,8 @@ async def advance_pipeline(
         now = now_ist()
 
         # Catches segments that stall in long polling phases past the window.
+        # This is a local timeout, not a CBOS-driven skip signal, so it's a
+        # FAILED outcome (category TIMEOUT), not SKIPPED.
         if (
             window_end
             and now > window_end
@@ -95,25 +100,21 @@ async def advance_pipeline(
             logger.warning(stage_log(
                 row.segment_code,
                 timed_out_phase,
-                "Window deadline exceeded while IN_PROGRESS — SKIPPING segment, "
-                "moving on to the next segment in sequence",
+                "Window deadline exceeded while IN_PROGRESS — marking FAILED",
                 deadline=window_end.strftime("%H:%M:%S %Z"),
                 now=now.strftime("%H:%M:%S %Z"),
                 phase=timed_out_phase,
             ))
-            row.segment_status = SegmentStatus.SKIPPED
-            row.skip_category = "TIMEOUT"
-            row.skip_reason = (
-                f"Exceeded window deadline {window_end.isoformat()} "
-                f"at phase {timed_out_phase}"
+            await move_to_state(
+                session, row, SegmentStatus.FAILED,
+                category="TIMEOUT",
+                reason=f"Exceeded window deadline {window_end.isoformat()} at phase {timed_out_phase}",
+                now=now,
             )
-            row.current_phase = SegmentPhase.DONE
-            row.completed_at = now
-            await session.flush()
-            return "skipped"
+            return "failed"
 
         phase = row.current_phase
-        handler = handlers.get(phase)
+        handler = get_segment_state_handler(row.segment_code, phase)
 
         if handler is None:
             if phase == SegmentPhase.DONE:
@@ -123,11 +124,12 @@ async def advance_pipeline(
                 row.segment_code, str(phase),
                 "No handler registered for this phase — marking FAILED",
             ))
-            row.segment_status = SegmentStatus.FAILED
-            row.skip_category = "SYSTEM_ERROR"
-            row.skip_reason = f"No pipeline handler registered for phase={phase}"
-            row.completed_at = now
-            await session.flush()
+            await move_to_state(
+                session, row, SegmentStatus.FAILED,
+                category="SYSTEM_ERROR",
+                reason=f"No pipeline handler registered for phase={phase}",
+                now=now,
+            )
             return "failed"
 
         result: StageResult = await handler(cbos, row, session, login_id, now)

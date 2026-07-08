@@ -1,19 +1,19 @@
 """
 EDP Orchestrator — wake cycle coordinator.
 
-Responsibilities:
-  1. Determine the active trading date.
-  2. Ensure a workflow config and seed segment rows exist.
-  3. Iterate segments in sequence order, skipping past terminals.
-  4. Acquire the per-segment lock, delegate to the pipeline executor,
-     then release the lock and update the heartbeat.
-  5. Independently seed and drive the 5 T+1 post-trade processes for the
-     same active_date — NOT gated on the 7 segments' status (they run on
-     their own fixed wall-clock window; see _process_post_trade_chain()).
+Each cycle: ensure a workflow config exists, lazily create-if-missing a
+segment_execution record per configured segment/process
+(repository.get_or_create()), then drive every not-yet-handled() row
+independently — no segment/process is gated on any other's status, only
+on its own wall-clock window. Post-trade processes run the same way, in
+their own pass (_process_post_trade_chain()).
 
-All pipeline logic lives in pipeline.executor / pipeline.stages / pipeline.post_trade_stages.
-All DB operations live in repository.*
-All helper utilities live in utils.*
+Single-instance deployment: no pod-to-pod locking. An IN_PROGRESS row
+resumes at its persisted current_phase on restart — the TRIGGERING
+pre-commit marker (pipeline.stages / post_trade_stages) protects the CBOS
+trigger call itself from double-firing.
+
+All pipeline logic lives in pipeline.*, all DB operations in repository.*.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
 from .models import SegmentPhase, SegmentStatus
 from . import repository
-from .pipeline import advance_pipeline, POST_TRADE_PHASE_HANDLERS
+from .pipeline import advance_pipeline
 from .utils.constants import (
     STALE_HEARTBEAT_THRESHOLD,
     SEGMENT_ORDER,
@@ -36,7 +36,6 @@ from .utils.constants import (
     POST_TRADE_FIRST_WINDOW_START,
 )
 from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
-from .utils.locking import lock_owner
 from .utils.log_fmt import edp_log, seg_log
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger, otel_trace
@@ -44,15 +43,11 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across all 7 trade segments
-    (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF — sequential, N
-    can't start until N-1 is COMPLETED/SKIPPED; MTF isn't special-cased),
-    then the 5 T+1 post-trade processes (COLVAL, COLALLOC, MTFFT, DMRPT,
-    DMSTMT — sequential among themselves, NOT gated on the 7 segments,
-    only on their own wall-clock window; see _process_post_trade_chain()).
-
-    Both orders are fixed code constants; login_id/CBOS ProcessName/window
-    are resolved from the ops-uploaded workflow_json.
+    Drives the daily EDP billing pipeline across the 7 trade segments
+    (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF), then the 5 T+1
+    post-trade processes (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT) —
+    both orders fixed code constants; login_id/CBOS ProcessName/window
+    resolved from the ops-uploaded workflow_json.
     """
 
     def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient):
@@ -101,19 +96,7 @@ class EdpOrchestrator:
             logger.info(edp_log("Agent is STOPPED — wake cycle skipped", date=active_date))
             return summary
 
-        # ------ Recover any stale locks from previous crash -----------------
-        async with get_session() as session:
-            recovered = await repository.recover_stale_locks(session)
-        if recovered:
-            logger.warning(edp_log(
-                "Stale locks recovered on startup",
-                count=recovered,
-                date=active_date,
-            ))
-
-        # ------ Ensure workflow config exists for today ----------------------
-        # Ops only uploads when something changes; if nothing's uploaded for
-        # today, carry forward the most recently uploaded config as-is.
+        # ------ Ensure workflow config exists for today ---------------------
         async with get_session() as session:
             workflow = await repository.get_active(session, active_date)
             if not workflow:
@@ -147,23 +130,22 @@ class EdpOrchestrator:
                     ))
                     return summary
 
-        # ------ Seed PENDING segment rows from the workflow config ----------
-        async with get_session() as session:
-            created = await repository.seed_from_workflow(session, workflow, active_date)
-        if created:
-            logger.info(edp_log(
-                "Segment rows seeded",
-                date=active_date,
-                count=len(created),
-                segments=[r.segment_code for r in created],
-            ))
+        # ------ Lazily ensure a record exists for each configured segment ---
+        configured_codes = [
+            seg_cfg["segment_code"] for seg_cfg in workflow.workflow_json.get("segments", [])
+        ]
+        ordered_codes = [c for c in SEGMENT_ORDER if c in configured_codes]
 
-        # ------ Fetch ordered segments and drive each one -------------------
-        # get_all_for_date() also returns post-trade rows once seeded; filter
-        # to just the 7 real segments (post-trade is driven separately below).
-        async with get_session() as session:
-            segments = await repository.get_all_for_date(session, active_date)
-        segments = [s for s in segments if s.segment_code in SEGMENT_ORDER]
+        segments = []
+        for segment_code in ordered_codes:
+            async with get_session() as session:
+                existed = await repository.is_record_exists(session, active_date, segment_code)
+                row = await repository.get_or_create(session, workflow, active_date, segment_code)
+            if not existed:
+                logger.info(edp_log(
+                    "Segment row created", date=active_date, segment=segment_code,
+                ))
+            segments.append(row)
 
         # Log any stale heartbeats — diagnostic only, nothing persisted.
         for seg in segments:
@@ -180,20 +162,12 @@ class EdpOrchestrator:
                     threshold=str(STALE_HEARTBEAT_THRESHOLD),
                 ))
 
-        # ------ Drive each segment in sequence ------------------------------
+        # ------ Drive each segment, independently ---------------------------
+        # No segment is gated on another's status — every not-yet-handled
+        # segment is attempted every cycle (see repository.is_handled()).
         for seg_row in segments:
-            status = seg_row.segment_status
-
-            if status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
+            if repository.is_handled(seg_row):
                 continue
-
-            if status == SegmentStatus.FAILED:
-                logger.warning(seg_log(
-                    seg_row.segment_code, active_date,
-                    "Segment FAILED — halting sequential chain",
-                    reason=seg_row.skip_reason,
-                ))
-                break
 
             summary["segments_processed"] += 1
             t0 = time.monotonic()
@@ -202,10 +176,6 @@ class EdpOrchestrator:
 
             _log_segment_outcome(seg_row.segment_code, active_date, outcome, elapsed_ms)
             summary[f"segments_{outcome}"] = summary.get(f"segments_{outcome}", 0) + 1
-
-            # Stop the chain if this segment didn't finish
-            if outcome not in ("completed", "skipped"):
-                break
 
         # Drive the 5 T+1 post-trade processes, independent of the segments above.
         await self._process_post_trade_chain(summary)
@@ -222,8 +192,8 @@ class EdpOrchestrator:
         segment_code: str,
     ) -> str:
         """
-        Lock -> run pipeline executor -> release lock.
-        Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
+        Run the pipeline executor for one cycle's worth of progress on this
+        segment. Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
         """
         active_date = self._cycle_active_date
         now = self._cycle_now
@@ -263,7 +233,8 @@ class EdpOrchestrator:
                 ))
                 return "blocked"
 
-            # Window deadline missed (PENDING only)
+            # Window deadline missed (PENDING only) — a local timeout, not a
+            # CBOS-driven skip signal, so this is FAILED/TIMEOUT, not SKIPPED.
             if (
                 window_end
                 and now > window_end
@@ -271,27 +242,20 @@ class EdpOrchestrator:
             ):
                 logger.warning(seg_log(
                     segment_code, active_date,
-                    "Segment window deadline passed without starting — SKIPPING, "
-                    "moving on to the next segment in sequence",
+                    "Segment window deadline passed without starting — marking FAILED",
                     deadline=window_end.strftime("%H:%M:%S %Z"),
                     now=now.strftime("%H:%M:%S %Z"),
                 ))
-                row.segment_status = SegmentStatus.SKIPPED
-                row.skip_category = "TIMEOUT"
-                row.skip_reason = f"Past deadline {window_end.isoformat()}"
-                row.current_phase = SegmentPhase.DONE
-                row.completed_at = now
-                await session.flush()
-                return "skipped"
+                await repository.move_to_state(
+                    session, row, SegmentStatus.FAILED,
+                    category="TIMEOUT",
+                    reason=f"Past deadline {window_end.isoformat()}",
+                    now=now,
+                )
+                return "failed"
 
             # Move PENDING → IN_PROGRESS
             if row.segment_status == SegmentStatus.PENDING:
-                acquired = await repository.acquire_lock(
-                    session, row, self.config.agent_instance_id, self.config.lock_ttl_seconds
-                )
-                if not acquired:
-                    logger.info(seg_log(segment_code, active_date, "Lock not acquired — blocked"))
-                    return "blocked"
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
                 row.current_phase = SegmentPhase.HOLIDAY_CHECK
@@ -307,16 +271,6 @@ class EdpOrchestrator:
                 ))
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
-                acquired = await repository.acquire_lock(
-                    session, row, self.config.agent_instance_id, self.config.lock_ttl_seconds
-                )
-                if not acquired:
-                    logger.info(seg_log(
-                        segment_code, active_date,
-                        "Lock not acquired (held by another instance) — blocked",
-                        owner=lock_owner(row),
-                    ))
-                    return "blocked"
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Resuming IN_PROGRESS segment",
@@ -337,12 +291,8 @@ class EdpOrchestrator:
                     window_end=window_end,
                 )
             finally:
-                terminal = row.segment_status in (
-                    SegmentStatus.COMPLETED, SegmentStatus.FAILED, SegmentStatus.SKIPPED
-                )
-                if not terminal:
+                if not repository.is_handled(row):
                     await repository.touch_heartbeat(session, row)
-                await repository.release_lock(session, row)
 
         return result
 
@@ -352,12 +302,8 @@ class EdpOrchestrator:
 
     @otel_trace
     async def _process_post_trade_chain(self, summary: dict) -> None:
-        """
-        Seed (if needed) and drive the 5 T+1 post-trade processes for
-        active_date, in fixed POST_TRADE_ORDER, halting the post-trade
-        chain (not the whole wake cycle) on the first FAILED one. Not
-        gated on the 7 segments' status. Mutates `summary` in place.
-        """
+        """Lazily ensure a record exists per configured process, then drive
+        every not-yet-handled one independently. Mutates `summary` in place."""
         active_date = self._cycle_active_date
 
         async with get_session() as session:
@@ -370,33 +316,30 @@ class EdpOrchestrator:
                     date=active_date,
                 ))
                 return
-            created = await repository.seed_post_trade_processes(session, workflow, active_date)
-        if created:
-            logger.info(edp_log(
-                "Post-trade process rows seeded",
-                date=active_date,
-                count=len(created),
-                processes=[r.segment_code for r in created],
-            ))
 
-        async with get_session() as session:
-            all_rows = await repository.get_all_for_date(session, active_date)
-        post_trade_rows = [r for r in all_rows if r.segment_code in POST_TRADE_ORDER]
-        post_trade_rows.sort(key=lambda r: POST_TRADE_ORDER.index(r.segment_code))
+        if "post_trade_processes" in workflow.workflow_json:
+            proc_configs = workflow.workflow_json["post_trade_processes"]
+        else:
+            proc_configs = [{"process_code": code} for code in POST_TRADE_ORDER]
+        configured_codes = [pc.get("process_code", "") for pc in proc_configs]
+        configured_codes = [c for c in configured_codes if c in POST_TRADE_ORDER]
+        ordered_codes = [c for c in POST_TRADE_ORDER if c in configured_codes]
 
-        for row in post_trade_rows:
-            status = row.segment_status
-
-            if status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
-                continue
-
-            if status == SegmentStatus.FAILED:
-                logger.warning(seg_log(
-                    row.segment_code, active_date,
-                    "Post-trade process FAILED — halting remaining post-trade chain",
-                    reason=row.skip_reason,
+        post_trade_rows = []
+        for process_code in ordered_codes:
+            async with get_session() as session:
+                existed = await repository.is_record_exists(session, active_date, process_code)
+                row = await repository.get_or_create(session, workflow, active_date, process_code)
+            if not existed:
+                logger.info(edp_log(
+                    "Post-trade process row created", date=active_date, process=process_code,
                 ))
-                break
+            post_trade_rows.append(row)
+
+        # Every process is driven independently — not gated on siblings.
+        for row in post_trade_rows:
+            if repository.is_handled(row):
+                continue
 
             summary["post_trade_processed"] += 1
             t0 = time.monotonic()
@@ -406,18 +349,12 @@ class EdpOrchestrator:
             _log_segment_outcome(row.segment_code, active_date, outcome, elapsed_ms)
             summary[f"post_trade_{outcome}"] = summary.get(f"post_trade_{outcome}", 0) + 1
 
-            if outcome not in ("completed", "skipped"):
-                break
-
     @otel_trace
     async def _process_one_post_trade(self, segment_code: str) -> str:
         """
-        Lock -> run pipeline executor (post-trade phase handlers) -> release lock.
-        Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
-
-        Mirrors _process_one_segment(); login_id/gtg_process_name/window
-        are resolved from the active config's post_trade_processes list,
-        falling back to bootstrap config / fixed constants otherwise.
+        One cycle's worth of progress on this post-trade process. Mirrors
+        _process_one_segment(); login_id/gtg_process_name/window resolved
+        from the active config, falling back to fixed constants otherwise.
         """
         active_date = self._cycle_active_date
         now = self._cycle_now
@@ -451,12 +388,6 @@ class EdpOrchestrator:
                 return "blocked"
 
             if row.segment_status == SegmentStatus.PENDING:
-                acquired = await repository.acquire_lock(
-                    session, row, self.config.agent_instance_id, self.config.lock_ttl_seconds
-                )
-                if not acquired:
-                    logger.info(seg_log(segment_code, active_date, "Lock not acquired — blocked"))
-                    return "blocked"
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
                 row.current_phase = SegmentPhase.AWAIT_GTG
@@ -471,16 +402,6 @@ class EdpOrchestrator:
                 ))
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
-                acquired = await repository.acquire_lock(
-                    session, row, self.config.agent_instance_id, self.config.lock_ttl_seconds
-                )
-                if not acquired:
-                    logger.info(seg_log(
-                        segment_code, active_date,
-                        "Lock not acquired (held by another instance) — blocked",
-                        owner=lock_owner(row),
-                    ))
-                    return "blocked"
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Resuming IN_PROGRESS post-trade process",
@@ -498,15 +419,10 @@ class EdpOrchestrator:
                     login_id=login_id,
                     now=now,
                     window_end=None,
-                    phase_handlers=POST_TRADE_PHASE_HANDLERS,
                 )
             finally:
-                terminal = row.segment_status in (
-                    SegmentStatus.COMPLETED, SegmentStatus.FAILED, SegmentStatus.SKIPPED
-                )
-                if not terminal:
+                if not repository.is_handled(row):
                     await repository.touch_heartbeat(session, row)
-                await repository.release_lock(session, row)
 
         return result
 

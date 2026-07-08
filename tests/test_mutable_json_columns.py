@@ -1,15 +1,9 @@
 """
-JSON dict columns (processes_json, lock_json, workflow_json, snapshot_json)
-are wrapped with MutableDict.as_mutable(JSON) — defense-in-depth so an
-in-place mutation (row.processes_json["x"] = y) is tracked and flushed
-correctly, not just the "reassign the whole dict" style json_helpers.py /
-locking.py already use by convention.
-
-Before this fix, an in-place mutation would silently be LOST at flush
-time (SQLAlchemy has no way to know a plain dict changed underneath it),
-and neither SQLite nor Postgres tests would catch it — this test proves
-the opposite is now true: mutate in place, flush, reload in a brand new
-session, and see the change.
+JSON dict columns (processes_json, lock_json, workflow_json) are wrapped
+with MutableDict.as_mutable(JSON) so an in-place mutation
+(row.processes_json["x"] = y) is tracked and flushed correctly, not just
+the "reassign the whole dict" convention json_helpers.py uses. This test
+proves that: mutate in place, flush, reload in a new session, see the change.
 """
 
 from __future__ import annotations

@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-from ..models import SegmentExecution, SegmentStatus
+from ..models import LockState, SegmentExecution, SegmentStatus
 from .constants import STALE_HEARTBEAT_THRESHOLD, get_segment_name, get_sequence_order
 from .datetime_utils import ensure_aware, now_ist
-from .locking import lock_owner, lock_state
 
 
 def _runtime_health(row: SegmentExecution) -> str:
-    """
-    Computed live, not persisted — a segment is STALE if it's IN_PROGRESS
-    but hasn't had a heartbeat in a while. There is no more RECOVERED state:
-    an agent restart mid-segment now marks the segment SKIPPED outright
-    (skip_category=AGENT_RESTART) instead of resuming it, so "recovered but
-    still IN_PROGRESS" can no longer happen.
-    """
+    """Computed live, not persisted — a segment is STALE if it's IN_PROGRESS
+    but hasn't had a heartbeat in a while."""
     if (
         row.segment_status == SegmentStatus.IN_PROGRESS
         and row.last_heartbeat_at
@@ -44,8 +38,8 @@ def serialize_segment(row: SegmentExecution) -> dict:
         "completed_at": _dt(row.completed_at),
         "last_heartbeat_at": _dt(row.last_heartbeat_at),
         "runtime_health": _runtime_health(row),
-        "lock_state": lock_state(row),
-        "lock_owner": lock_owner(row),
+        "lock_state": (row.lock_json or {}).get("state", LockState.UNLOCKED.value),
+        "lock_owner": (row.lock_json or {}).get("owner"),
         "config_id_used": row.config_id_used,
         "processes_json": row.processes_json or {},
         "created_at": _dt(row.created_at),

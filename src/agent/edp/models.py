@@ -237,9 +237,8 @@ class SegmentExecution(Base):
         DateTime(timezone=True), nullable=True,
     )
 
-    # Lock preventing double-trigger across restarts/pods — acquired via a
-    # single atomic UPDATE ... WHERE (see utils/locking.py), not read-then-write.
-    # Shape: {"state": "LOCKED"|"UNLOCKED", "owner", "acquired_at", "expires_at"}
+    # Legacy column, unused by the current single-instance design (kept for
+    # backward compatibility with existing rows/API consumers).
     lock_json: Mapped[dict] = mapped_column(
         _MutableJSON, nullable=False, default=dict,
     )
@@ -267,8 +266,8 @@ class SegmentExecution(Base):
     skip_category: Mapped[str | None] = mapped_column(
         String(32), nullable=True,
         comment=(
-            "SKIPPED: CBOS_SKIP | TIMEOUT | MANUAL_SKIP | AGENT_RESTART | "
-            "FAILED: CBOS_ERROR | SYSTEM_ERROR"
+            "SKIPPED: CBOS_SKIP | MANUAL_SKIP | "
+            "FAILED: CBOS_ERROR | SYSTEM_ERROR | TIMEOUT"
         )
     )
     skip_reason: Mapped[str | None] = mapped_column(

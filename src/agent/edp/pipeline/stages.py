@@ -24,6 +24,7 @@ from enum import Enum
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
+from ..repository.segment import move_to_state
 from ..utils.json_helpers import (
     inc_poll,
     mark_stage_done,
@@ -88,7 +89,7 @@ async def handle_holiday_check(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"BeginFileUpload error: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"BeginFileUpload error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -100,7 +101,7 @@ async def handle_holiday_check(
             at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_stage_done(row, "holiday_check", result.response, now)
-        await _skip(row, "CBOS_SKIP", "BeginFileUpload returned SKIP — market holiday", now)
+        await _skip(session, row, "CBOS_SKIP", "BeginFileUpload returned SKIP — market holiday", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -203,7 +204,7 @@ async def handle_reserve_pid(
             "Failed to allocate process ID — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"getNewTradeProcess(PROCESSID=0) failed: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"getNewTradeProcess(PROCESSID=0) failed: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -278,7 +279,7 @@ async def handle_await_file_upload(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"FILEUPLOAD check error: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"FILEUPLOAD check error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -288,7 +289,7 @@ async def handle_await_file_upload(
             "CBOS returned SKIP for FILEUPLOAD — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", "FILEUPLOAD returned SKIP", now)
+        await _skip(session, row, "CBOS_SKIP", "FILEUPLOAD returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -364,7 +365,7 @@ async def handle_trigger(
                 "Cannot recover process_id — marking FAILED",
                 error=recovery.error,
             ))
-            await _fail(row, "CBOS_ERROR", "No process_id available for trigger", now)
+            await _fail(session, row, "CBOS_ERROR", "No process_id available for trigger", now)
             await session.flush()
             return StageResult.FAILED
 
@@ -439,7 +440,7 @@ async def _recover_trigger(
             error=check.error,
         ))
         record_trigger_failed(row, check.error or "RECOVERY_CHECK_FAILED", now)
-        await _fail(row, "CBOS_ERROR", f"Trigger recovery check failed: {check.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"Trigger recovery check failed: {check.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -498,7 +499,7 @@ async def _finalize_trigger_call(
         ))
         record_trigger_failed(row, result.error or "TRIGGER_FAILED", now)
         await _fail(
-            row, "CBOS_ERROR",
+            session, row, "CBOS_ERROR",
             f"getNewTradeProcess(PROCESSID={row.process_id}) failed: {result.error}", now
         )
         await session.flush()
@@ -600,7 +601,7 @@ async def handle_await_contract_note(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"CONTRACTNOTEGENERATION error: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"CONTRACTNOTEGENERATION error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -610,7 +611,7 @@ async def handle_await_contract_note(
             "CBOS returned SKIP for CONTRACTNOTEGENERATION — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", "CONTRACTNOTEGENERATION returned SKIP", now)
+        await _skip(session, row, "CBOS_SKIP", "CONTRACTNOTEGENERATION returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -632,8 +633,7 @@ async def handle_await_contract_note(
         confirmed_at=now.strftime("%H:%M:%S %Z"),
     ))
     mark_stage_done(row, "contract_note", result.response, now)
-    _complete(row, now)
-    await session.flush()
+    await _complete(session, row, now)
     return StageResult.COMPLETED
 
 
@@ -678,7 +678,7 @@ async def _poll_confirmation(
             "Permanent CBOS error — marking FAILED",
             error=result.error,
         ))
-        await _fail(row, "CBOS_ERROR", f"{process_name} check error: {result.error}", now)
+        await _fail(session, row, "CBOS_ERROR", f"{process_name} check error: {result.error}", now)
         await session.flush()
         return StageResult.FAILED
 
@@ -688,7 +688,7 @@ async def _poll_confirmation(
             f"CBOS returned SKIP for {process_name} — segment will be SKIPPED",
             response=result.response, poll=poll_count,
         ))
-        await _skip(row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
+        await _skip(session, row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
         await session.flush()
         return StageResult.SKIPPED
 
@@ -721,56 +721,40 @@ async def _poll_confirmation(
 # ---------------------------------------------------------------------------
 
 async def _fail(
-    row: SegmentExecution, category: str, reason: str, now: datetime,
+    session: AsyncSession, row: SegmentExecution, category: str, reason: str, now: datetime,
 ) -> None:
-    """
-    Mark the segment FAILED — a permanent error. Halts the rest of the
-    day's sequential chain (orchestrator stops at the first FAILED
-    segment), reserved for real errors, not timeouts (see _skip).
-    """
+    """Mark the segment FAILED — permanent error (CBOS/system errors, window
+    timeouts). See _skip for CBOS-driven skip signals."""
     logger.error(stage_log(
         row.segment_code,
         row.current_phase.value if row.current_phase else "UNKNOWN",
-        "Stage FAILED — marking segment FAILED (halts today's remaining chain)",
+        "Stage FAILED — marking segment FAILED",
         category=category,
         reason=reason,
         failed_at=now.strftime("%H:%M:%S %Z"),
     ))
-    row.segment_status = SegmentStatus.FAILED
-    row.skip_category = category
-    row.skip_reason = reason
-    row.completed_at = now
+    await move_to_state(session, row, SegmentStatus.FAILED, category, reason, now)
 
 
 async def _skip(
-    row: SegmentExecution, category: str, reason: str, now: datetime,
+    session: AsyncSession, row: SegmentExecution, category: str, reason: str, now: datetime,
 ) -> None:
-    """
-    Mark the segment SKIPPED (holiday, CBOS_SKIP at any stage, or TIMEOUT).
-    Unlike FAILED, does NOT halt the chain — orchestrator moves on.
-    """
+    """Mark the segment SKIPPED — reserved for CBOS-driven skip signals (holiday, CBOS_SKIP)."""
     logger.info(stage_log(
         row.segment_code,
         row.current_phase.value if row.current_phase else "UNKNOWN",
-        "Segment SKIPPED — continuing to next segment in sequence",
+        "Segment SKIPPED",
         category=category,
         reason=reason,
         skipped_at=now.strftime("%H:%M:%S %Z"),
     ))
-    row.segment_status = SegmentStatus.SKIPPED
-    row.skip_category = category
-    row.skip_reason = reason
-    row.current_phase = SegmentPhase.DONE
-    row.completed_at = now
+    await move_to_state(session, row, SegmentStatus.SKIPPED, category, reason, now)
 
 
-def _complete(row: SegmentExecution, now: datetime) -> None:
+async def _complete(session: AsyncSession, row: SegmentExecution, now: datetime) -> None:
     logger.info(stage_log(
         row.segment_code, "DONE",
         "Segment fully COMPLETED",
         completed_at=now.strftime("%H:%M:%S %Z"),
     ))
-    row.segment_status = SegmentStatus.COMPLETED
-    row.current_process = None
-    row.current_phase = SegmentPhase.DONE
-    row.completed_at = now
+    await move_to_state(session, row, SegmentStatus.COMPLETED, now=now)

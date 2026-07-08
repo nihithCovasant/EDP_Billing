@@ -81,6 +81,17 @@ async def wire_orchestrator_database(engine):
         edp_database._session_factory = previous_factory
 
 
+@pytest.fixture(autouse=True)
+def no_real_emails(monkeypatch):
+    """
+    Prevent tests from ever sending real alert emails, regardless of what's
+    configured in global_email_service/.env on the developer's machine.
+    """
+    import global_email_service
+
+    monkeypatch.setattr(global_email_service, "send_segment_alert", lambda payload: None)
+
+
 @pytest_asyncio.fixture
 async def test_date(session_factory):
     """
