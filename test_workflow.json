@@ -7,9 +7,11 @@
       {"segment_code": "DR",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
       {"segment_code": "CUR",   "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
       {"segment_code": "SL",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
-      {"segment_code": "MCX",   "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
-      {"segment_code": "NCDEX", "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
-      {"segment_code": "MTF",   "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"}
+      {"segment_code": "MCX",       "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
+      {"segment_code": "MCXPHY",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
+      {"segment_code": "NCDEX",     "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
+      {"segment_code": "NCDEXPHY",  "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
+      {"segment_code": "MTF",       "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"}
     ],
     "post_trade_processes": [
       {"process_code": "COLVAL",   "login_id": "G_LID", "gtg_process_name": "CollateralValuation", "window_start": "02:30"},

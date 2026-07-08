@@ -57,9 +57,9 @@ async def test_second_process_failure_does_not_block_other_segments(cfg, session
     # --- Day summary must reflect exactly one FAILED, rest COMPLETED ---
     async with session_factory() as session:
         summary = await get_day_summary(session, test_date)
-    assert summary["total"] == 7
+    assert summary["total"] == len(SEGMENT_ORDER)
     assert summary["failed"] == 1
-    assert summary["completed"] == 6
+    assert summary["completed"] == len(SEGMENT_ORDER) - 1
     assert summary["pending"] == 0
     assert summary["in_progress"] == 0
     assert summary["skipped"] == 0

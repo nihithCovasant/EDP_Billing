@@ -1,8 +1,8 @@
 """
 Pipeline executor — drives a single segment_execution row through its state
 machine. Shared by both pipelines that live in this table:
-  - the 7-step pipeline for the 7 real segments (CASH/EQ, F&O/DR, CD/CUR,
-    SLBM/SL, MCX, NCDEX, MTF) — MTF is not special-cased.
+  - the 7-step pipeline for the 9 real segments (CASH/EQ, F&O/DR, CD/CUR,
+    SLBM/SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF) — none are special-cased.
   - the 3-step pipeline for the 5 T+1 post-trade processes (COLVAL, COLALLOC,
     MTFFT, DMRPT, DMSTMT).
 The two are distinguished purely by which phase_handlers dict is passed in —
@@ -41,7 +41,7 @@ from cams_otel_lib import Logger as logger
 
 
 _PHASE_HANDLERS = {
-    # 7-step pipeline — shared by all 7 segments (EQ, DR, CUR, SL, MCX, NCDEX, MTF)
+    # 7-step pipeline — shared by all 9 segments (EQ, DR, CUR, SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF)
     SegmentPhase.HOLIDAY_CHECK:         handle_holiday_check,
     SegmentPhase.RESERVE_PID:           handle_reserve_pid,
     SegmentPhase.AWAIT_FILE_UPLOAD:     handle_await_file_upload,

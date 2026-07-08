@@ -3,8 +3,8 @@ In-memory state for the Mock CBOS server.
 
 Simulates the stateful behaviour real CBOS exhibits across the polling
 sequence (BeginFileUpload -> FILEUPLOAD -> BILLPOSTING -> RECON ->
-CONTRACTNOTEGENERATION), identical for all 7 segments (CASH/EQ, F&O/DR,
-CD/CUR, SLBM/SL, MCX, NCDEX, MTF), plus the 5 T+1 post-trade processes
+CONTRACTNOTEGENERATION), identical for all 9 segments (CASH/EQ, F&O/DR,
+CD/CUR, SLBM/SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF), plus the 5 T+1 post-trade processes
 (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT — GTG/confirm polling reuses the
 same file_status() method as the segments, keyed by (process_code,
 gtg_process_name) where gtg_process_name comes from the agent's uploaded

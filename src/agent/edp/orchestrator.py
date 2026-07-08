@@ -43,9 +43,10 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across the 7 trade segments
-    (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF), then the 5 T+1
-    post-trade processes (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT) —
+    Drives the daily EDP billing pipeline across the 9 trade segments
+    (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF),
+    then the 5 T+1 post-trade processes (COLVAL, COLALLOC, MTFFT, DMRPT,
+    DMSTMT) —
     both orders fixed code constants; login_id/CBOS ProcessName/window
     resolved from the ops-uploaded workflow_json.
     """

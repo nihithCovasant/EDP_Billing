@@ -16,7 +16,7 @@ from src.agent.edp import repository
 from src.agent.edp.models import SegmentPhase, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.repository import get_day_summary
-from src.agent.edp.utils.constants import POST_TRADE_ORDER, get_sequence_order
+from src.agent.edp.utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER, get_sequence_order
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
@@ -24,7 +24,7 @@ from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
-    """Deliberately does NOT seed the 7 real segments — the post-trade
+    """Deliberately does NOT seed the 9 real segments — the post-trade
     chain must be fully drivable on its own."""
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     cbos.mock_set_ready_after(1)  # every poll succeeds first try -> fastest happy path
@@ -55,7 +55,7 @@ async def test_all_post_trade_processes_complete_successfully(cfg, session_facto
         assert row.processes_json["trigger"]["message"] == "Process started successfully"
         assert row.processes_json["confirm"]["status"] == "COMPLETED"
 
-        assert get_sequence_order(code) == 8 + POST_TRADE_ORDER.index(code)
+        assert get_sequence_order(code) == len(SEGMENT_ORDER) + 1 + POST_TRADE_ORDER.index(code)
 
     async with session_factory() as session:
         summary = await get_day_summary(session, test_date)

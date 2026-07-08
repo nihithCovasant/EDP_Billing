@@ -1,7 +1,7 @@
 """
-7-step pipeline stage handlers — identical for all 7 segments (CASH/EQ,
-F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF). MTF is not special-cased; it is
-driven through the exact same handlers as every other segment.
+7-step pipeline stage handlers — identical for all 9 segments (CASH/EQ,
+F&O/DR, CD/CUR, SLBM/SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF). None are
+special-cased; every segment is driven through the exact same handlers.
 
 Each handler performs exactly one CBOS API call (Step 2/RESERVE_PID makes
 two — get-or-reserve), updates processes_json, mutates the row phase/process

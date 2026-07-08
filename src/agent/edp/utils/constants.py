@@ -1,9 +1,9 @@
 """
 Fixed constants for the EDP segment pipeline.
 
-7 segments run sequentially through the generic 7-step pipeline (holiday
+9 segments run sequentially through the generic 7-step pipeline (holiday
 check -> get-or-reserve PID -> file upload poll -> trigger -> bill
-posting/recon/contract note polls); MTF is not special-cased. Then 5 T+1
+posting/recon/contract note polls); none are special-cased. Then 5 T+1
 post-trade processes run through a shorter 3-step pipeline (GTG poll ->
 trigger -> confirm poll), stored as extra segment_execution rows for the
 same trade_date, reusing the same status/lock/heartbeat machinery.
@@ -14,9 +14,11 @@ from __future__ import annotations
 from datetime import timedelta
 
 # Fixed processing order — a code constant since the regulatory sequence
-# doesn't change day to day; changing it requires a code change.
+# doesn't change day to day; changing it requires a code change. MCXPHY/
+# NCDEXPHY are the physical-settlement counterparts of MCX/NCDEX, run
+# immediately after their respective segment.
 SEGMENT_ORDER: tuple[str, ...] = (
-    "EQ", "DR", "CUR", "SL", "MCX", "NCDEX", "MTF",
+    "EQ", "DR", "CUR", "SL", "MCX", "MCXPHY", "NCDEX", "NCDEXPHY", "MTF",
 )
 
 # Human display labels.
@@ -26,7 +28,9 @@ SEGMENT_NAMES: dict[str, str] = {
     "CUR": "CD",
     "SL": "SLBM",
     "MCX": "MCX",
+    "MCXPHY": "MCX Phy",
     "NCDEX": "NCDEX",
+    "NCDEXPHY": "NCDEX Phy",
     "MTF": "MTF",
 }
 
@@ -73,7 +77,7 @@ def get_sequence_order(segment_code: str) -> int:
     Resolve a code's processing order from the fixed SEGMENT_ORDER /
     POST_TRADE_ORDER lists.
 
-    Returns 1-7 for the 7 real trade segments, 8-12 for the 5 post-trade
+    Returns 1-9 for the 9 real trade segments, 10-14 for the 5 post-trade
     processes (so they always sort after every real segment on the day's
     status view), or 999 for any unrecognized code (sorts last rather than
     raising, so an unexpected segment_code can't crash the day's ordering).

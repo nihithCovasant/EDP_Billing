@@ -109,7 +109,7 @@ class CountingPostTradeTriggerCbosClient(CbosClient):
     pipeline.post_trade_stages.handle_trigger_job() never calls the trigger
     endpoint a second time once it sees its own "TRIGGERING" marker on
     resume — post-trade triggers have no CBOS-side status check, so unlike
-    the 7-segment TRIGGER step, that must be a hard refusal, not a
+    the real-segment TRIGGER step, that must be a hard refusal, not a
     CBOS-verified decision.
     """
 

@@ -56,7 +56,8 @@ class SegmentPhase(str, enum.Enum):
     Shared by two pipelines, distinguished by segment_code (see
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
-    (1) 7-step pipeline for the 7 real segments (EQ/DR/CUR/SL/MCX/NCDEX/MTF):
+    (1) 7-step pipeline for the 9 real segments (EQ/DR/CUR/SL/MCX/MCXPHY/
+        NCDEX/NCDEXPHY/MTF):
       HOLIDAY_CHECK -> RESERVE_PID -> AWAIT_FILE_UPLOAD -> TRIGGER ->
       AWAIT_BILLPOSTING -> AWAIT_RECON -> AWAIT_CONTRACT_NOTE
 
@@ -106,7 +107,7 @@ class EdpProperties(Base):
           "window_start": "17:00",
           "window_end": "06:00"
         },
-        ...7 segments: EQ, DR, CUR, SL, MCX, NCDEX, MTF...
+        ...9 segments: EQ, DR, CUR, SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF...
       ],
       "post_trade_processes": [...5 processes: COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT...]
     }

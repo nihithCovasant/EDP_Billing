@@ -27,7 +27,7 @@ Enum segment_phase {
   AWAIT_CONFIRM
   DONE
 }
-// HOLIDAY_CHECK..AWAIT_CONTRACT_NOTE: 7-segment pipeline (EQ,DR,CUR,SL,MCX,NCDEX,MTF)
+// HOLIDAY_CHECK..AWAIT_CONTRACT_NOTE: 9-segment pipeline (EQ,DR,CUR,SL,MCX,MCXPHY,NCDEX,NCDEXPHY,MTF)
 // AWAIT_GTG..AWAIT_CONFIRM: 5 post-trade process pipeline (COLVAL,COLALLOC,MTFFT,DMRPT,DMSTMT)
 // DONE is shared terminal state for both
 
@@ -54,7 +54,7 @@ Table edpb_properties {
 Table edpb_segment_execution {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null]
-  segment_code varchar(32) [not null, note: 'Real segment: EQ DR CUR SL MCX NCDEX MTF | Post-trade: COLVAL COLALLOC MTFFT DMRPT DMSTMT']
+  segment_code varchar(32) [not null, note: 'Real segment: EQ DR CUR SL MCX MCXPHY NCDEX NCDEXPHY MTF | Post-trade: COLVAL COLALLOC MTFFT DMRPT DMSTMT']
   config_id_used varchar(36) [note: 'Soft ref to edpb_properties.id (real segments only)']
   status segment_status [not null, default: 'PENDING']
   current_process varchar(64) [note: 'CBOS ProcessName e.g. BILLPOSTING or CollateralValuation']

@@ -1,11 +1,11 @@
 """
 Day 1 — happy path.
 
-All 7 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, NCDEX, MTF) complete
-successfully in sequence order, each driven through the identical generic
-7-step pipeline — MTF is not special-cased — via the real orchestrator +
-pipeline + CbosClient in-process mock (no network calls, fully
-deterministic).
+All 9 segments (CASH/EQ, F&O/DR, CD/CUR, SLBM/SL, MCX, MCXPHY, NCDEX,
+NCDEXPHY, MTF) complete successfully in sequence order, each driven through
+the identical generic 7-step pipeline — none are special-cased — via the
+real orchestrator + pipeline + CbosClient in-process mock (no network calls,
+fully deterministic).
 """
 
 from __future__ import annotations
@@ -122,8 +122,8 @@ async def test_day_summary_and_serializers_have_no_removed_fields(cfg, session_f
     async with session_factory() as session:
         summary = await get_day_summary(session, test_date)
 
-    assert summary["total"] == 7
-    assert summary["completed"] == 7
+    assert summary["total"] == len(SEGMENT_ORDER)
+    assert summary["completed"] == len(SEGMENT_ORDER)
     assert summary["pending"] == 0
     assert summary["in_progress"] == 0
     assert summary["skipped"] == 0

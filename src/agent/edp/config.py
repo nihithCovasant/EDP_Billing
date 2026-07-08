@@ -80,7 +80,7 @@ def to_alembic_url(database_url: str) -> str:
 @dataclass
 class EdpBootstrapConfig:
     # Loop settings
-    wake_interval_seconds: int = 60
+    wake_interval_seconds: int = 5
     active_date_cutoff_hour: int = 6   # before 06:00 IST = previous calendar day
     timezone: str = "Asia/Kolkata"
 

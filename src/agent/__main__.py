@@ -172,8 +172,15 @@ def create_agent_card() -> AgentCard:
     )
 
 
-async def main():
-    """Main entry point for the agent server."""
+def build_app() -> FastAPI:
+    """
+    Build the FastAPI app (agent card, A2A handler, EDP router, middleware,
+    health endpoints). Synchronous and side-effect-light so it can be called
+    fresh on every restart — used directly by main() for a normal run, and
+    as a uvicorn factory target (see run_with_reload()) so --reload actually
+    re-imports and rebuilds it on every code change instead of serving stale
+    bytecode from the first import.
+    """
     Otel_Client.initialize_otel_client(
         service_name=settings.agent_name,
         environment=os.getenv("ENVIRONMENT", os.getenv("ENV", "dev")),
@@ -353,25 +360,56 @@ async def main():
             logger.error(f"Agent error: {str(e)}")
             return {"error": str(e)}
 
+    return app
+
+
+async def main():
+    """Direct (non-reload) run: build the app once, serve once."""
+    app = build_app()
     config = uvicorn.Config(
         app,
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level.lower(),
     )
-
     server = uvicorn.Server(config)
     logger.info(f"Agent ready at http://{settings.host}:{settings.port}")
-
     try:
         await server.serve()
     except KeyboardInterrupt:
         logger.info("Shutting down gracefully")
 
 
+def run_with_reload() -> None:
+    """
+    --reload run: hands off to uvicorn's own reloader supervisor, which
+    watches reload_dirs and, on every change, spawns a fresh subprocess that
+    re-imports build_app() via this string reference (factory=True) — so
+    edits actually take effect, unlike the old flag which was parsed nowhere
+    and silently did nothing.
+    """
+    project_root = Path(__file__).resolve().parents[2]
+    uvicorn.run(
+        "src.agent.__main__:build_app",
+        factory=True,
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level.lower(),
+        reload=True,
+        reload_dirs=[
+            str(project_root / "src"),
+            str(project_root / "global_email_service"),
+            str(project_root / "mock_cbos"),
+        ],
+    )
+
+
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        if "--reload" in sys.argv[1:]:
+            run_with_reload()
+        else:
+            asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Agent stopped by user")
         sys.exit(0)
