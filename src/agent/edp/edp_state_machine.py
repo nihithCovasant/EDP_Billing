@@ -6,7 +6,7 @@ import asyncio
 EDP_STATES = ["INITIALIZING", "WAITING_FOR_FILE_UPLOAD", "WAITING_FOR_BILL_POSTING_COMPLETION", "WAITING_FOR_RECON_COMPLETION", "WAITING_FOR_CNG_COMPLETION", "WAITING_FOR_GTG", "SUCCEEDED", "FAILED"]
 
 
-SEGMENTS = ["CASH","DR","SLBM","MCX","NCDEX","MTF","COL_VAL"]
+SEGMENTS = ["CASH","DR","CUR","SLBM","MCX","NCDEX","MTF","COL_VAL"]
 
 atomic_loop_start_time = None
 atomic_loop_end_time = None
@@ -19,11 +19,13 @@ def move_to_state(segment: str, new_state: str, remarks: str = None) -> None:
         logger.error(f"Unknown state: {new_state}")
         raise ValueError(f"Unknown state: {new_state}")
     # Update the state in the database or in-memory structure
+    if prev_phase != new_state and new_state  in (SUCCEEDED, FAILED):
+        send_alert(segment, new_state, remarks)
     update_segment_state(segment, new_state)
     logger.info(f"Segment {segment} moved to state {new_state}")
 
 def get_segment_state_handler(segment: str, segment_state:str):
-    if segment in ("CASH", "DR", "SLBM", "MCX", "NCDEX", "MTF"):
+    if segment in ("CASH", "DR", "CUR", "SLBM", "MCX", "NCDEX", "MTF"):
         match segment_state:
             case "INIT":
                 return handle_initializing_state
@@ -87,5 +89,41 @@ async def state_machine_loop() -> None:
         asyncio.create_task(state_machine_loop())  # Recursively call the loop to continue processing
         atomic_loop_end_time = time.time()
 
+def is_handled(segment: str) -> bool:
+    if segment not in SEGMENTS:
+        logger.error(f"Unknown segment: {segment}")
+        raise ValueError(f"Unknown segment: {segment}")
+    return get_segment_state(segment) in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED)
 
+
+
+def is_record_exists(segment: str) -> bool:
+    if segment not in SEGMENTS:
+        logger.error(f"Unknown segment: {segment}")
+        raise ValueError(f"Unknown segment: {segment}")
+    return get_segment_state(segment) in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED)
+
+def handle_initializing_state(segment: str, segment_state: str, current_time: float) -> None:
+    logger.info(f"Segment {segment} is in initializing state. Processing.")
+    return
+
+def handle_waiting_for_file_upload_state(segment: str, segment_state: str, current_time: float) -> None:
+    logger.info(f"Segment {segment} is in waiting for file upload state. Processing.")
+    return
+
+def handle_waiting_for_bill_posting_completion_state(segment: str, segment_state: str, current_time: float) -> None:
+    logger.info(f"Segment {segment} is in waiting for bill posting completion state. Processing.")
+    return
+
+def handle_waiting_for_recon_completion_state(segment: str, segment_state: str, current_time: float) -> None:
+    logger.info(f"Segment {segment} is in waiting for recon completion state. Processing.")
+    return
+
+def handle_waiting_for_cng_completion_state(segment: str, segment_state: str, current_time: float) -> None:
+    logger.info(f"Segment {segment} is in waiting for cng completion state. Processing.")
+    return
+
+def handle_succeeded_state(segment: str, segment_state: str, current_time: float) -> None:
+    logger.info(f"Segment {segment} is in succeeded state. Processing.")
+    return
 
