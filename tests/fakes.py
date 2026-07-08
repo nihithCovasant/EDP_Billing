@@ -45,6 +45,79 @@ class FailingCbosClient(CbosClient):
         return await super().file_process_status(segment, process_name, user_id)
 
 
+class ScenarioCbosClient(CbosClient):
+    """
+    Combines multiple simulated per-segment outcomes in one client — a real
+    production day can have more than one kind of segment outcome at once
+    (e.g. one segment hits a market holiday while another later fails
+    outright and the rest complete normally). FailingCbosClient only ever
+    simulates one outcome type; this stitches holiday (SKIP) + permanent
+    failure together so a single test can drive a realistic mixed day.
+    """
+
+    def __init__(
+        self,
+        status_url: str,
+        process_url: str,
+        *,
+        holiday_segments: tuple[str, ...] = (),
+        fail_at: tuple[str, str] | None = None,
+    ):
+        super().__init__(status_url, process_url, use_mock=True)
+        self._holiday_segments = {s.upper() for s in holiday_segments}
+        self._fail_segment, self._fail_process = (fail_at or (None, None))
+
+    async def file_process_status(
+        self, segment: str, process_name: str, user_id: str
+    ) -> FileStatusResult:
+        if segment.upper() in self._holiday_segments and process_name == "BeginFileUpload":
+            return FileStatusResult(
+                response="SKIP",
+                raw_body='{"Status":"Success","Data":[{"MSG":"SKIP"}]}',
+            )
+        if (
+            self._fail_segment
+            and segment.upper() == self._fail_segment.upper()
+            and process_name == self._fail_process
+        ):
+            return FileStatusResult(
+                response="FALSE",
+                raw_body='{"Status":"CBOS_INTERNAL_ERROR"}',
+                error=f"Simulated permanent CBOS failure for {segment}/{process_name}",
+                is_transient=False,
+            )
+        return await super().file_process_status(segment, process_name, user_id)
+
+
+class TransientOutageCbosClient(CbosClient):
+    """
+    Always returns a transient (network-like) error for one specific
+    (segment, process_name) pair — every single poll, forever — simulating
+    a sustained CBOS outage rather than FailingCbosClient's one-shot
+    permanent error. The pipeline must keep retrying (BLOCKED) indefinitely,
+    never marking the segment FAILED or SKIPPED, while
+    pipeline.stages._log_transient escalates WARNING -> ERROR the longer it
+    drags on.
+    """
+
+    def __init__(self, status_url: str, process_url: str, *, fail_segment: str, fail_process: str):
+        super().__init__(status_url, process_url, use_mock=True)
+        self._fail_segment = fail_segment.upper()
+        self._fail_process = fail_process
+
+    async def file_process_status(
+        self, segment: str, process_name: str, user_id: str
+    ) -> FileStatusResult:
+        if segment.upper() == self._fail_segment and process_name == self._fail_process:
+            return FileStatusResult(
+                response="FALSE",
+                raw_body="",
+                error="Simulated sustained CBOS outage (connection refused)",
+                is_transient=True,
+            )
+        return await super().file_process_status(segment, process_name, user_id)
+
+
 class TransientTriggerFailureCbosClient(CbosClient):
     """
     Fails the FIRST trigger-mode getNewTradeProcess call (PROCESSID != "0")

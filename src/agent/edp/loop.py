@@ -8,6 +8,7 @@ import asyncio
 import time
 from typing import Optional, Tuple
 
+from . import alerts
 from .config import load_edp_config, EdpBootstrapConfig
 from .database import close_database, init_database
 from .orchestrator import EdpOrchestrator
@@ -70,6 +71,10 @@ class EdpWakeLoop:
             process_url=config.cbos_process_url,
             instance=config.agent_instance_id,
         ))
+        # Surfaced once at startup so "will FAILED/TIMEOUT alerts actually
+        # send" is answered immediately, not discovered at the first
+        # real segment failure of the day.
+        logger.info(edp_log(f"Email alerts: {alerts.describe_alert_config()}"))
 
     @otel_trace
     async def stop(self) -> None:

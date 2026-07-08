@@ -33,7 +33,7 @@ from ..utils.json_helpers import (
     record_post_trade_trigger_failed,
 )
 from ..utils.log_fmt import stage_log
-from .stages import StageResult, _fail, _skip, _log_transient
+from .stages import StageResult, _fail, _skip, _log_transient, move_to_state
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
@@ -96,17 +96,13 @@ async def handle_await_gtg(
             ))
         return StageResult.BLOCKED
 
-    logger.info(stage_log(
-        row.segment_code, "AWAIT_GTG",
-        f"{process_name} GTG confirmed — proceeding to TRIGGER_JOB",
-        response=result.response,
-        total_polls=poll_count,
-        ready_at=now.strftime("%H:%M:%S %Z"),
-    ))
     mark_stage_done(row, "gtg", result.response, now)
-    row.current_phase = SegmentPhase.TRIGGER_JOB
-    row.current_process = None
-    await session.flush()
+    await move_to_state(
+        row, session, SegmentPhase.TRIGGER_JOB, now,
+        f"{process_name} GTG confirmed — proceeding to TRIGGER_JOB",
+        new_process=None,
+        response=result.response, total_polls=poll_count,
+    )
     return StageResult.ADVANCE
 
 
@@ -198,16 +194,13 @@ async def handle_trigger_job(
         return StageResult.FAILED
 
     record_post_trade_trigger(row, result.message, now)
-    row.current_phase = SegmentPhase.AWAIT_CONFIRM
-    # current_process already holds the resolved ProcessName from AWAIT_GTG.
-    await session.flush()
-
-    logger.info(stage_log(
-        code, "TRIGGER_JOB",
+    # new_process left as _UNCHANGED (default) — current_process already
+    # holds the resolved ProcessName from AWAIT_GTG.
+    await move_to_state(
+        row, session, SegmentPhase.AWAIT_CONFIRM, now,
         "Trigger acknowledged — will poll for confirmation next cycle",
         cbos_message=result.message,
-        triggered_at=now.strftime("%H:%M:%S %Z"),
-    ))
+    )
     return StageResult.STOP_NEXT
 
 

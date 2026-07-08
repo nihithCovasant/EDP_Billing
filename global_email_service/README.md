@@ -384,9 +384,30 @@ library) and copies only the resulting venv into the final image.
   CAMS it silently falls back to plain stdlib logging. No code changes or
   extra requirements needed either way.
 
-## Future integration (not done yet, by design)
+## Integration with the EDP agent
 
-When you're ready to wire this into the EDP agent (e.g. calling
-`send_segment_alert(serialize_segment(row))` from `pipeline/stages.py::_fail()`),
-the row shape from `utils/serializers.py::serialize_segment()` already maps
-directly onto what this module expects — no adapter needed.
+Wired in as an in-process, editable dependency (`-e ./global_email_service`
+in the main project's `requirements.txt`) — see `src/agent/edp/alerts.py`
+for the thin async wrapper used by the pipeline. It fires:
+
+- `send_failure_alert()` from `pipeline/stages.py::_fail()` — every
+  segment/post-trade process that reaches FAILED (real errors only).
+- `send_timeout_alert()` from `pipeline/executor.py` and
+  `orchestrator.py` — a segment SKIPPED via a missed/exceeded window
+  deadline.
+- `send_skip_alert()` from `pipeline/stages.py::_skip()` — any other
+  SKIPPED outcome, e.g. `CBOS_SKIP` (market holiday, or CBOS explicitly
+  returning SKIP mid-stage) — ops wants visibility into every segment that
+  didn't run to completion, not just outright failures.
+
+Deliberately does **not** alert on `COMPLETED` — see the module docstring in
+`alerts.py` for the reasoning (success is the default expected outcome).
+
+The row shape is built by `utils/serializers.py::serialize_segment_alert()`,
+which maps field-for-field onto `DEFAULT_SEGMENT_COLUMNS` in
+`table_renderer.py` — no adapter needed. Alert sends are awaited via
+`asyncio.to_thread` (Graph's `sendMail` call is synchronous) and every
+failure to send is caught and logged as a WARNING, never raised — a broken
+mail server can never turn an already-handled pipeline error into an
+unhandled one. `EDP_EMAIL_ALERTS_ENABLED=false` disables alerting entirely
+(set automatically in the test suite — see `tests/conftest.py`).

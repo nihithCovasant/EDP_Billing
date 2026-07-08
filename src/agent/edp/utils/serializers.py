@@ -53,6 +53,30 @@ def serialize_segment(row: SegmentExecution) -> dict:
     }
 
 
+def serialize_segment_alert(row: SegmentExecution) -> dict:
+    """
+    Row shape handed to global_email_service (see alerts.py) — matches
+    DEFAULT_SEGMENT_COLUMNS in global_email_service/table_renderer.py
+    field-for-field, so it renders with the canonical column order and no
+    adapter code. Deliberately excludes processes_json/lock_state/id — an
+    ops recipient reading a failure/timeout email needs the status and
+    reason, not internal poll-history/locking detail.
+    """
+    return {
+        "trade_date": row.trade_date.isoformat(),
+        "segment_code": row.segment_code,
+        "segment_name": get_segment_name(row.segment_code),
+        "segment_status": row.segment_status.value,
+        "current_process": row.current_process,
+        "current_phase": row.current_phase.value if row.current_phase else None,
+        "process_id": row.process_id,
+        "skip_category": row.skip_category,
+        "skip_reason": row.skip_reason,
+        "started_at": _dt(row.started_at),
+        "completed_at": _dt(row.completed_at),
+    }
+
+
 def serialize_segment_summary(row: SegmentExecution) -> dict:
     """Compact summary — used inside GET /edp/status/{date} day view."""
     return {

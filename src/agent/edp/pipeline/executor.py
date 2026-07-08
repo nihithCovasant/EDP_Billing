@@ -5,10 +5,12 @@ machine. Shared by both pipelines that live in this table:
     SLBM/SL, MCX, NCDEX, MTF) — MTF is not special-cased.
   - the 3-step pipeline for the 5 T+1 post-trade processes (COLVAL, COLALLOC,
     MTFFT, DMRPT, DMSTMT).
-The two are distinguished by is_post_trade. Dispatch is an explicit
-switch-on-family-then-switch-on-phase (match/case) — the loop mechanics
-(window deadline check, terminal signals, ADVANCE chaining) are identical
-either way.
+Which family a row belongs to is derived from its segment_code (via
+is_post_trade_process) rather than passed in by the caller — one source of
+truth, so a row can never be driven against the wrong family by a
+caller-side mistake. Dispatch is an explicit switch-on-family-then-
+switch-on-phase (match/case) — the loop mechanics (window deadline check,
+terminal signals, ADVANCE chaining) are identical either way.
 """
 
 from __future__ import annotations
@@ -17,11 +19,15 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import alerts
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
+from ..utils.constants import is_post_trade_process
 from ..utils.datetime_utils import ensure_aware, now_ist
 from ..utils.log_fmt import stage_log
+from ..utils.serializers import serialize_segment_alert
 from .stages import (
     StageResult,
+    _fail,
     handle_holiday_check,
     handle_reserve_pid,
     handle_await_file_upload,
@@ -42,14 +48,21 @@ from cams_otel_lib import Logger as logger
 _TERMINAL_SIGNALS = {StageResult.COMPLETED, StageResult.SKIPPED, StageResult.FAILED}
 
 
-def _dispatch(phase: SegmentPhase | None, is_post_trade: bool):
+def get_segment_state_handler(segment_code: str, phase: SegmentPhase | None):
     """
     Switch on segment family first (real 7-step segments vs the 5 T+1
     post-trade processes — each has its own disjoint set of valid phases),
-    then switch on phase within that family. Returns None for a phase that
-    isn't valid for the given family (caller marks the row FAILED).
+    then switch on phase within that family — mirrors the manager's
+    get_segment_state_handler(segment, segment_state) sketch.
+
+    Unlike the sketch, this never returns a sentinel for "no handler" —
+    it raises ValueError instead, so a lookup miss can't be accidentally
+    ignored by a future caller. advance_pipeline() below is the single
+    place that catches that raise and turns it into a domain-level FAILED
+    row (SYSTEM_ERROR); this function's only job is the lookup, not
+    deciding what a lookup miss should mean for the row's business state.
     """
-    if is_post_trade:
+    if is_post_trade_process(segment_code):
         match phase:
             case SegmentPhase.AWAIT_GTG:
                 return handle_await_gtg
@@ -58,7 +71,13 @@ def _dispatch(phase: SegmentPhase | None, is_post_trade: bool):
             case SegmentPhase.AWAIT_CONFIRM:
                 return handle_await_confirm
             case _:
-                return None
+                logger.error(stage_log(
+                    segment_code, str(phase),
+                    "No post-trade handler registered for this phase",
+                ))
+                raise ValueError(
+                    f"No post-trade pipeline handler for segment={segment_code} phase={phase}"
+                )
     else:
         match phase:
             case SegmentPhase.HOLIDAY_CHECK:
@@ -76,7 +95,13 @@ def _dispatch(phase: SegmentPhase | None, is_post_trade: bool):
             case SegmentPhase.AWAIT_CONTRACT_NOTE:
                 return handle_await_contract_note
             case _:
-                return None
+                logger.error(stage_log(
+                    segment_code, str(phase),
+                    "No handler registered for this phase",
+                ))
+                raise ValueError(
+                    f"No pipeline handler for segment={segment_code} phase={phase}"
+                )
 
 
 async def advance_pipeline(
@@ -86,13 +111,13 @@ async def advance_pipeline(
     login_id: str,
     now: datetime,
     window_end: datetime | None = None,
-    is_post_trade: bool = False,
 ) -> str:
     """
     Execute pipeline stages for a segment_execution row until it blocks,
-    completes, or fails. is_post_trade selects which of the two families
-    drives this row's phase dispatch. window_end is None for post-trade
-    rows (no deadline).
+    completes, or fails. Which of the two families drives this row's phase
+    dispatch is derived from row.segment_code (see get_segment_state_handler),
+    not passed in — the row can't be driven against the wrong family by a
+    caller-side mistake. window_end is None for post-trade rows (no deadline).
 
     Returns one of: "completed" | "skipped" | "failed" | "advanced" | "blocked"
     """
@@ -127,23 +152,18 @@ async def advance_pipeline(
             row.current_phase = SegmentPhase.DONE
             row.completed_at = now
             await session.flush()
+            await alerts.send_timeout_alert(serialize_segment_alert(row))
             return "skipped"
 
         phase = row.current_phase
-        handler = _dispatch(phase, is_post_trade)
+        if phase == SegmentPhase.DONE:
+            return "completed"
 
-        if handler is None:
-            if phase == SegmentPhase.DONE:
-                return "completed"
+        try:
+            handler = get_segment_state_handler(row.segment_code, phase)
+        except ValueError as exc:
             # An unmapped phase must not silently retry forever — fail it durably.
-            logger.error(stage_log(
-                row.segment_code, str(phase),
-                "No handler registered for this phase — marking FAILED",
-            ))
-            row.segment_status = SegmentStatus.FAILED
-            row.skip_category = "SYSTEM_ERROR"
-            row.skip_reason = f"No pipeline handler registered for phase={phase}"
-            row.completed_at = now
+            await _fail(row, "SYSTEM_ERROR", str(exc), now)
             await session.flush()
             return "failed"
 

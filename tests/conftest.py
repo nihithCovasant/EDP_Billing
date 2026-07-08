@@ -34,6 +34,19 @@ def cfg() -> EdpBootstrapConfig:
     return load_edp_config()
 
 
+@pytest.fixture(autouse=True)
+def disable_email_alerts(monkeypatch):
+    """
+    FAILED/TIMEOUT segment transitions fire an ops email alert (see
+    src/agent/edp/alerts.py) — these tests deliberately trigger many of
+    both to exercise crash-safety/halt-on-FAILED semantics. Without Graph
+    credentials configured, each attempt would fail fast (harmless, but
+    noisy WARNING logs) and still costs a thread hop; disabled here so the
+    suite stays fast and its output stays focused on pipeline behavior.
+    """
+    monkeypatch.setenv("EDP_EMAIL_ALERTS_ENABLED", "false")
+
+
 @pytest_asyncio.fixture
 async def engine(cfg: EdpBootstrapConfig):
     """

@@ -18,14 +18,16 @@ All helper utilities live in utils.*
 
 from __future__ import annotations
 
+import enum
 import time
 from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from . import alerts
 from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
-from .models import SegmentPhase, SegmentStatus
+from .models import SegmentExecution, SegmentPhase, SegmentStatus
 from . import repository
 from .pipeline import advance_pipeline
 from .utils.constants import (
@@ -38,6 +40,7 @@ from .utils.constants import (
 from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
 from .utils.locking import lock_owner
 from .utils.log_fmt import edp_log, seg_log
+from .utils.serializers import serialize_segment_alert
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -182,12 +185,12 @@ class EdpOrchestrator:
 
         # ------ Drive each segment in sequence ------------------------------
         for seg_row in segments:
-            status = seg_row.segment_status
+            handled = is_handled(seg_row)
 
-            if status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
+            if handled == HandledOutcome.SUCCESS:
                 continue
 
-            if status == SegmentStatus.FAILED:
+            if handled == HandledOutcome.FAILURE:
                 logger.warning(seg_log(
                     seg_row.segment_code, active_date,
                     "Segment FAILED — halting sequential chain",
@@ -283,6 +286,7 @@ class EdpOrchestrator:
                 row.current_phase = SegmentPhase.DONE
                 row.completed_at = now
                 await session.flush()
+                await alerts.send_timeout_alert(serialize_segment_alert(row))
                 return "skipped"
 
             # Move PENDING → IN_PROGRESS
@@ -386,12 +390,12 @@ class EdpOrchestrator:
         post_trade_rows.sort(key=lambda r: POST_TRADE_ORDER.index(r.segment_code))
 
         for row in post_trade_rows:
-            status = row.segment_status
+            handled = is_handled(row)
 
-            if status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
+            if handled == HandledOutcome.SUCCESS:
                 continue
 
-            if status == SegmentStatus.FAILED:
+            if handled == HandledOutcome.FAILURE:
                 logger.warning(seg_log(
                     row.segment_code, active_date,
                     "Post-trade process FAILED — halting remaining post-trade chain",
@@ -499,7 +503,6 @@ class EdpOrchestrator:
                     login_id=login_id,
                     now=now,
                     window_end=None,
-                    is_post_trade=True,
                 )
             finally:
                 terminal = row.segment_status in (
@@ -515,6 +518,19 @@ class EdpOrchestrator:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+class HandledOutcome(str, enum.Enum):
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
+
+
+def is_handled(row: SegmentExecution) -> Optional[HandledOutcome]:
+    if row.segment_status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
+        return HandledOutcome.SUCCESS
+    if row.segment_status == SegmentStatus.FAILED:
+        return HandledOutcome.FAILURE
+    return None
+
 
 def _find_segment_cfg(workflow_json: dict, segment_code: str) -> dict | None:
     for seg in workflow_json.get("segments", []):

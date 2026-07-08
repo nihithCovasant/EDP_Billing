@@ -23,6 +23,7 @@ from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import alerts
 from ..models import SegmentExecution, SegmentPhase, SegmentStatus
 from ..utils.json_helpers import (
     inc_poll,
@@ -34,6 +35,7 @@ from ..utils.json_helpers import (
     get_proc,
 )
 from ..utils.log_fmt import stage_log
+from ..utils.serializers import serialize_segment_alert
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 
@@ -73,6 +75,55 @@ def _log_transient(segment_code: str, stage_name: str, error: str | None, poll_c
             "Transient CBOS error — will retry next cycle",
             error=error, poll=poll_count,
         ))
+
+
+# Sentinel distinguishing "explicitly clear current_process" (pass None) from
+# "leave current_process exactly as it is" (the default) — a few transitions
+# (e.g. post-trade TRIGGER_JOB -> AWAIT_CONFIRM) must preserve a value set by
+# an earlier stage rather than clearing or overwriting it.
+_UNCHANGED = object()
+
+
+async def move_to_state(
+    row: SegmentExecution,
+    session: AsyncSession,
+    new_phase: SegmentPhase,
+    now: datetime,
+    message: str,
+    new_process: str | None = _UNCHANGED,  # type: ignore[assignment]
+    **context,
+) -> None:
+    """
+    The single place every phase advance goes through — old_phase != new_phase
+    is the only condition under which anything happens, so this is safe to
+    call defensively (a no-op if the row is already in new_phase).
+
+    On an actual transition: mutates current_phase/current_process, stamps
+    last_heartbeat_at with `now` (the same wall-clock instant the caller
+    already resolved for this cycle — never a fresh datetime.now() call, so
+    every field this cycle touches agrees on "when"), logs exactly one
+    structured line for it, then flushes. Centralizing this means no handler
+    can advance a phase without that line being logged and the row actually
+    being persisted — both used to be each handler's own responsibility,
+    repeated at ~10 call sites.
+    """
+    old_phase = row.current_phase
+    if old_phase == new_phase:
+        return
+
+    row.current_phase = new_phase
+    if new_process is not _UNCHANGED:
+        row.current_process = new_process
+    row.last_heartbeat_at = now
+
+    logger.info(stage_log(
+        row.segment_code,
+        old_phase.value if old_phase else "UNKNOWN",
+        message,
+        new_phase=new_phase.value,
+        **context,
+    ))
+    await session.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -137,16 +188,13 @@ async def handle_holiday_check(
         return StageResult.BLOCKED
 
     # TRUE — good to go
-    logger.info(stage_log(
-        row.segment_code, "HOLIDAY_CHECK",
-        "Holiday check PASSED — proceeding to RESERVE_PID",
-        response=result.response,
-        at=now.strftime("%H:%M:%S %Z"),
-    ))
     mark_stage_done(row, "holiday_check", result.response, now)
-    row.current_phase = SegmentPhase.RESERVE_PID
-    row.current_process = None
-    await session.flush()
+    await move_to_state(
+        row, session, SegmentPhase.RESERVE_PID, now,
+        "Holiday check PASSED — proceeding to RESERVE_PID",
+        new_process=None,
+        response=result.response,
+    )
     return StageResult.ADVANCE
 
 
@@ -249,17 +297,12 @@ async def _pid_resolved(
         "process_id_source": source,
         "reserved_at": now.isoformat(),
     })
-    row.current_phase = SegmentPhase.AWAIT_FILE_UPLOAD
-    row.current_process = "FILEUPLOAD"
-    await session.flush()
-
-    logger.info(stage_log(
-        row.segment_code, "RESERVE_PID",
+    await move_to_state(
+        row, session, SegmentPhase.AWAIT_FILE_UPLOAD, now,
         f"Process ID resolved ({source}) — proceeding to AWAIT_FILE_UPLOAD",
-        pid=process_id,
-        source=source,
-        resolved_at=now.strftime("%H:%M:%S %Z"),
-    ))
+        new_process="FILEUPLOAD",
+        pid=process_id, source=source,
+    )
     return StageResult.ADVANCE
 
 
@@ -322,17 +365,13 @@ async def handle_await_file_upload(
             ))
         return StageResult.BLOCKED
 
-    logger.info(stage_log(
-        row.segment_code, "AWAIT_FILE_UPLOAD",
-        "All exchange files uploaded — proceeding to TRIGGER",
-        response=result.response,
-        total_polls=poll_count,
-        ready_at=now.strftime("%H:%M:%S %Z"),
-    ))
     mark_stage_done(row, "file_upload_ready", result.response, now)
-    row.current_phase = SegmentPhase.TRIGGER
-    row.current_process = None
-    await session.flush()
+    await move_to_state(
+        row, session, SegmentPhase.TRIGGER, now,
+        "All exchange files uploaded — proceeding to TRIGGER",
+        new_process=None,
+        response=result.response, total_polls=poll_count,
+    )
     return StageResult.ADVANCE
 
 
@@ -535,17 +574,12 @@ async def _finalize_trigger_success(
 ) -> StageResult:
     """Common "trigger confirmed" bookkeeping, shared by the normal path and both recovery branches."""
     record_trigger(row, process_id, is_runnable, now)
-    row.current_phase = SegmentPhase.AWAIT_BILLPOSTING
-    row.current_process = "BILLPOSTING"
-    await session.flush()
-
-    logger.info(stage_log(
-        row.segment_code, "TRIGGER",
+    await move_to_state(
+        row, session, SegmentPhase.AWAIT_BILLPOSTING, now,
         "Process TRIGGERED successfully — will poll BILLPOSTING next cycle",
-        pid=process_id,
-        is_runnable=is_runnable,
-        triggered_at=now.strftime("%H:%M:%S %Z"),
-    ))
+        new_process="BILLPOSTING",
+        pid=process_id, is_runnable=is_runnable,
+    )
     return StageResult.STOP_NEXT
 
 
@@ -713,17 +747,13 @@ async def _poll_confirmation(
             ))
         return StageResult.BLOCKED
 
-    logger.info(stage_log(
-        row.segment_code, stage_name,
-        f"{process_name} CONFIRMED — advancing to {next_phase.value}",
-        response=result.response,
-        total_polls=poll_count,
-        confirmed_at=now.strftime("%H:%M:%S %Z"),
-    ))
     mark_stage_done(row, stage_key, result.response, now)
-    row.current_phase = next_phase
-    row.current_process = next_process
-    await session.flush()
+    await move_to_state(
+        row, session, next_phase, now,
+        f"{process_name} CONFIRMED — advancing to {next_phase.value}",
+        new_process=next_process,
+        response=result.response, total_polls=poll_count,
+    )
     return StageResult.ADVANCE
 
 
@@ -751,6 +781,7 @@ async def _fail(
     row.skip_category = category
     row.skip_reason = reason
     row.completed_at = now
+    await alerts.send_failure_alert(serialize_segment_alert(row))
 
 
 async def _skip(
@@ -773,6 +804,7 @@ async def _skip(
     row.skip_reason = reason
     row.current_phase = SegmentPhase.DONE
     row.completed_at = now
+    await alerts.send_skip_alert(serialize_segment_alert(row))
 
 
 def _complete(row: SegmentExecution, now: datetime) -> None:
