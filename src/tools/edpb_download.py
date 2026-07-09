@@ -35,12 +35,15 @@ def _today() -> str:
 @tool
 async def download_file(filename: str, trade_date: Optional[str] = None) -> str:
     """
-    Download a file from the EDPB portal by filename.
+    Download a file (also called a "script" in EDPB terminology) from the
+    EDPB portal by name.
 
-    Use this when the user asks to "download file with filename <name>" (or
-    similar phrasing). `filename` is required — the exact file name the user
-    mentioned. `trade_date` is optional, format YYYY-MM-DD — if the user
-    doesn't mention one, today's date is used automatically.
+    Use this whenever the user asks to download a file/script, regardless of
+    exact phrasing — e.g. "download file with filename <name>", "download
+    the script with script name <name>", "get me <name>", etc. `filename` is
+    required — the exact file/script name the user mentioned, taken verbatim
+    from their message. `trade_date` is optional, format YYYY-MM-DD — if the
+    user doesn't mention one, today's date is used automatically.
     """
     api_url = os.getenv("EDPB_DOWNLOAD_API_URL", _DEFAULT_API_URL)
     resolved_trade_date = trade_date or _today()
