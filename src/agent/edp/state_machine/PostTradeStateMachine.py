@@ -39,7 +39,7 @@ from ..utils.json_helpers import (
 from ..utils.log_fmt import stage_log
 from .AbstractStateMachine import AbstractSegmentStateMachine
 from .SegmentHandlerResult import ADVANCE, BLOCKED, STOP_NEXT, SegmentHandlerResult
-from .SegmentTransitionMap import POST_TRADE_TRANSITION_MAP
+from .TradeSegmentTransitionFactory import POST_TRADE_TRANSITION_MAP
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
 

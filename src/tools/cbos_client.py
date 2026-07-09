@@ -55,11 +55,13 @@ CBOS API request / response shapes
   Post-trade triggers (DD-Mon-YYYY date format, e.g. "29-Jun-2026")
     POST {PROCESS_URL}/v1/api/process/GetCollateralValuation
       Body: {"BUTTONNAME":"COLLATERAL_VALUATION_DATEWISE","LOGINID":"G_LID","MARGINDATE":"29-Jun-2026"}
+    POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess  (DMRPT — confirmed
+      via EDP_Trade_Process_API_v3, NOT the {LOGINID,TRADEDATE}-only shape below)
+      Body: {"BUTTONNAME":"COMBINEDMARGIN_PROCESS","LOGINID":"G_LID","MARGINDATE":"29-Jun-2026"}
     POST {PROCESS_URL}/v1/api/process/MTFTradeProcessCollateralAllocation
     POST {PROCESS_URL}/v1/api/process/MTFTradeProcessFundTransfer
-    POST {PROCESS_URL}/v1/api/process/DailyMarginReporting
     POST {PROCESS_URL}/v1/api/process/DailyMarginStatements
-      Body (last 4): {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}
+      Body (last 3): {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}
     OK: {"Status":"Success","Data":[{"MSG":"Process started successfully"}]}
 """
 
@@ -498,9 +500,21 @@ class CbosClient:
     async def trigger_daily_margin_reporting(
         self, login_id: str, trade_date: date,
     ) -> PostTradeTriggerResult:
-        """POST {PROCESS_URL}/v1/api/process/DailyMarginReporting — post-trade Process 4."""
-        return await self._trigger_post_trade_job(
-            "DailyMarginReporting", login_id, trade_date, segment="DMRPT",
+        """
+        POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess — post-trade
+        Process 4. Confirmed against EDP_Trade_Process_API_v3: same
+        BUTTONNAME-driven shape as trigger_collateral_valuation(), NOT the
+        {LOGINID, TRADEDATE}-only shape the other _trigger_post_trade_job()
+        callers use. MARGINDATE uses the DD-Mon-YYYY format, same as the
+        other post-trade triggers.
+        """
+        payload = {
+            "BUTTONNAME": "COMBINEDMARGIN_PROCESS",
+            "LOGINID": login_id,
+            "MARGINDATE": to_ddmmmyyyy(trade_date),
+        }
+        return await self._post_trade_trigger(
+            "CombinedMarginProcess", payload, segment="DMRPT",
         )
 
     @otel_trace
