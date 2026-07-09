@@ -159,7 +159,6 @@ async def test_legacy_workflow_without_post_trade_processes_key_still_seeds_fixe
     "post_trade_processes" key at all) must still seed the fixed 5 —
     backward compatibility for already-uploaded configs."""
     legacy_workflow_json = {
-        "wake_interval_seconds": 60,
         "segments": [],
         # deliberately no "post_trade_processes" key
     }

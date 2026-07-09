@@ -1,7 +1,6 @@
 {
   "uploaded_by": "manual-test",
   "workflow_json": {
-    "wake_interval_seconds": 60,
     "segments": [
       {"segment_code": "EQ",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},
       {"segment_code": "DR",    "login_id": "CV0001", "window_start": "00:01", "window_end": "23:55"},

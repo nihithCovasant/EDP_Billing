@@ -1,7 +1,6 @@
 {
   "uploaded_by": "demo",
   "workflow_json": {
-      "wake_interval_seconds": 60,
       "segments": [
         {
           "segment_code": "EQ",

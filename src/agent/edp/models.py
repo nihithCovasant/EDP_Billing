@@ -97,9 +97,10 @@ class EdpProperties(Base):
     trade_date. Every upload inserts a new row and supersedes the old one
     (is_active=False, superseded_at set) — no content-hash dedup.
 
-    workflow_json shape (always IST, no per-config timezone field):
+    workflow_json shape (always IST, no per-config timezone field; no
+    wake_interval_seconds either — that's an agent-level setting via the
+    EDP_WAKE_INTERVAL_SECONDS env var, not something ops can override per upload):
     {
-      "wake_interval_seconds": 60,
       "segments": [
         {
           "segment_code": "EQ",

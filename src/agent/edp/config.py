@@ -1,7 +1,8 @@
 """
 EDP agent bootstrap configuration loaded from agent_config.json.
 
-This config covers only agent-level settings (DB URL, CBOS URL, wake interval).
+This config covers agent-level settings (DB URL, CBOS URL, etc.).
+Wake interval is read from EDP_WAKE_INTERVAL_SECONDS env var only.
 Segment schedules and process definitions are stored in the edpb_properties DB
 table and uploaded daily by ops.
 
@@ -80,7 +81,7 @@ def to_alembic_url(database_url: str) -> str:
 @dataclass
 class EdpBootstrapConfig:
     # Loop settings
-    wake_interval_seconds: int = 5
+    wake_interval_seconds: int = 60
     active_date_cutoff_hour: int = 6   # before 06:00 IST = previous calendar day
     timezone: str = "Asia/Kolkata"
 
@@ -179,10 +180,7 @@ def load_edp_config() -> EdpBootstrapConfig:
                 "agent_config.json 'edp' fields explicitly"
             )
 
-    # For demo/local runs to speed the loop up without editing agent_config.json.
-    wake_interval_seconds = int(
-        os.getenv("EDP_WAKE_INTERVAL_SECONDS", edp_raw.get("wake_interval_seconds", 60))
-    )
+    wake_interval_seconds = int(os.getenv("EDP_WAKE_INTERVAL_SECONDS", "60"))
 
     return EdpBootstrapConfig(
         wake_interval_seconds=wake_interval_seconds,
@@ -218,6 +216,10 @@ def build_default_workflow_json(
     No window_end_next_day field either — segment windows always run
     overnight into the next calendar day, a fixed rule enforced in
     orchestrator._resolve_window(), not something a config states.
+
+    No wake_interval_seconds field either — that's an agent-level runtime
+    setting (EDP_WAKE_INTERVAL_SECONDS env var / EdpBootstrapConfig), not a
+    per-day config an ops uploader should be able to override.
     """
     built_segments = []
     for seg in segments:
@@ -249,7 +251,6 @@ def build_default_workflow_json(
         built_post_trade.append(entry)
 
     return {
-        "wake_interval_seconds": 60,
         "segments": built_segments,
         "post_trade_processes": built_post_trade,
     }
