@@ -1,7 +1,7 @@
 """
 3-step pipeline stage handlers for the 5 T+1 post-trade processes (COLVAL,
 COLALLOC, MTFFT, DMRPT, DMSTMT) — run once per trade_date, sequentially,
-after (but independent of) the 7 real segments.
+after (but independent of) the 10 real segments.
 
   AWAIT_GTG     -> POST file_process_status(<process-specific ProcessName>) — poll
   TRIGGER_JOB   -> POST <process-specific trigger endpoint>

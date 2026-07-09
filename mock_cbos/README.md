@@ -15,8 +15,8 @@ without VPN/VDI access to the real MOFSL CBOS system.
 
 ## What it implements
 
-The 7-step segment execution flow — identical for all 9 segments (CASH/EQ,
-F&O/DR, CD/CUR, SLBM/SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF; none are
+The 7-step segment execution flow — identical for all 10 segments (CASH/EQ,
+F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF; none are
 special-cased) — plus
 the 5 T+1 post-trade processes, on a single port (both real CBOS base URLs,
 `EDP Status API` port 8087 and `Main Process API` port 8003, have distinct

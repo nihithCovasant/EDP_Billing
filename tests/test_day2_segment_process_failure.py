@@ -46,7 +46,7 @@ async def test_second_process_failure_does_not_block_other_segments(cfg, session
     # --- Every other segment is independent of EQ and completes normally ---
     other_codes = [c for c in SEGMENT_ORDER if c != FAILING_SEGMENT]
     assert other_codes, "test assumes EQ is not the only segment"
-    assert "MTF" in other_codes, "MTF is just a normal segment, unaffected by EQ's failure"
+    assert "MF" in other_codes, "MF is just a normal segment, unaffected by EQ's failure"
     for code in other_codes:
         row = by_code[code]
         assert row.segment_status == SegmentStatus.COMPLETED, (

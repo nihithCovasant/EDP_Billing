@@ -24,7 +24,7 @@ from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
-    """Deliberately does NOT seed the 9 real segments — the post-trade
+    """Deliberately does NOT seed the 10 real segments — the post-trade
     chain must be fully drivable on its own."""
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     cbos.mock_set_ready_after(1)  # every poll succeeds first try -> fastest happy path

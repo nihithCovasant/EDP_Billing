@@ -1,7 +1,7 @@
 """
 Fixed constants for the EDP segment pipeline.
 
-9 segments run sequentially through the generic 7-step pipeline (holiday
+10 segments run sequentially through the generic 7-step pipeline (holiday
 check -> get-or-reserve PID -> file upload poll -> trigger -> bill
 posting/recon/contract note polls); none are special-cased. Then 5 T+1
 post-trade processes run through a shorter 3-step pipeline (GTG poll ->
@@ -14,11 +14,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 # Fixed processing order — a code constant since the regulatory sequence
-# doesn't change day to day; changing it requires a code change. MCXPHY/
-# NCDEXPHY are the physical-settlement counterparts of MCX/NCDEX, run
-# immediately after their respective segment.
+# doesn't change day to day; changing it requires a code change. Matches
+# EDP_Trade_Process_API_v3.docx's segment table exactly. NCDEXPHY/MCXPHY
+# are the physical-settlement counterparts of NCDEX/MCX, run immediately
+# after their respective segment.
 SEGMENT_ORDER: tuple[str, ...] = (
-    "EQ", "DR", "CUR", "SL", "MCX", "MCXPHY", "NCDEX", "NCDEXPHY", "MTF",
+    "EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM", "MF",
 )
 
 # Human display labels.
@@ -26,16 +27,17 @@ SEGMENT_NAMES: dict[str, str] = {
     "EQ": "Cash",
     "DR": "F&O",
     "CUR": "CD",
-    "SL": "SLBM",
-    "MCX": "MCX",
-    "MCXPHY": "MCX Phy",
+    "SLB": "SLB",
     "NCDEX": "NCDEX",
     "NCDEXPHY": "NCDEX Phy",
-    "MTF": "MTF",
+    "MCX": "MCX",
+    "MCXPHY": "MCX Phy",
+    "NSECOM": "NSE Commodity",
+    "MF": "Mutual Fund",
 }
 
 # Fixed processing order for the 5 T+1 post-trade processes — run once per
-# trade_date, sequentially, AFTER (but not gated on) the 7 real segments.
+# trade_date, sequentially, AFTER (but not gated on) the 10 real segments.
 POST_TRADE_ORDER: tuple[str, ...] = (
     "COLVAL", "COLALLOC", "MTFFT", "DMRPT", "DMSTMT",
 )
@@ -77,7 +79,7 @@ def get_sequence_order(segment_code: str) -> int:
     Resolve a code's processing order from the fixed SEGMENT_ORDER /
     POST_TRADE_ORDER lists.
 
-    Returns 1-9 for the 9 real trade segments, 10-14 for the 5 post-trade
+    Returns 1-10 for the 10 real trade segments, 11-15 for the 5 post-trade
     processes (so they always sort after every real segment on the day's
     status view), or 999 for any unrecognized code (sorts last rather than
     raising, so an unexpected segment_code can't crash the day's ordering).

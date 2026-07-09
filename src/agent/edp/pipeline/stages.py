@@ -1,6 +1,6 @@
 """
-7-step pipeline stage handlers — identical for all 9 segments (CASH/EQ,
-F&O/DR, CD/CUR, SLBM/SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF). None are
+7-step pipeline stage handlers — identical for all 10 segments (CASH/EQ,
+F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF). None are
 special-cased; every segment is driven through the exact same handlers.
 
 Each handler performs exactly one CBOS API call (Step 2/RESERVE_PID makes

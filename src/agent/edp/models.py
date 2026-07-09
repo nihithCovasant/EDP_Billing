@@ -56,8 +56,8 @@ class SegmentPhase(str, enum.Enum):
     Shared by two pipelines, distinguished by segment_code (see
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
-    (1) 7-step pipeline for the 9 real segments (EQ/DR/CUR/SL/MCX/MCXPHY/
-        NCDEX/NCDEXPHY/MTF):
+    (1) 7-step pipeline for the 10 real segments (EQ/DR/CUR/SLB/NCDEX/
+        NCDEXPHY/MCX/MCXPHY/NSECOM/MF):
       HOLIDAY_CHECK -> RESERVE_PID -> AWAIT_FILE_UPLOAD -> TRIGGER ->
       AWAIT_BILLPOSTING -> AWAIT_RECON -> AWAIT_CONTRACT_NOTE
 
@@ -108,7 +108,7 @@ class EdpProperties(Base):
           "window_start": "17:00",
           "window_end": "06:00"
         },
-        ...9 segments: EQ, DR, CUR, SL, MCX, MCXPHY, NCDEX, NCDEXPHY, MTF...
+        ...10 segments: EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF...
       ],
       "post_trade_processes": [...5 processes: COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT...]
     }
@@ -182,7 +182,7 @@ class SegmentExecution(Base):
     completion timestamp (checked_at/ready_at/confirmed_at). current_phase
     on the row (not this JSON) is what actually drives control flow.
 
-    processes_json shape, 7 real segments (6 stages):
+    processes_json shape, 10 real segments (6 stages):
     {
       "holiday_check":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "checked_at"?: ...},
       "file_upload_ready": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
