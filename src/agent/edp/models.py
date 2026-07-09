@@ -113,8 +113,10 @@ class EdpProperties(Base):
       "post_trade_processes": [...5 processes: COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT...]
     }
 
-    Segment windows always run overnight into the next calendar day and
-    post-trade processes always gate on T+1 — both are fixed rules in
+    Segments run same-day; window_end only rolls onto the next calendar
+    day if it's chronologically at/before window_start (e.g. an overnight
+    17:00->06:00 window). Post-trade processes always gate on T+1
+    regardless of the times configured. Both rules live in
     orchestrator.py, not fields a config uploader needs to state.
 
     sequence_order and segment_name are fixed code constants (see
@@ -173,14 +175,21 @@ class SegmentExecution(Base):
     T+1 post-trade process; both share this table's status/lock/heartbeat
     machinery, differing only in processes_json shape and current_phase.
 
+    Each polling stage key (holiday_check, file_upload_ready, bill_posting,
+    recon, contract_note, gtg, confirm) has no "status" field while still
+    being polled — only poll_count/last_response accumulate. "status"
+    appears once CBOS returns TRUE/SKIP: "COMPLETED" plus a stage-specific
+    completion timestamp (checked_at/ready_at/confirmed_at). current_phase
+    on the row (not this JSON) is what actually drives control flow.
+
     processes_json shape, 7 real segments (6 stages):
     {
-      "holiday_check":     {"status": ..., "poll_count": int, "last_response": ..., "checked_at": ...},
-      "file_upload_ready": {"status": ..., "poll_count": int, "last_response": ..., "ready_at": ...},
+      "holiday_check":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "checked_at"?: ...},
+      "file_upload_ready": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
       "trigger":           {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
-      "bill_posting":      {"status": ..., "poll_count": int, "last_response": ..., "confirmed_at": ...},
-      "recon":             {"status": ..., "poll_count": int, "last_response": ..., "confirmed_at": ...},
-      "contract_note":     {"status": ..., "poll_count": int, "last_response": ..., "confirmed_at": ...}
+      "bill_posting":      {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
+      "recon":             {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
+      "contract_note":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
     }
     CBOS ProcessName -> stage key: BeginFileUpload->holiday_check,
     FILEUPLOAD->file_upload_ready, BILLPOSTING->bill_posting, RECON->recon,
@@ -188,9 +197,9 @@ class SegmentExecution(Base):
 
     processes_json shape, 5 post-trade processes (3 stages):
     {
-      "gtg":     {"status": ..., "poll_count": int, "last_response": ..., "ready_at": ...},
+      "gtg":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
       "trigger": {"status": ..., "at": ..., "message": ...},
-      "confirm": {"status": ..., "poll_count": int, "last_response": ..., "confirmed_at": ...}
+      "confirm": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
     }
 
     current_process holds the CBOS ProcessName currently being polled

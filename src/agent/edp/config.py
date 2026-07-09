@@ -213,9 +213,10 @@ def build_default_workflow_json(
     only carries segment/process identity + timing metadata. Passing
     post_trade_processes=None builds the fixed legacy defaults.
 
-    No window_end_next_day field either — segment windows always run
-    overnight into the next calendar day, a fixed rule enforced in
-    orchestrator._resolve_window(), not something a config states.
+    No window_end_next_day field either — orchestrator._resolve_window()
+    derives the rollover itself from window_start/window_end (next day
+    only if window_end is at/before window_start), not something a config
+    states.
 
     No wake_interval_seconds field either — that's an agent-level runtime
     setting (EDP_WAKE_INTERVAL_SECONDS env var / EdpBootstrapConfig), not a

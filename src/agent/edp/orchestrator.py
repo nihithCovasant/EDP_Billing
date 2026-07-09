@@ -447,16 +447,19 @@ def _resolve_window(
 ) -> tuple[Optional[datetime], Optional[datetime]]:
     """Resolve (window_start, window_end) for a segment on demand — a pure
     function of (segment_code, workflow_json, trade_date, tz), so a config
-    re-upload takes effect immediately. Segment windows always run
-    overnight (evening window_start through early-morning window_end the
-    next calendar day) — that's a fixed business rule, not something a
-    config uploader needs to state, so window_end is always resolved on
-    trade_date+1."""
+    re-upload takes effect immediately. Segments run same-day: window_end
+    only rolls onto trade_date+1 when it's chronologically at/before
+    window_start on trade_date (e.g. window_start=17:00, window_end=06:00
+    crosses midnight) — derived from the actual times, never a blanket
+    "always next day" (only the 5 post-trade processes are T+1 by
+    definition; see _resolve_post_trade_window)."""
     seg_cfg = _find_segment_cfg(workflow_json, segment_code)
     if not seg_cfg:
         return None, None
     window_start = parse_window_dt(trade_date, seg_cfg["window_start"], False, tz)
-    window_end = parse_window_dt(trade_date, seg_cfg["window_end"], True, tz)
+    window_end = parse_window_dt(trade_date, seg_cfg["window_end"], False, tz)
+    if window_end <= window_start:
+        window_end = parse_window_dt(trade_date, seg_cfg["window_end"], True, tz)
     return window_start, window_end
 
 

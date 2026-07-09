@@ -51,9 +51,11 @@ def inc_poll(row: SegmentExecution, stage_key: str, last_response: str) -> None:
     """
     Increment the poll counter for a stage and record the latest CBOS response.
     Called on every file_process_status call that returns FALSE (still waiting).
+    No "status" write here — current_phase (on the row) is what drives
+    control flow; this is purely a poll_count/last_response diagnostic log,
+    left absent (not "POLLING") until the stage actually completes.
     """
     state = get_proc(row, stage_key)
-    state["status"] = "POLLING"
     state["poll_count"] = state.get("poll_count", 0) + 1
     state["last_response"] = last_response
     set_proc(row, stage_key, state)

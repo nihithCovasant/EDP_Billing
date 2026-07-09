@@ -39,7 +39,7 @@ Enum agent_control_action {
 Table edpb_properties {
   id varchar(36) [pk, note: 'UUID']
   trade_date date [not null, note: 'Trading calendar date']
-  workflow_json json [not null, note: 'segments: segment_code, login_id, window_start, window_end (always resolves overnight into the next day — fixed rule, not a field). Always IST — no per-config timezone field.']
+  workflow_json json [not null, note: 'segments: segment_code, login_id, window_start, window_end (same-day; window_end only rolls onto the next day if it is at/before window_start, e.g. 17:00->06:00 — derived, not a field). Always IST — no per-config timezone field.']
   is_active boolean [not null, default: true, note: 'One active row per trade_date']
   uploaded_by varchar(256) [not null, default: 'system']
   uploaded_at timestamp [not null, default: `now()`]
