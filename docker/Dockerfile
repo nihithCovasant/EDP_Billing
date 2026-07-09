@@ -11,6 +11,11 @@ RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 COPY requirements.txt .
+# requirements.txt has "-e ./global_email_service" (local sibling package,
+# used for terminal-status email alerts — see
+# src/agent/edp/repository/segment.py::move_to_state()) — must be present
+# in the build context BEFORE pip install, or that line fails to resolve.
+COPY global_email_service/ ./global_email_service/
 
 RUN pip install --upgrade pip \
     && pip install keyring keyrings.google-artifactregistry-auth google-auth
@@ -37,6 +42,16 @@ ENV PATH="/app/venv/bin:$PATH"
 
 # Copy application code
 COPY src/ ./src/
+
+# global_email_service is an editable ("-e") install — its .pth file points
+# back at this source tree, so it must exist at runtime too, not just at
+# build time. alembic/ + alembic.ini are needed because init_database()
+# runs "alembic upgrade head" automatically on every agent startup (see
+# src/agent/edp/migrations.py / database.py::init_database()) — no separate
+# migration step is required in this entrypoint.
+COPY global_email_service/ ./global_email_service/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 
 # Copy entrypoint script and fix line endings (Windows CRLF -> Unix LF)
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

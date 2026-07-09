@@ -2,38 +2,87 @@ version: '3.8'
 
 services:
 
-  # Agent Application
+  postgres:
+    image: postgres:16-alpine
+    container_name: edp-billing-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-EDP_Billing}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+    ports:
+      - "5432:5432"
+    volumes:
+      - edp_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   agent:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: langgraph-agent
+    container_name: edp-billing-agent
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
-      - "9999:9999"
+      - "8005:8005"
     environment:
-      # Agent Configuration
-      AGENT_NAME: ${AGENT_NAME:-My Custom Agent}
-      AGENT_DESCRIPTION: ${AGENT_DESCRIPTION:-A customizable AI agent}
+      # --- Agent server ---
+      AGENT_NAME: ${AGENT_NAME:-EDP Billing Agent}
       HOST: 0.0.0.0
-      PORT: 9999
+      PORT: 8005
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      STREAMING_ENABLED: ${STREAMING_ENABLED:-true}
 
-      # LLM API Keys
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      # --- EDP wake loop (see src/agent/edp/config.py) ---
+      EDP_WAKE_INTERVAL_SECONDS: ${EDP_WAKE_INTERVAL_SECONDS:-60}
 
+      # --- CBOS connection (see src/tools/cbos_client.py) ---
+      # Point at the real MOFSL CBOS system, or at a standalone mock_cbos
+      # server (docker run/compose it separately — see mock_cbos/README.md).
+      CBOS_STATUS_URL: ${CBOS_STATUS_URL:?CBOS_STATUS_URL must be set}
+      CBOS_PROCESS_URL: ${CBOS_PROCESS_URL:?CBOS_PROCESS_URL must be set}
+      CBOS_USE_MOCK: ${CBOS_USE_MOCK:-false}
+      CBOS_LOGIN_ID: ${CBOS_LOGIN_ID:-CV0001}
 
+      # --- PostgreSQL (edpb_* tables — see docs/edp_billing.dbml) ---
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-EDP_Billing}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
 
+      # --- Terminal-status email alerts (global_email_service) ---
+      # This env var takes priority over global_email_service/.env's own
+      # value (load_dotenv() never overrides an already-set var) — single
+      # source of truth for the running agent. true = log only, false =
+      # actually send via Microsoft Graph.
+      EMAIL_DRY_RUN: ${EMAIL_DRY_RUN:-true}
+      EMAIL_GRAPH_TENANT_ID: ${EMAIL_GRAPH_TENANT_ID:-}
+      EMAIL_GRAPH_CLIENT_ID: ${EMAIL_GRAPH_CLIENT_ID:-}
+      EMAIL_GRAPH_CLIENT_SECRET: ${EMAIL_GRAPH_CLIENT_SECRET:-}
+      EMAIL_GRAPH_SENDER: ${EMAIL_GRAPH_SENDER:-rms@covasant.com}
+      EMAIL_DEFAULT_TO: ${EMAIL_DEFAULT_TO:-}
+      EMAIL_DEFAULT_CC: ${EMAIL_DEFAULT_CC:-}
 
-
-
+      # --- LLM API keys (agent template scaffolding — unused by EDP flows) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-not-used-locally}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-ant-not-used-locally}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-not-used-locally}
+    volumes:
+      # Mount agent_config.json for the 10 segments / 5 post-trade processes
+      # window config (see docker/docker-entrypoint.sh's inject_config()).
+      - ./src/config/agent_config.json:/app/config/agent_config.json:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/health/live')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health/live')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
     restart: unless-stopped
 
+volumes:
+  edp_postgres_data:
