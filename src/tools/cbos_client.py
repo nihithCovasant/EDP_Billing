@@ -112,8 +112,9 @@ class NewTradeProcessStep:
     """
     One processing step from Table2 of the getNewTradeProcess response.
 
-    Used by pipeline.stages._recover_trigger() to decide whether CBOS
-    already received an earlier, unconfirmed trigger call: any step with
+    Used by state_machine.RealSegmentStateMachine._recover_trigger() to
+    decide whether CBOS already received an earlier, unconfirmed trigger
+    call: any step with
     status IN_PROGRESS or SUCCESS means it did (do not re-trigger); all
     steps PENDING (or an empty Table2) means it didn't (safe to re-trigger).
     """
@@ -215,7 +216,8 @@ class CbosClient:
         # (PROCESSID != "0") made so far — lets the mock simulate Table2
         # progressing from "nothing started" (1st call) to "IN_PROGRESS"
         # (2nd+ call), so tests can exercise the TRIGGERING recovery
-        # decision tree in pipeline.stages.handle_trigger() realistically.
+        # decision tree in state_machine.RealSegmentStateMachine.handle_trigger()
+        # realistically.
         self._mock_trigger_calls: dict[tuple[str, str], int] = {}
 
     # -------------------------------------------------------------------------
@@ -620,7 +622,7 @@ class CbosClient:
         returns Table2 with one step IN_PROGRESS, simulating that CBOS is
         now actively executing that PROCESSID — this is what lets tests
         exercise both branches of the TRIGGERING recovery decision tree in
-        pipeline.stages.handle_trigger().
+        state_machine.RealSegmentStateMachine.handle_trigger().
         """
         key = (group_name.upper(), trade_date.isoformat())
         if process_id == "0":

@@ -88,7 +88,8 @@ def mark_stage_done(
 
 def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     """
-    Pre-commit write — double-trigger protection (see pipeline.stages.handle_trigger).
+    Pre-commit write — double-trigger protection (see
+    state_machine.RealSegmentStateMachine.handle_trigger).
     Durably records intent BEFORE the CBOS call, so a crash before the
     outcome is recorded leaves "TRIGGERING" for the recovery check to see.
     Preserves process_id_source from Step 2, same processes_json key.
@@ -122,8 +123,8 @@ def record_trigger(
 def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
     """
     Record a CONFIRMED, permanent trigger failure — only for non-transient
-    failures, always paired with pipeline.stages._fail(). Transient
-    failures deliberately skip this, leaving "TRIGGERING" for recovery.
+    failures, always paired with AbstractSegmentStateMachine._fail_result().
+    Transient failures deliberately skip this, leaving "TRIGGERING" for recovery.
     """
     existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {

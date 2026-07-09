@@ -10,10 +10,12 @@ their own pass (_process_post_trade_chain()).
 
 Single-instance deployment: no pod-to-pod locking. An IN_PROGRESS row
 resumes at its persisted current_phase on restart — the TRIGGERING
-pre-commit marker (pipeline.stages / post_trade_stages) protects the CBOS
-trigger call itself from double-firing.
+pre-commit marker (state_machine.RealSegmentStateMachine /
+PostTradeStateMachine) protects the CBOS trigger call itself from
+double-firing.
 
-All pipeline logic lives in pipeline.*, all DB operations in repository.*.
+All pipeline logic lives in state_machine.* (SegmentFactory ->
+AbstractSegmentStateMachine subclasses), all DB operations in repository.*.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
 from .models import SegmentPhase, SegmentStatus
 from . import repository
-from .pipeline import advance_pipeline
+from .state_machine import SegmentFactory
 from .utils.constants import (
     STALE_HEARTBEAT_THRESHOLD,
     SEGMENT_ORDER,
@@ -223,9 +225,10 @@ class EdpOrchestrator:
             window_start, window_end = _resolve_window(
                 segment_code, workflow.workflow_json, active_date, self._tz
             )
+            state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
             # Window not yet open
-            if window_start and now < window_start:
+            if not state_machine.is_my_time_window(now, window_start):
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Segment window not yet open — skipping this cycle",
@@ -237,8 +240,7 @@ class EdpOrchestrator:
             # Window deadline missed (PENDING only) — a local timeout, not a
             # CBOS-driven skip signal, so this is FAILED/TIMEOUT, not SKIPPED.
             if (
-                window_end
-                and now > window_end
+                state_machine.is_my_window_over(now, window_end)
                 and row.segment_status == SegmentStatus.PENDING
             ):
                 logger.warning(seg_log(
@@ -283,7 +285,7 @@ class EdpOrchestrator:
                 return "blocked"
 
             try:
-                result = await advance_pipeline(
+                result = await state_machine.execute_handler(
                     cbos=self.cbos,
                     row=row,
                     session=session,
@@ -378,8 +380,9 @@ class EdpOrchestrator:
             window_start = _resolve_post_trade_window(
                 segment_code, workflow.workflow_json, active_date, self._tz
             )
+            state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
-            if window_start and now < window_start:
+            if not state_machine.is_my_time_window(now, window_start):
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Post-trade process window not yet open — skipping this cycle",
@@ -413,7 +416,7 @@ class EdpOrchestrator:
                 return "blocked"
 
             try:
-                result = await advance_pipeline(
+                result = await state_machine.execute_handler(
                     cbos=self.cbos,
                     row=row,
                     session=session,

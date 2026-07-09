@@ -23,8 +23,8 @@ class FailingCbosClient(CbosClient):
     models.EdpProperties).
 
     A permanent (is_transient=False) error is what makes the pipeline call
-    pipeline.stages._fail() and mark the segment FAILED — a transient error
-    would just retry forever (StageResult.BLOCKED).
+    AbstractSegmentStateMachine._fail_result() and mark the segment FAILED —
+    a transient error would just retry forever (outcome BLOCKED).
     """
 
     def __init__(self, status_url: str, process_url: str, *, fail_segment: str, fail_process: str):
@@ -52,10 +52,10 @@ class TransientTriggerFailureCbosClient(CbosClient):
     other call (including retries and the recovery check) behaves exactly
     like the normal in-process mock.
 
-    Used to prove pipeline.stages.handle_trigger() leaves
-    processes_json["trigger"]["status"] == "TRIGGERING" on a transient
-    trigger-call error (never downgrading it to "FAILED", and never
-    treating the row itself as failed) — so the very next wake cycle
+    Used to prove state_machine.RealSegmentStateMachine.handle_trigger()
+    leaves processes_json["trigger"]["status"] == "TRIGGERING" on a
+    transient trigger-call error (never downgrading it to "FAILED", and
+    never treating the row itself as failed) — so the very next wake cycle
     correctly re-enters the recovery decision tree instead of assuming the
     call was never sent, or worse, blindly re-sending it without checking.
     """
@@ -105,12 +105,11 @@ class CountingPostTradeTriggerCbosClient(CbosClient):
     Behaves exactly like the normal in-process mock, but counts every real
     call to a post-trade trigger endpoint (GetCollateralValuation,
     MTFTradeProcessCollateralAllocation, etc — all 5 funnel through
-    CbosClient._post_trade_trigger). Used to prove
-    pipeline.post_trade_stages.handle_trigger_job() never calls the trigger
-    endpoint a second time once it sees its own "TRIGGERING" marker on
-    resume — post-trade triggers have no CBOS-side status check, so unlike
-    the real-segment TRIGGER step, that must be a hard refusal, not a
-    CBOS-verified decision.
+    CbosClient._post_trade_trigger).     Used to prove state_machine.PostTradeStateMachine.handle_trigger_job()
+    never calls the trigger endpoint a second time once it sees its own
+    "TRIGGERING" marker on resume — post-trade triggers have no CBOS-side
+    status check, so unlike the real-segment TRIGGER step, that must be a
+    hard refusal, not a CBOS-verified decision.
     """
 
     def __init__(self, status_url: str, process_url: str):

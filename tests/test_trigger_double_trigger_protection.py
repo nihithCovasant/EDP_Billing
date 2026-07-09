@@ -4,9 +4,9 @@ Crash / double-trigger prevention for the Step 4 TRIGGER call.
 "TRIGGERING" is written to processes_json BEFORE the CBOS call is made, so
 the DB always leads the CBOS call, never follows it. If the process dies
 anywhere between that write and the eventual TRIGGERED/FAILED write, the
-segment resumes in pipeline.stages._recover_trigger(), which checks CBOS's
-own step statuses for the saved PROCESSID before deciding whether it's
-safe to fire the trigger again.
+segment resumes in state_machine.RealSegmentStateMachine._recover_trigger(),
+which checks CBOS's own step statuses for the saved PROCESSID before
+deciding whether it's safe to fire the trigger again.
 
 These tests manipulate a segment_execution row directly to simulate a
 crash at each of the two dangerous points, then drive it through
