@@ -203,15 +203,24 @@ class SegmentExecution(Base):
     completion timestamp (checked_at/ready_at/confirmed_at). current_state
     on the row (not this JSON) is what actually drives control flow.
 
-    processes_json shape, 10 real segments (6 stages):
+    processes_json shape, 10 real segments (7 keys — insertion order matches
+    pipeline order, since each key is only ever created when that operation
+    first runs):
     {
       "holiday_check":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "checked_at"?: ...},
+      "pid_reservation":   {"status": "PID_RESERVED", "process_id_reserved": ..., "process_id_source": "EXISTING"|"RESERVED_NEW", "reserved_at": ...},
       "file_upload_ready": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
       "trigger":           {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
       "bill_posting":      {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
       "recon":             {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
       "contract_note":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
     }
+    "pid_reservation" is written once, on WAITING_FOR_FILE_UPLOAD's first
+    entry (before file_upload_ready even exists) — kept as its own key
+    (rather than folded into "trigger") purely so processes_json's key
+    order reads chronologically; "trigger" isn't created until TRIGGERED
+    genuinely fires, and copies process_id_source forward from
+    "pid_reservation" so it's still visible on the final trigger record.
     CBOS ProcessName -> stage key: BeginFileUpload->holiday_check,
     FILEUPLOAD->file_upload_ready, BILLPOSTING->bill_posting, RECON->recon,
     CONTRACTNOTEGENERATION->contract_note.

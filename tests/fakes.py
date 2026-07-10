@@ -45,6 +45,28 @@ class FailingCbosClient(CbosClient):
         return await super().file_process_status(segment, process_name, user_id)
 
 
+class SkippingCbosClient(CbosClient):
+    """
+    Behaves exactly like CbosClient(use_mock=True) for every call EXCEPT
+    one (segment, process_name) pair, which always returns SKIP — used to
+    simulate a market holiday for a specific real segment's INIT check or a
+    specific post-trade process's WAITING_FOR_GTG check (both use
+    file_process_status() as their holiday-check operation).
+    """
+
+    def __init__(self, status_url: str, process_url: str, *, skip_segment: str, skip_process: str):
+        super().__init__(status_url, process_url, use_mock=True)
+        self._skip_segment = skip_segment.upper()
+        self._skip_process = skip_process
+
+    async def file_process_status(
+        self, segment: str, process_name: str, user_id: str
+    ) -> FileStatusResult:
+        if segment.upper() == self._skip_segment and process_name == self._skip_process:
+            return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
+        return await super().file_process_status(segment, process_name, user_id)
+
+
 class TransientTriggerFailureCbosClient(CbosClient):
     """
     Fails the FIRST trigger-mode getNewTradeProcess call (PROCESSID != "0")

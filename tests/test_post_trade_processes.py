@@ -21,7 +21,7 @@ from src.agent.edp.utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER, get_s
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
-from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient
+from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient, SkippingCbosClient
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
@@ -99,6 +99,42 @@ async def test_post_trade_process_failure_does_not_block_others(cfg, session_fac
     assert summary["completed"] == 4
     assert summary["failed"] == 1
     assert summary["pending"] == 0
+
+
+async def test_post_trade_process_skipped_on_holiday_gtg_check(cfg, session_factory, test_date):
+    """
+    WAITING_FOR_GTG doubles as post-trade's holiday check (post-trade has
+    no separate INIT state, unlike real segments) — a SKIP response there
+    must go straight to SKIPPED, same semantics as INIT for real segments,
+    not FAILED.
+    """
+    cbos = SkippingCbosClient(
+        cfg.cbos_status_url, cfg.cbos_process_url,
+        skip_segment="COLVAL", skip_process="CollateralValuation",
+    )
+    cbos.mock_set_ready_after(1)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+
+    await helpers.seed_post_trade_day(session_factory, test_date)
+    rows = await helpers.drive_post_trade_until_terminal(orchestrator, session_factory, test_date)
+    by_code = {r.segment_code: r for r in rows}
+
+    colval = by_code["COLVAL"]
+    assert colval.segment_status == SegmentStatus.SKIPPED
+    assert colval.skip_category == "CBOS_SKIP"
+    assert "holiday" in (colval.skip_reason or "").lower()
+    assert colval.current_state is None
+
+    # Independent processes are unaffected.
+    for code in ("COLALLOC", "MTFFT", "DMRPT", "DMSTMT"):
+        row = by_code[code]
+        assert row.segment_status == SegmentStatus.COMPLETED
+
+    async with session_factory() as session:
+        summary = await get_day_summary(session, test_date)
+    assert summary["total"] == 5
+    assert summary["completed"] == 4
+    assert summary["skipped"] == 1
 
 
 async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):

@@ -7,10 +7,14 @@ Happy-flow states (no "phases" — see models.SegmentState):
   WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED)
 
   WAITING_FOR_GTG    -> POST file_process_status(<process-specific
-                         ProcessName>) — poll until ready; once ready, call
-                         the process's "already triggered" CBOS check: if
-                         already triggered, take the direct edge straight to
-                         WAITING_FOR_COMPLETION (no new trigger fired);
+                         ProcessName>) — poll until ready. This first poll
+                         doubles as the holiday check (post-trade has no
+                         separate INIT state): a SKIP response here means a
+                         market holiday and goes straight to SKIPPED, same
+                         semantics as INIT for real segments. Once ready,
+                         call the process's "already triggered" CBOS check:
+                         if already triggered, take the direct edge straight
+                         to WAITING_FOR_COMPLETION (no new trigger fired);
                          otherwise move to TRIGGERED.
   TRIGGERED           -> POST <process-specific trigger endpoint> — the one
                          genuinely real crash-safety-critical wait in this
@@ -121,13 +125,16 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             return SegmentHandlerResult(outcome=BLOCKED)
 
         if result.is_skip:
-            # The post-trade happy-flow table has no SKIPPED edge at all.
-            logger.error(stage_log(
+            # Same holiday-check semantics as INIT for real segments — this
+            # first poll doubles as the holiday check since post-trade has
+            # no separate INIT state.
+            logger.info(stage_log(
                 row.segment_code, "WAITING_FOR_GTG",
-                f"Unexpected SKIP for {process_name} — marking FAILED",
-                response=result.response, poll=poll_count,
+                f"Market HOLIDAY — {process_name} will be SKIPPED",
+                response=result.response, at=now.strftime("%H:%M:%S %Z"),
             ))
-            return self._fail_result(row, "CBOS_ERROR", f"Unexpected {process_name} SKIP response", now)
+            mark_stage_done(row, "gtg", result.response, now)
+            return self._skip_result(row, "CBOS_SKIP", f"{process_name} returned SKIP — market holiday", now)
 
         mark_stage_done(row, "gtg", result.response, now)
         return await self._decide_direct_or_triggered(cbos, row, login_id, now, process_name)

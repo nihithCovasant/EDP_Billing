@@ -43,9 +43,9 @@ async def test_all_segments_complete_successfully(cfg, session_factory, test_dat
         assert row.started_at is not None
         assert row.skip_category is None
         assert row.skip_reason is None
-        # processes_json should record every one of the 6 internal stages as done.
+        # processes_json should record every one of the 7 internal stages as done.
         for stage_key in (
-            "holiday_check", "file_upload_ready", "trigger",
+            "holiday_check", "pid_reservation", "file_upload_ready", "trigger",
             "bill_posting", "recon", "contract_note",
         ):
             assert stage_key in row.processes_json, f"{code} missing processes_json[{stage_key}]"

@@ -97,6 +97,9 @@ async def test_every_real_segment_and_post_trade_code_has_a_transition_map_entry
         transitions = POST_TRADE_TRANSITION_MAP.get_segment_transitions(code)
         assert transitions, f"{code} has no declared transitions in POST_TRADE_TRANSITION_MAP"
         assert SegmentStatus.FAILED in transitions[SegmentState.WAITING_FOR_GTG]
+        assert SegmentStatus.SKIPPED in transitions[SegmentState.WAITING_FOR_GTG], (
+            "WAITING_FOR_GTG doubles as post-trade's holiday check (no separate INIT state)"
+        )
         assert SegmentState.WAITING_FOR_COMPLETION in transitions[SegmentState.WAITING_FOR_GTG], (
             "the direct, already-triggered edge must be declared"
         )

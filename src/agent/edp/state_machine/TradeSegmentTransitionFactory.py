@@ -6,9 +6,10 @@ No "phases" here — only states. Every edge below is declared individually
 (not generated from a generic from->next loop) so the asymmetry the manager
 called out is impossible to miss: FAILED is reachable from every
 non-terminal state, SUCCEEDED is reachable ONLY from the last state in each
-chain, and SKIPPED is reachable ONLY from INIT (real segments) — there is no
-SKIPPED edge anywhere in the post-trade chain, matching both happy-flow
-tables exactly.
+chain, and SKIPPED is reachable ONLY from the holiday-check operation —
+INIT for real segments, WAITING_FOR_GTG (post-trade's first poll, which
+doubles as its holiday check since post-trade has no separate INIT state)
+for post-trade processes.
 """
 
 from __future__ import annotations
@@ -90,20 +91,22 @@ class TradeSegmentTransitionFactory:
 
           WAITING_FOR_GTG        -> TRIGGERED
           WAITING_FOR_GTG        -> WAITING_FOR_COMPLETION   (direct, already triggered — no new trigger fired)
+          WAITING_FOR_GTG        -> SKIPPED                  (holiday check — same operation INIT does for real segments)
           WAITING_FOR_GTG        -> FAILED
           TRIGGERED               -> WAITING_FOR_COMPLETION
           TRIGGERED               -> FAILED
           WAITING_FOR_COMPLETION -> SUCCEEDED
           WAITING_FOR_COMPLETION -> FAILED
 
-        No SKIPPED edge anywhere — unlike the real-segment chain's INIT
-        holiday check, none of the 5 post-trade processes have a documented
-        "skip" outcome.
+        SKIPPED is reachable ONLY from WAITING_FOR_GTG — post-trade has no
+        separate INIT state, so its first poll doubles as the holiday check,
+        exactly like INIT does for real segments.
         """
         m = SegmentTransitionMap(allowed_segments)
         for seg in allowed_segments:
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentState.TRIGGERED)
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentState.WAITING_FOR_COMPLETION)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentStatus.SKIPPED)
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentStatus.FAILED)
 
             m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentState.WAITING_FOR_COMPLETION)

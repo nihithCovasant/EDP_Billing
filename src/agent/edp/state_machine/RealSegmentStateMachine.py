@@ -10,9 +10,10 @@ flow states (no "phases" — see models.SegmentState):
 
 INIT's handler does the holiday-check operation; WAITING_FOR_FILE_UPLOAD's
 handler does the reserve/confirm-PID operation on its first entry (no
-process_id yet), then polls FILEUPLOAD on every later entry — neither
-"holiday check" nor "reserve process id" is its own state, both are
-operations folded into the state that owns them, per the happy-flow tables.
+process_id yet, recorded under its own "pid_reservation" processes_json
+key), then polls FILEUPLOAD on every later entry — neither "holiday check"
+nor "reserve process id" is its own state, both are operations folded into
+the state that owns them, per the happy-flow tables.
 TRIGGERED is the one genuine crash-safety-critical wait in this pipeline.
 WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION are pure polls —
 CBOS auto-runs each step once TRIGGERED fires, the agent only observes.
@@ -32,10 +33,10 @@ from ..utils.json_helpers import (
     get_proc,
     inc_poll,
     mark_stage_done,
+    record_pid_reservation,
     record_trigger,
     record_trigger_attempt,
     record_trigger_failed,
-    set_proc,
 )
 from ..utils.log_fmt import stage_log
 from .AbstractStateMachine import AbstractSegmentStateMachine
@@ -208,12 +209,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         FILEUPLOAD instead of reserving again."""
         row.process_id = process_id
         row.process_id_reserved_at = now
-        set_proc(row, "trigger", {
-            "status": "PID_RESERVED",
-            "process_id_reserved": process_id,
-            "process_id_source": source,
-            "reserved_at": now.isoformat(),
-        })
+        record_pid_reservation(row, process_id, source, now)
 
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_FILE_UPLOAD",

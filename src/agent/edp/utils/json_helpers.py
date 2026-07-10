@@ -86,19 +86,39 @@ def mark_stage_done(
     set_proc(row, stage_key, state)
 
 
+def record_pid_reservation(
+    row: SegmentExecution, process_id: str, source: str, now: datetime,
+) -> None:
+    """
+    Record the PID-reservation outcome under its own "pid_reservation" key
+    (WAITING_FOR_FILE_UPLOAD's first-entry operation) — kept separate from
+    "trigger" so processes_json key insertion order matches the actual
+    pipeline order (pid_reservation happens, and is logged, before
+    file_upload_ready even exists; "trigger" isn't created until TRIGGERED
+    genuinely fires).
+    """
+    set_proc(row, "pid_reservation", {
+        "status": "PID_RESERVED",
+        "process_id_reserved": process_id,
+        "process_id_source": source,
+        "reserved_at": now.isoformat(),
+    })
+
+
 def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     """
     Pre-commit write — double-trigger protection (see
     state_machine.RealSegmentStateMachine.handle_triggered).
     Durably records intent BEFORE the CBOS call, so a crash before the
     outcome is recorded leaves "TRIGGERING" for the recovery check to see.
-    Preserves process_id_source from Step 2, same processes_json key.
+    Carries process_id_source forward from the "pid_reservation" stage into
+    "trigger" itself, so it survives the eventual TRIGGERED/FAILED write.
     """
-    existing = get_proc(row, "trigger")
+    pid_reservation = get_proc(row, "pid_reservation")
     set_proc(row, "trigger", {
         "status": "TRIGGERING",
         "attempt_started_at": now.isoformat(),
-        "process_id_source": existing.get("process_id_source"),
+        "process_id_source": pid_reservation.get("process_id_source"),
     })
 
 
