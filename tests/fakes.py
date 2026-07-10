@@ -75,7 +75,7 @@ class TransientTriggerFailureCbosClient(CbosClient):
     like the normal in-process mock.
 
     Used to prove state_machine.RealSegmentStateMachine.handle_triggered()
-    leaves processes_json["trigger"]["status"] == "TRIGGERING" on a
+    leaves processes_json["TRIGGERED"]["status"] == "TRIGGERING" on a
     transient trigger-call error (never downgrading it to "FAILED", and
     never treating the row itself as failed) — so the very next wake cycle
     correctly re-enters the recovery decision tree instead of assuming the

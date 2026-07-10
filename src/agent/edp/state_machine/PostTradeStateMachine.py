@@ -95,13 +95,13 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
         # Resolved and persisted at process start (see
         # orchestrator._resolve_post_trade_process_name()); survives a restart mid-poll.
         process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
-        poll_state = get_proc(row, "gtg")
+        poll_state = get_proc(row, SegmentState.WAITING_FOR_GTG.value)
         poll_count = poll_state.get("poll_count", 0) + 1
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
         )
-        inc_poll(row, "gtg", result.response)
+        inc_poll(row, SegmentState.WAITING_FOR_GTG.value, result.response)
         await session.flush()
 
         if result.is_error:
@@ -133,10 +133,10 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
                 f"Market HOLIDAY — {process_name} will be SKIPPED",
                 response=result.response, at=now.strftime("%H:%M:%S %Z"),
             ))
-            mark_stage_done(row, "gtg", result.response, now)
+            mark_stage_done(row, SegmentState.WAITING_FOR_GTG.value, result.response, now)
             return self._skip_result(row, "CBOS_SKIP", f"{process_name} returned SKIP — market holiday", now)
 
-        mark_stage_done(row, "gtg", result.response, now)
+        mark_stage_done(row, SegmentState.WAITING_FOR_GTG.value, result.response, now)
         return await self._decide_direct_or_triggered(cbos, row, login_id, now, process_name)
 
     async def _decide_direct_or_triggered(
@@ -202,7 +202,7 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             logger.error(stage_log(code, "TRIGGERED", "Unknown post-trade process code — marking FAILED"))
             return self._fail_result(row, "CBOS_ERROR", f"Unknown post-trade process code {code}", now)
 
-        if get_proc(row, "trigger").get("status") == "TRIGGERING":
+        if get_proc(row, SegmentState.TRIGGERED.value).get("status") == "TRIGGERING":
             logger.error(stage_log(
                 code, "TRIGGERED",
                 "Resuming with an unconfirmed prior trigger attempt — refusing to "
@@ -256,13 +256,13 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
     ) -> SegmentHandlerResult:
         """POST file_process_status(<ProcessName>) again — poll until CBOS confirms completion."""
         process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
-        poll_state = get_proc(row, "confirm")
+        poll_state = get_proc(row, SegmentState.WAITING_FOR_COMPLETION.value)
         poll_count = poll_state.get("poll_count", 0) + 1
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
         )
-        inc_poll(row, "confirm", result.response)
+        inc_poll(row, SegmentState.WAITING_FOR_COMPLETION.value, result.response)
         await session.flush()
 
         if result.is_error:
@@ -297,5 +297,5 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             row.segment_code, "WAITING_FOR_COMPLETION", f"{process_name} CONFIRMED — post-trade process COMPLETED",
             response=result.response, total_polls=poll_count, confirmed_at=now.strftime("%H:%M:%S %Z"),
         ))
-        mark_stage_done(row, "confirm", result.response, now)
+        mark_stage_done(row, SegmentState.WAITING_FOR_COMPLETION.value, result.response, now)
         return self._complete_result(row, now)

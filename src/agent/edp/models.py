@@ -196,40 +196,42 @@ class SegmentExecution(Base):
     T+1 post-trade process; both share this table's status/lock/heartbeat
     machinery, differing only in processes_json shape and current_state.
 
-    Each polling stage key (holiday_check, file_upload_ready, bill_posting,
-    recon, contract_note, gtg, confirm) has no "status" field while still
-    being polled — only poll_count/last_response accumulate. "status"
-    appears once CBOS returns TRUE/SKIP: "COMPLETED" plus a stage-specific
-    completion timestamp (checked_at/ready_at/confirmed_at). current_state
-    on the row (not this JSON) is what actually drives control flow.
+    Every top-level processes_json key is exactly a SegmentState.value
+    string — the same vocabulary current_state uses — so there is exactly
+    one name for "the RECON step" (see utils/json_helpers.py's module
+    docstring for the full rationale). Each polling-state key has no
+    "status" field while still being polled — only poll_count/last_response
+    accumulate. "status" appears once CBOS returns TRUE/SKIP: "COMPLETED"
+    plus a stage-specific completion timestamp (checked_at/ready_at/
+    confirmed_at). current_state on the row (not this JSON) is what
+    actually drives control flow.
 
-    processes_json shape, 10 real segments (7 keys — insertion order matches
-    pipeline order, since each key is only ever created when that operation
-    first runs):
+    processes_json shape, 10 real segments (6 keys — insertion order
+    matches pipeline order, since each key is only ever created when that
+    state is first entered):
     {
-      "holiday_check":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "checked_at"?: ...},
-      "pid_reservation":   {"status": "PID_RESERVED", "process_id_reserved": ..., "process_id_source": "EXISTING"|"RESERVED_NEW", "reserved_at": ...},
-      "file_upload_ready": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
-      "trigger":           {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
-      "bill_posting":      {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
-      "recon":             {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
-      "contract_note":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
+      "INIT":                                  {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "checked_at"?: ...},
+      "WAITING_FOR_FILE_UPLOAD":                {"pid_reservation"?: {"status": "PID_RESERVED", "process_id_reserved": ..., "process_id_source": "EXISTING"|"RESERVED_NEW", "reserved_at": ...}, "poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
+      "TRIGGERED":                              {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
+      "WAITING_FOR_BILLPOSTING":                {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
+      "WAITING_FOR_RECON":                      {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
+      "WAITING_FOR_CONTRACT_NOTE_GENERATION":   {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
     }
-    "pid_reservation" is written once, on WAITING_FOR_FILE_UPLOAD's first
-    entry (before file_upload_ready even exists) — kept as its own key
-    (rather than folded into "trigger") purely so processes_json's key
-    order reads chronologically; "trigger" isn't created until TRIGGERED
-    genuinely fires, and copies process_id_source forward from
-    "pid_reservation" so it's still visible on the final trigger record.
-    CBOS ProcessName -> stage key: BeginFileUpload->holiday_check,
-    FILEUPLOAD->file_upload_ready, BILLPOSTING->bill_posting, RECON->recon,
-    CONTRACTNOTEGENERATION->contract_note.
+    The nested "pid_reservation" field is written once, on
+    WAITING_FOR_FILE_UPLOAD's first entry (before poll_count/last_response
+for the FILEUPLOAD poll even exist) — nested rather than another
+top-level key so processes_json's top-level keys stay exactly the
+    SegmentState vocabulary; "TRIGGERED" copies process_id_source forward
+    from it once TRIGGERED genuinely fires.
+    CBOS ProcessName -> state key: BeginFileUpload->INIT,
+    FILEUPLOAD->WAITING_FOR_FILE_UPLOAD, BILLPOSTING->WAITING_FOR_BILLPOSTING,
+    RECON->WAITING_FOR_RECON, CONTRACTNOTEGENERATION->WAITING_FOR_CONTRACT_NOTE_GENERATION.
 
-    processes_json shape, 5 post-trade processes (3 stages):
+    processes_json shape, 5 post-trade processes (3 keys):
     {
-      "gtg":     {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
-      "trigger": {"status": ..., "at": ..., "message": ...},
-      "confirm": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
+      "WAITING_FOR_GTG":        {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
+      "TRIGGERED":               {"status": ..., "at": ..., "message": ...},
+      "WAITING_FOR_COMPLETION": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
     }
 
     current_process holds the CBOS ProcessName currently being polled
