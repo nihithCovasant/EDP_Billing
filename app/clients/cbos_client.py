@@ -6,7 +6,7 @@ numbers CBOS's own API docs use - there is no Step 1/5 call, those belong to
 other flows this service doesn't use):
 
   Step 2 - getNewTradeProcess                          -> PROCESSID + Table2 candidates
-  Step 3 - GetNewTradeProcessPromodalUploadSettings     -> validation rules for one UPLOADID
+  Step 3 - GetNewTradeProcessPromodalUploadSettings     -> settings for one UPLOADID (no longer used for extension validation - the first Table2 candidate is always selected)
   Step 4 - SaveTradePromodalUploadChunkFile             -> the file itself, chunked
   Step 6 - SaveNewTradeProcessPromodalUploadFile        -> registers the uploaded chunks
   Step 7 - file_process_status                          -> poll until CBOS finishes processing
@@ -221,7 +221,11 @@ class MockCBOSClient(BaseCBOSClient):
     def get_upload_settings(self, upload_id: str) -> dict:
         response = {
             "Status": "Success",
-            "Result": [{"ID": int(upload_id), "NAME": "BSE SCRIP", "FILEEXTENSION": "XLSX"}],
+            "Result": [
+                {"ID": int(upload_id), "NAME": "BSE SCRIP", "FILEEXTENSION": "CSV"},
+                {"ID": int(upload_id), "NAME": "BSE SCRIP", "FILEEXTENSION": "XLSX"},
+                {"ID": int(upload_id), "NAME": "BSE SCRIP", "FILEEXTENSION": "TXT"},
+            ],
         }
         logger.info("[MOCK] Upload settings fetched: UPLOADID=%s", upload_id)
         return response
@@ -322,36 +326,20 @@ def get_upload_settings(upload_id: str) -> dict:
     return get_cbos_client().get_upload_settings(upload_id)
 
 
-def file_matches_upload_settings(file_name: str, upload_settings_response: dict) -> bool:
-    """True if file_name's extension is accepted by this UPLOADID's settings
-    (Result is a list of candidate setting rows; match by FILEEXTENSION)."""
-    for row in upload_settings_response.get("Result") or []:
-        extension = row.get("FILEEXTENSION")
-        if not extension:
-            continue
-        if file_name.lower().endswith("." + str(extension).lower().lstrip(".")):
-            return True
-    return False
-
-
 def select_upload_id(table2: list[dict], file_name: str) -> tuple[str, dict]:
-    """Try each Table2 candidate's UPLOADID (step 3) until one accepts this
-    file's extension. Raises CBOSUploadError if none do."""
-    tried = []
+    """Pick the first Table2 candidate's UPLOADID (step 3). No file
+    extension/type validation is performed - every file is processed
+    regardless of extension."""
     for candidate in table2:
         upload_id = candidate.get("UPLOADID")
         if upload_id is None:
             continue
         upload_id = str(upload_id)
         upload_settings_response = get_upload_settings(upload_id)
-        if file_matches_upload_settings(file_name, upload_settings_response):
-            logger.info("Step 3 - selected UPLOADID=%s for %s", upload_id, file_name)
-            return upload_id, upload_settings_response
-        tried.append(upload_id)
+        logger.info("Step 3 - selected UPLOADID=%s for %s", upload_id, file_name)
+        return upload_id, upload_settings_response
 
-    raise CBOSUploadError(
-        f"No UPLOADID in Table2 accepts file '{file_name}' (tried: {tried or 'none'})"
-    )
+    raise CBOSUploadError(f"No UPLOADID with a non-null value found in Table2 for file '{file_name}'")
 
 
 def upload_file_chunks(file_path: Path, upload_id: str, guid: str) -> None:

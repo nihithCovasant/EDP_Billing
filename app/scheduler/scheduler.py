@@ -10,7 +10,6 @@ settings = get_settings()
 
 scheduler = BackgroundScheduler()
 
-
 def _scan_job() -> None:
     """The scheduler's only responsibility: trigger a discovery scan. All
     discovery/enqueue logic lives in upload_service.discover_and_enqueue -

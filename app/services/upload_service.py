@@ -2,7 +2,7 @@
 file movement.
 
 The only decision point in this pipeline is the CBOS upload result: every
-discovered file is attempted through the full Steps 2->7 sequence with no
+discovered file is attempted through the full sequence with no
 pre-upload validation, and whether that sequence succeeds or fails is the
 sole thing that decides uploaded/ vs uploadFailed/. See
 handle_upload_success()/handle_upload_failure() - every exit point of
@@ -42,10 +42,15 @@ def discover_and_enqueue() -> None:
     configured scan_days_back further, and push every file found directly
     in those folders onto the upload queue. Files already inside uploaded/
     or uploadFailed/ are structurally excluded by file_service.list_subdirs
-    - they are never considered "discovered"."""
+    - they are never considered "discovered". Every file is queued
+    regardless of extension or size - no file type or 0-byte validation is
+    performed at discovery time, so any file type received from upstream
+    systems (.csv, .xlsx, .xls, .txt, .dat, .gz, etc.) is picked up without
+    code changes."""
     root = file_service.get_root()
     dates = file_service.get_processing_dates()
     logger.info("discover_and_enqueue: starting scan of %s for dates=%s", root, dates)
+    logger.info("discover_and_enqueue: file type and file size validations are skipped - all files are considered for upload")
 
     for folder_date in dates:
         _discover_date(root, folder_date)
@@ -57,7 +62,8 @@ def _discover_date(root: Path, folder_date: str) -> None:
 
     files_found = 0
     for file_path, segment, exchange in file_service.discover_files_for_date(root, folder_date):
-        logger.info("Found file: %s", file_path.name)
+        logger.info("Found file: %s (extension=%s, size=%d bytes)",
+                     file_path.name, file_path.suffix or "(none)", file_path.stat().st_size)
         files_found += 1
         _maybe_enqueue(file_path, folder_date, segment, exchange)
 
@@ -97,7 +103,7 @@ def save_manual_upload(content: bytes, file_name: str, segment: str, exchange: s
 # --------------------------------------------------------------------------
 
 def handle_upload_success(repo: UploadedFileRepository, record, file_path: Path, response: dict, request_log: list) -> Path:
-    """Step 7 confirmed processing finished -> move to uploaded/, record the
+    """ confirmed processing finished -> move to uploaded/, record the
     outcome."""
     dest_path = file_service.move_to_uploaded(file_path)
     repo.update(
@@ -109,7 +115,10 @@ def handle_upload_success(repo: UploadedFileRepository, record, file_path: Path,
         file_path=str(dest_path),
     )
     repo.commit()
-    logger.info("handle_upload_success: %s -> uploaded/", file_path.name)
+    logger.info(
+        "handle_upload_success: file=%s extension=%s status=uploaded response=%s destination=%s",
+        file_path.name, file_path.suffix or "(none)", response, dest_path,
+    )
     return dest_path
 
 
@@ -126,7 +135,10 @@ def handle_upload_failure(repo: UploadedFileRepository, record, file_path: Path,
         file_path=str(dest_path),
     )
     repo.commit()
-    logger.error("handle_upload_failure: %s -> uploadFailed/ (%s)", file_path.name, error)
+    logger.error(
+        "handle_upload_failure: file=%s extension=%s status=failed response=%s destination=%s",
+        file_path.name, file_path.suffix or "(none)", error, dest_path,
+    )
     return dest_path
 
 
@@ -151,7 +163,11 @@ def process_task(task: FileTask) -> None:
         record = repo.create_audit_record(file_path, task.folder_date, task.segment, task.exchange)
         logger.debug("process_task: db record id=%s for %s", record.id, file_path.name)
 
-        logger.info("Processing file: %s", file_path.name)
+        logger.info("Processing file: %s (extension=%s)", file_path.name, file_path.suffix or "(none)")
+        logger.info(
+            "process_task: file type and file size validations skipped for %s - upload is attempted regardless of extension or size",
+            file_path.name,
+        )
         request_log: list = []
 
         try:
