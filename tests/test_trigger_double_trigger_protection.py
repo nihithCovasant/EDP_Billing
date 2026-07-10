@@ -1,5 +1,5 @@
 """
-Crash / double-trigger prevention for the Step 4 TRIGGER call.
+Crash / double-trigger prevention for the TRIGGERED state's trigger call.
 
 "TRIGGERING" is written to processes_json BEFORE the CBOS call is made, so
 the DB always leads the CBOS call, never follows it. If the process dies
@@ -17,7 +17,7 @@ number of real CBOS calls made.
 from __future__ import annotations
 
 from src.agent.edp import repository
-from src.agent.edp.models import SegmentPhase, SegmentStatus
+from src.agent.edp.models import SegmentState, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.utils.constants import SEGMENT_ORDER
 from src.tools.cbos_client import CbosClient
@@ -33,8 +33,8 @@ async def _seed_and_prime_triggering_row(
 ) -> None:
     """Seed a normal day, then rewrite the SEGMENT row into the state a
     crash would leave behind right after writing "TRIGGERING" to
-    processes_json (Steps 1-2 done, phase=TRIGGER, marker written),
-    without having actually called CBOS's trigger endpoint yet."""
+    processes_json (file upload + PID resolved, state=TRIGGERED, marker
+    written), without having actually called CBOS's trigger endpoint yet."""
     await helpers.seed_day(session_factory, test_date, cfg)
     fixed_now = helpers.fixed_now_for(test_date, orchestrator._tz)
 
@@ -44,7 +44,7 @@ async def _seed_and_prime_triggering_row(
         row.started_at = fixed_now
         row.process_id = process_id
         row.process_id_reserved_at = fixed_now
-        row.current_phase = SegmentPhase.TRIGGER
+        row.current_state = SegmentState.TRIGGERED
         row.current_process = None
         row.processes_json = {
             "holiday_check": {"status": "COMPLETED", "last_response": "TRUE"},
@@ -82,7 +82,7 @@ async def test_recovery_retriggers_when_cbos_never_received_the_call(cfg, sessio
 
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, SEGMENT)
-    assert row.current_phase == SegmentPhase.AWAIT_BILLPOSTING
+    assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
     assert row.processes_json["trigger"]["status"] == "TRIGGERED"
     assert row.processes_json["trigger"]["process_id_source"] == "RESERVED_NEW"
     assert row.segment_status == SegmentStatus.IN_PROGRESS
@@ -123,7 +123,7 @@ async def test_recovery_does_not_retrigger_when_cbos_already_has_it(cfg, session
 
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, SEGMENT)
-    assert row.current_phase == SegmentPhase.AWAIT_BILLPOSTING
+    assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
     assert row.processes_json["trigger"]["status"] == "TRIGGERED"
     assert row.processes_json["trigger"]["process_id_source"] == "RESERVED_NEW"
 
@@ -135,8 +135,8 @@ async def test_recovery_does_not_retrigger_when_cbos_already_has_it(cfg, session
 
 async def test_resuming_in_progress_row_after_restart_reaches_recovery(cfg, session_factory, test_date):
     """Single-instance deployment: an IN_PROGRESS row simply resumes at its
-    persisted current_phase on the next cycle. A segment that crashed
-    mid-TRIGGERING resumes into handle_trigger()'s CBOS-checked recovery
+    persisted current_state on the next cycle. A segment that crashed
+    mid-TRIGGERING resumes into handle_triggered()'s CBOS-checked recovery
     path and finishes on its own — no double trigger."""
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     cbos.mock_set_ready_after(1)
@@ -149,7 +149,7 @@ async def test_resuming_in_progress_row_after_restart_reaches_recovery(cfg, sess
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.segment_status == SegmentStatus.IN_PROGRESS
-    assert row.current_phase == SegmentPhase.TRIGGER
+    assert row.current_state == SegmentState.TRIGGERED
     assert row.processes_json["trigger"]["status"] == "TRIGGERING"
 
     key = (SEGMENT, test_date.isoformat())

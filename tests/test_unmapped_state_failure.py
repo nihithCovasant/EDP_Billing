@@ -1,18 +1,18 @@
 """
-An unmapped current_phase must mark the row FAILED, not silently retry it
+An unmapped current_state must mark the row FAILED, not silently retry it
 forever.
 
-Reproduced with a real SegmentPhase value that genuinely isn't wired for
-the pipeline being driven: AWAIT_GTG only exists in
-_POST_TRADE_PHASE_HANDLERS, not the 7-step _PHASE_HANDLERS used for real
-segments — so driving segment "CUR" while it's sitting at AWAIT_GTG is a
-faithful instance of "no handler registered for this phase".
+Reproduced with a real SegmentState value that genuinely isn't wired for
+the pipeline being driven: WAITING_FOR_GTG only exists in
+PostTradeStateMachine's handler dict, not RealSegmentStateMachine's — so
+driving segment "CUR" while it's sitting at WAITING_FOR_GTG is a faithful
+instance of "no handler registered for this state".
 """
 
 from __future__ import annotations
 
 from src.agent.edp import repository
-from src.agent.edp.models import SegmentPhase, SegmentStatus
+from src.agent.edp.models import SegmentState, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.tools.cbos_client import CbosClient
 
@@ -21,7 +21,7 @@ from . import helpers
 SEGMENT = "CUR"
 
 
-async def test_unmapped_phase_marks_segment_failed(cfg, session_factory, test_date):
+async def test_unmapped_state_marks_segment_failed(cfg, session_factory, test_date):
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     orchestrator = EdpOrchestrator(cfg, cbos)
 
@@ -32,7 +32,7 @@ async def test_unmapped_phase_marks_segment_failed(cfg, session_factory, test_da
         row = await repository.get_one(session, test_date, SEGMENT)
         row.segment_status = SegmentStatus.IN_PROGRESS
         row.started_at = fixed_now
-        row.current_phase = SegmentPhase.AWAIT_GTG  # not in the 7-step handler dict
+        row.current_state = SegmentState.WAITING_FOR_GTG  # not in the real-segment handler dict
         row.current_process = None
         await session.commit()
 
@@ -48,7 +48,7 @@ async def test_unmapped_phase_marks_segment_failed(cfg, session_factory, test_da
         "row stays IN_PROGRESS and gets silently retried every cycle forever"
     )
     assert row.skip_category == "SYSTEM_ERROR"
-    assert "AWAIT_GTG" in (row.skip_reason or "")
+    assert "WAITING_FOR_GTG" in (row.skip_reason or "")
     assert row.completed_at is not None
 
     # Only CUR was driven directly in this test — every other segment is

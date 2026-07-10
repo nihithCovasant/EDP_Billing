@@ -51,7 +51,7 @@ def inc_poll(row: SegmentExecution, stage_key: str, last_response: str) -> None:
     """
     Increment the poll counter for a stage and record the latest CBOS response.
     Called on every file_process_status call that returns FALSE (still waiting).
-    No "status" write here — current_phase (on the row) is what drives
+    No "status" write here — current_state (on the row) is what drives
     control flow; this is purely a poll_count/last_response diagnostic log,
     left absent (not "POLLING") until the stage actually completes.
     """
@@ -89,7 +89,7 @@ def mark_stage_done(
 def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     """
     Pre-commit write — double-trigger protection (see
-    state_machine.RealSegmentStateMachine.handle_trigger).
+    state_machine.RealSegmentStateMachine.handle_triggered).
     Durably records intent BEFORE the CBOS call, so a crash before the
     outcome is recorded leaves "TRIGGERING" for the recovery check to see.
     Preserves process_id_source from Step 2, same processes_json key.
@@ -109,7 +109,8 @@ def record_trigger(
     now: datetime,
 ) -> None:
     """Record a successful trigger call, preserving process_id_source
-    ("EXISTING"|"RESERVED_NEW") set by Step 2's RESERVE_PID stage."""
+    ("EXISTING"|"RESERVED_NEW") set by WAITING_FOR_FILE_UPLOAD's
+    PID-reservation step."""
     existing = get_proc(row, "trigger")
     set_proc(row, "trigger", {
         "status": "TRIGGERED",

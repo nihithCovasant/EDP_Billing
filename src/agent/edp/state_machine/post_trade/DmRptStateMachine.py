@@ -10,3 +10,4 @@ from ..PostTradeStateMachine import PostTradeStateMachine
 class DmRptStateMachine(PostTradeStateMachine):
     SEGMENT_CODE = "DMRPT"
     TRIGGER_METHOD_NAME = "trigger_daily_margin_reporting"
+    CHECK_TRIGGERED_METHOD_NAME = "check_daily_margin_reporting_triggered"

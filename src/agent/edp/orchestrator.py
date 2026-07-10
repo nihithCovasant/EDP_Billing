@@ -9,7 +9,7 @@ on its own wall-clock window. Post-trade processes run the same way, in
 their own pass (_process_post_trade_chain()).
 
 Single-instance deployment: no pod-to-pod locking. An IN_PROGRESS row
-resumes at its persisted current_phase on restart — the TRIGGERING
+resumes at its persisted current_state on restart — the TRIGGERING
 pre-commit marker (state_machine.RealSegmentStateMachine /
 PostTradeStateMachine) protects the CBOS trigger call itself from
 double-firing.
@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 
 from .config import EdpBootstrapConfig, build_default_workflow_json
 from .database import get_session
-from .models import SegmentPhase, SegmentStatus
+from .models import SegmentState, SegmentStatus
 from . import repository
 from .state_machine import SegmentFactory
 from .utils.constants import (
@@ -36,6 +36,7 @@ from .utils.constants import (
     POST_TRADE_ORDER,
     POST_TRADE_GTG_PROCESS_NAME,
     POST_TRADE_FIRST_WINDOW_START,
+    POST_TRADE_DEFAULT_WINDOW_END,
 )
 from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
 from .utils.log_fmt import edp_log, seg_log
@@ -160,7 +161,7 @@ class EdpOrchestrator:
                 logger.warning(seg_log(
                     seg.segment_code, active_date,
                     "Segment heartbeat STALE",
-                    phase=seg.current_phase.value if seg.current_phase else None,
+                    state=seg.current_state.value if seg.current_state else None,
                     last_heartbeat=seg.last_heartbeat_at.isoformat(),
                     threshold=str(STALE_HEARTBEAT_THRESHOLD),
                 ))
@@ -261,7 +262,7 @@ class EdpOrchestrator:
             if row.segment_status == SegmentStatus.PENDING:
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
-                row.current_phase = SegmentPhase.HOLIDAY_CHECK
+                row.current_state = SegmentState.INIT
                 row.current_process = "BeginFileUpload"
                 await session.flush()
                 logger.info(seg_log(
@@ -270,14 +271,14 @@ class EdpOrchestrator:
                     started_at=now.strftime("%H:%M:%S %Z"),
                     window_start=window_start.strftime("%H:%M:%S %Z") if window_start else None,
                     window_end=window_end.strftime("%H:%M:%S %Z") if window_end else None,
-                    first_phase=row.current_phase.value,
+                    first_state=row.current_state.value,
                 ))
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Resuming IN_PROGRESS segment",
-                    phase=row.current_phase.value if row.current_phase else None,
+                    state=row.current_state.value if row.current_state else None,
                     process=row.current_process,
                     pid=row.process_id,
                 ))
@@ -380,6 +381,9 @@ class EdpOrchestrator:
             window_start = _resolve_post_trade_window(
                 segment_code, workflow.workflow_json, active_date, self._tz
             )
+            window_end = _resolve_post_trade_window_end(
+                segment_code, workflow.workflow_json, active_date, self._tz
+            )
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
             if not state_machine.is_my_time_window(now, window_start):
@@ -391,10 +395,32 @@ class EdpOrchestrator:
                 ))
                 return "blocked"
 
+            # Window deadline missed (PENDING only) — mirrors
+            # _process_one_segment()'s same check; without it a process
+            # that never even started would sit PENDING forever past its
+            # deadline instead of failing loudly.
+            if (
+                state_machine.is_my_window_over(now, window_end)
+                and row.segment_status == SegmentStatus.PENDING
+            ):
+                logger.warning(seg_log(
+                    segment_code, active_date,
+                    "Post-trade process window deadline passed without starting — marking FAILED",
+                    deadline=window_end.strftime("%H:%M:%S %Z"),
+                    now=now.strftime("%H:%M:%S %Z"),
+                ))
+                await repository.move_to_state(
+                    session, row, SegmentStatus.FAILED,
+                    category="TIMEOUT",
+                    reason=f"Past deadline {window_end.isoformat()}",
+                    now=now,
+                )
+                return "failed"
+
             if row.segment_status == SegmentStatus.PENDING:
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
-                row.current_phase = SegmentPhase.AWAIT_GTG
+                row.current_state = SegmentState.WAITING_FOR_GTG
                 row.current_process = gtg_process_name
                 await session.flush()
                 logger.info(seg_log(
@@ -402,14 +428,14 @@ class EdpOrchestrator:
                     "Post-trade process STARTED",
                     started_at=now.strftime("%H:%M:%S %Z"),
                     window_opens=window_start.strftime("%H:%M:%S %Z") if window_start else None,
-                    first_phase=row.current_phase.value,
+                    first_state=row.current_state.value,
                 ))
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Resuming IN_PROGRESS post-trade process",
-                    phase=row.current_phase.value if row.current_phase else None,
+                    state=row.current_state.value if row.current_state else None,
                     process=row.current_process,
                 ))
             else:
@@ -422,7 +448,7 @@ class EdpOrchestrator:
                     session=session,
                     login_id=login_id,
                     now=now,
-                    window_end=None,
+                    window_end=window_end,
                 )
             finally:
                 if not repository.is_handled(row):
@@ -501,7 +527,7 @@ def _resolve_post_trade_window(
     """
     Resolve the opening gate for a post-trade process, mirroring
     _resolve_window(). Every one of the 5 processes defaults to the fixed
-    T+1 02:30 IST gate — none of them may start before then — unless that
+    T+1 02:00 IST gate — none of them may start before then — unless that
     specific process has its own explicit window_start in workflow_json,
     which takes priority. Resolved independently per process, so one
     process's override has no effect on the others' default gate.
@@ -514,6 +540,29 @@ def _resolve_post_trade_window(
     if proc_cfg and proc_cfg.get("window_start"):
         return parse_window_dt(trade_date, proc_cfg["window_start"], True, tz)
     return parse_window_dt(trade_date, POST_TRADE_FIRST_WINDOW_START, True, tz)
+
+
+def _resolve_post_trade_window_end(
+    segment_code: str,
+    workflow_json: dict,
+    trade_date: date,
+    tz: ZoneInfo,
+) -> datetime:
+    """
+    Resolve the closing deadline for a post-trade process, mirroring
+    _resolve_post_trade_window() for the opening gate. Every one of the 5
+    processes defaults to the fixed T+1 06:00 IST deadline unless that
+    specific process has its own explicit window_end in workflow_json.
+
+    Without a real deadline here, a post-trade process CBOS never responds
+    to would poll (BLOCKED) forever with no FAILED/TIMEOUT outcome and no
+    alert ever firing — this closes that gap using the exact same
+    is_my_window_over() check the 10 real segments already get.
+    """
+    proc_cfg = _find_post_trade_cfg(workflow_json, segment_code)
+    if proc_cfg and proc_cfg.get("window_end"):
+        return parse_window_dt(trade_date, proc_cfg["window_end"], True, tz)
+    return parse_window_dt(trade_date, POST_TRADE_DEFAULT_WINDOW_END, True, tz)
 
 
 def _log_segment_outcome(

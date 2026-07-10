@@ -1,46 +1,26 @@
 """
 Explicit, human-auditable transition table — the entry point to read if you
-want to see every legal phase transition without tracing through a loop.
+want to see every legal state transition without tracing through a loop.
 
-Mirrors the manager's TradeSegmentTransitionFactory.load_segment_transition_map()
-sketch 1:1 in naming and shape: one static method that declares every allowed
-from_state -> to_state edge, per segment/process, using add_allowed_transition().
-
-Same real chain for all 10 real segments, applied once per family instead of
-retyped 10x, so the sketch's own bug class (hand-typed CASH transitions that
-quietly missed a FAILED edge on WAITING_FOR_CONTRACTNOTE_GTG / the
-TRIGGERED_* states) can't happen here — every segment in a family is
-guaranteed to get the exact same, fully-declared edge set.
+No "phases" here — only states. Every edge below is declared individually
+(not generated from a generic from->next loop) so the asymmetry the manager
+called out is impossible to miss: FAILED is reachable from every
+non-terminal state, SUCCEEDED is reachable ONLY from the last state in each
+chain, and SKIPPED is reachable ONLY from INIT (real segments) — there is no
+SKIPPED edge anywhere in the post-trade chain, matching both happy-flow
+tables exactly.
 """
 
 from __future__ import annotations
 
-from ..models import SegmentPhase, SegmentStatus
+from ..models import SegmentState, SegmentStatus
 from ..utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER
 from .SegmentTransitionMap import SegmentTransitionMap
-
-# The two fixed phase chains this codebase's pipelines follow — same source
-# of truth SegmentTransitionMap.py uses, restated here for the explicit,
-# line-by-line declaration below.
-REAL_SEGMENT_PHASE_CHAIN: tuple[SegmentPhase, ...] = (
-    SegmentPhase.HOLIDAY_CHECK,
-    SegmentPhase.RESERVE_PID,
-    SegmentPhase.AWAIT_FILE_UPLOAD,
-    SegmentPhase.TRIGGER,
-    SegmentPhase.AWAIT_BILLPOSTING,
-    SegmentPhase.AWAIT_RECON,
-    SegmentPhase.AWAIT_CONTRACT_NOTE,
-)
-
-POST_TRADE_PHASE_CHAIN: tuple[SegmentPhase, ...] = (
-    SegmentPhase.AWAIT_GTG,
-    SegmentPhase.TRIGGER_JOB,
-    SegmentPhase.AWAIT_CONFIRM,
-)
 
 
 class TradeSegmentTransitionFactory:
     """
+    Usage:
         transition_map = TradeSegmentTransitionFactory.load_segment_transition_map(
             allowed_segments=SEGMENT_ORDER,
         )
@@ -50,67 +30,88 @@ class TradeSegmentTransitionFactory:
     def load_segment_transition_map(allowed_segments: tuple[str, ...]) -> SegmentTransitionMap:
         """
         Every real segment (CASH/EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX,
-        MCXPHY, NSECOM, MF) follows the identical 7-step chain below —
+        MCXPHY, NSECOM, MF) follows the identical happy-flow chain below —
         written out explicitly once, then applied to every segment code so
         the same edges are guaranteed for all of them:
 
-          HOLIDAY_CHECK       -> RESERVE_PID
-          HOLIDAY_CHECK        -> FAILED, SKIPPED
-          RESERVE_PID          -> AWAIT_FILE_UPLOAD
-          RESERVE_PID          -> FAILED, SKIPPED
-          AWAIT_FILE_UPLOAD    -> TRIGGER
-          AWAIT_FILE_UPLOAD    -> FAILED, SKIPPED
-          TRIGGER              -> AWAIT_BILLPOSTING
-          TRIGGER              -> FAILED, SKIPPED
-          AWAIT_BILLPOSTING    -> AWAIT_RECON
-          AWAIT_BILLPOSTING    -> FAILED, SKIPPED
-          AWAIT_RECON          -> AWAIT_CONTRACT_NOTE
-          AWAIT_RECON          -> FAILED, SKIPPED
-          AWAIT_CONTRACT_NOTE  -> COMPLETED
-          AWAIT_CONTRACT_NOTE  -> FAILED, SKIPPED
+          INIT                                  -> WAITING_FOR_FILE_UPLOAD
+          INIT                                  -> SKIPPED, FAILED
+          WAITING_FOR_FILE_UPLOAD               -> TRIGGERED
+          WAITING_FOR_FILE_UPLOAD               -> FAILED
+          TRIGGERED                             -> WAITING_FOR_BILLPOSTING
+          TRIGGERED                             -> FAILED
+          WAITING_FOR_BILLPOSTING               -> WAITING_FOR_RECON
+          WAITING_FOR_BILLPOSTING               -> FAILED
+          WAITING_FOR_RECON                     -> WAITING_FOR_CONTRACT_NOTE_GENERATION
+          WAITING_FOR_RECON                     -> FAILED
+          WAITING_FOR_CONTRACT_NOTE_GENERATION  -> SUCCEEDED
+          WAITING_FOR_CONTRACT_NOTE_GENERATION  -> FAILED
 
-        Note every phase (not just the *_GTG / *_COMPLETION-equivalent ones)
-        can reach FAILED/SKIPPED — a permanent CBOS error or a CBOS SKIP
-        signal can legitimately occur at any polling stage, and a window
-        timeout can strike whichever phase is active when the deadline hits.
+        SKIPPED is reachable ONLY from INIT (the holiday-check operation) —
+        a market holiday is the only documented reason a segment is ever
+        skipped rather than failed or completed. FAILED is reachable from
+        every state — a permanent CBOS error can occur at any step, and a
+        window timeout can strike whichever state is active when the
+        deadline hits.
         """
-        return TradeSegmentTransitionFactory._load(
-            allowed_segments, REAL_SEGMENT_PHASE_CHAIN,
-        )
+        m = SegmentTransitionMap(allowed_segments)
+        for seg in allowed_segments:
+            m.add_allowed_transition(seg, SegmentState.INIT, SegmentState.WAITING_FOR_FILE_UPLOAD)
+            m.add_allowed_transition(seg, SegmentState.INIT, SegmentStatus.SKIPPED)
+            m.add_allowed_transition(seg, SegmentState.INIT, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentState.TRIGGERED)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentState.WAITING_FOR_BILLPOSTING)
+            m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_BILLPOSTING, SegmentState.WAITING_FOR_RECON)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_BILLPOSTING, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(
+                seg, SegmentState.WAITING_FOR_RECON, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
+            )
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_RECON, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(
+                seg, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION, SegmentStatus.COMPLETED,
+            )
+            m.add_allowed_transition(
+                seg, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION, SegmentStatus.FAILED,
+            )
+        return m
 
     @staticmethod
     def load_post_trade_transition_map(allowed_segments: tuple[str, ...]) -> SegmentTransitionMap:
         """
-        Every post-trade process (COL_VAL, COL_ALLOC, MTF_FT, DM_STMT,
-        DM_RPT) follows the identical 3-step chain below:
+        Every post-trade process (COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT)
+        follows the identical happy-flow chain below:
 
-          AWAIT_GTG      -> TRIGGER_JOB
-          AWAIT_GTG      -> FAILED, SKIPPED
-          TRIGGER_JOB    -> AWAIT_CONFIRM
-          TRIGGER_JOB    -> FAILED, SKIPPED
-          AWAIT_CONFIRM  -> COMPLETED
-          AWAIT_CONFIRM  -> FAILED, SKIPPED
+          WAITING_FOR_GTG        -> TRIGGERED
+          WAITING_FOR_GTG        -> WAITING_FOR_COMPLETION   (direct, already triggered — no new trigger fired)
+          WAITING_FOR_GTG        -> FAILED
+          TRIGGERED               -> WAITING_FOR_COMPLETION
+          TRIGGERED               -> FAILED
+          WAITING_FOR_COMPLETION -> SUCCEEDED
+          WAITING_FOR_COMPLETION -> FAILED
+
+        No SKIPPED edge anywhere — unlike the real-segment chain's INIT
+        holiday check, none of the 5 post-trade processes have a documented
+        "skip" outcome.
         """
-        return TradeSegmentTransitionFactory._load(
-            allowed_segments, POST_TRADE_PHASE_CHAIN,
-        )
+        m = SegmentTransitionMap(allowed_segments)
+        for seg in allowed_segments:
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentState.TRIGGERED)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentState.WAITING_FOR_COMPLETION)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_GTG, SegmentStatus.FAILED)
 
-    @staticmethod
-    def _load(
-        allowed_segments: tuple[str, ...], phase_chain: tuple[SegmentPhase, ...],
-    ) -> SegmentTransitionMap:
-        transition_map = SegmentTransitionMap(allowed_segments)
-        for segment in allowed_segments:
-            for i, phase in enumerate(phase_chain):
-                if i + 1 < len(phase_chain):
-                    transition_map.add_allowed_transition(segment, phase, phase_chain[i + 1])
-                transition_map.add_allowed_transition(segment, phase, SegmentStatus.FAILED)
-                transition_map.add_allowed_transition(segment, phase, SegmentStatus.SKIPPED)
-            # Only the final in-progress phase may complete.
-            transition_map.add_allowed_transition(
-                segment, phase_chain[-1], SegmentStatus.COMPLETED,
-            )
-        return transition_map
+            m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentState.WAITING_FOR_COMPLETION)
+            m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_COMPLETION, SegmentStatus.COMPLETED)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_COMPLETION, SegmentStatus.FAILED)
+        return m
 
 
 # Built once at import time — the maps every concrete state machine class

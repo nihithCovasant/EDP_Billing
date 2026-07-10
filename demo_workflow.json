@@ -68,7 +68,8 @@
           "process_code": "COLVAL",
           "login_id": "G_LID",
           "gtg_process_name": "CollateralValuation",
-          "window_start": "02:30"
+          "window_start": "02:00",
+          "window_end": "06:00"
         },
         {
           "process_code": "COLALLOC",

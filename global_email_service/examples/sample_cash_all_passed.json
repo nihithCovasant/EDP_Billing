@@ -9,7 +9,7 @@
     "segment_name": "Cash",
     "segment_status": "COMPLETED",
     "current_process": null,
-    "current_phase": "DONE",
+    "current_state": null,
     "process_id": "17001",
     "skip_category": null,
     "skip_reason": null,

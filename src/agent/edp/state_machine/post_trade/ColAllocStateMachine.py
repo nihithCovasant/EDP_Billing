@@ -10,3 +10,4 @@ from ..PostTradeStateMachine import PostTradeStateMachine
 class ColAllocStateMachine(PostTradeStateMachine):
     SEGMENT_CODE = "COLALLOC"
     TRIGGER_METHOD_NAME = "trigger_collateral_allocation"
+    CHECK_TRIGGERED_METHOD_NAME = "check_collateral_allocation_triggered"

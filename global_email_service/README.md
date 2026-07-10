@@ -107,7 +107,7 @@ send_segment_alert({
     "segment_name": "Cash",
     "segment_status": "FAILED",
     "current_process": "BILLPOSTING",
-    "current_phase": "AWAIT_BILLPOSTING",
+    "current_state": "WAITING_FOR_BILLPOSTING",
     "skip_category": "CBOS_ERROR",
     "skip_reason": "BILLPOSTING check error: ...",
     "started_at": "2026-07-04T09:15:00+05:30",
@@ -194,7 +194,7 @@ payload":
 
 ```
 trade_date, segment_code, segment_name, segment_status,
-current_process, current_phase, process_id, skip_reason,
+current_process, current_state, process_id, skip_reason,
 started_at, completed_at
 ```
 
@@ -208,7 +208,7 @@ Any extra keys not in this list are appended after it, still shown.
 Customer-facing display labels are applied at render time (payload keys stay
 unchanged): `COMPLETED` → **Succeeded**, `FAILED` → **Failed**,
 `skip_reason` → **Remarks**,
-`current_phase` → **Stage** (Good to Go / Triggering / Completion),
+`current_state` → **Stage** (Good to Go / Triggering / Completion),
 and process names are expanded (e.g. `RECON` → Reconciliation).
 
 Non-segment payloads (no `segment_code`) fall back to the union of every

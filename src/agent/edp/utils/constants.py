@@ -1,12 +1,14 @@
 """
 Fixed constants for the EDP segment pipeline.
 
-10 segments run sequentially through the generic 7-step pipeline (holiday
-check -> get-or-reserve PID -> file upload poll -> trigger -> bill
-posting/recon/contract note polls); none are special-cased. Then 5 T+1
-post-trade processes run through a shorter 3-step pipeline (GTG poll ->
-trigger -> confirm poll), stored as extra segment_execution rows for the
-same trade_date, reusing the same status/lock/heartbeat machinery.
+10 segments run independently through the generic 6-state pipeline (INIT's
+holiday check -> WAITING_FOR_FILE_UPLOAD's reserve-PID/upload poll ->
+TRIGGERED -> WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION
+polls); none are special-cased. Then 5 T+1 post-trade processes run through
+a shorter 3-state pipeline (WAITING_FOR_GTG -> [TRIGGERED ->]
+WAITING_FOR_COMPLETION), stored as extra segment_execution rows for the
+same trade_date, reusing the same status/heartbeat machinery. See
+models.SegmentState for the full state model.
 """
 
 from __future__ import annotations
@@ -61,12 +63,19 @@ POST_TRADE_GTG_PROCESS_NAME: dict[str, str] = {
     "DMSTMT": "DailyMarginStatements",
 }
 
-# Default opening gate for all 5 post-trade processes ("T+1, 2:30am" per
+# Default opening gate for all 5 post-trade processes ("T+1, 2:00am" per
 # spec) — none of them start polling before this time on trade_date+1 unless
-# a process has its own explicit window_start in workflow_json. There is no
-# window_end deadline for any of them (they poll indefinitely until CBOS
-# confirms).
-POST_TRADE_FIRST_WINDOW_START = "02:30"
+# a process has its own explicit window_start in workflow_json.
+POST_TRADE_FIRST_WINDOW_START = "02:00"
+
+# Default closing deadline for all 5 post-trade processes ("T+1, 6:00am" per
+# spec) — same trade_date+1 calendar day as the opening gate above, unless a
+# process has its own explicit window_end in workflow_json. Without this, a
+# post-trade process that CBOS never responds to would poll (BLOCKED)
+# forever with no FAILED/TIMEOUT and no alert ever firing — the same
+# window-deadline safety net the 10 real segments already get via
+# orchestrator._resolve_window().
+POST_TRADE_DEFAULT_WINDOW_END = "06:00"
 
 # Heartbeat staleness threshold — a segment is considered STALE (for display
 # purposes only, not persisted) if it's IN_PROGRESS but hasn't had a

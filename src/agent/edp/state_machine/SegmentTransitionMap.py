@@ -1,5 +1,5 @@
 """
-segment_code -> {from_phase: {allowed_to_phases}} — a validation safety net
+segment_code -> {from_state: {allowed_to_states}} — a validation safety net
 that execute_handler() checks every transition against before it's applied,
 mirroring the sketch's SegmentTransitionMap.
 

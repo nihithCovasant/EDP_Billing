@@ -9,3 +9,4 @@ from ..PostTradeStateMachine import PostTradeStateMachine
 class MtfFtStateMachine(PostTradeStateMachine):
     SEGMENT_CODE = "MTFFT"
     TRIGGER_METHOD_NAME = "trigger_mtf_fund_transfer"
+    CHECK_TRIGGERED_METHOD_NAME = "check_mtf_fund_transfer_triggered"

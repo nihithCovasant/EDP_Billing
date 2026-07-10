@@ -17,7 +17,7 @@ DEFAULT_SEGMENT_COLUMNS: List[str] = [
     "segment_name",
     "segment_status",
     "current_process",
-    "current_phase",
+    "current_state",
     "process_id",
     "skip_reason",
     "started_at",
@@ -28,7 +28,7 @@ DEFAULT_SEGMENT_COLUMNS: List[str] = [
 _COLUMN_HEADERS: Dict[str, str] = {
     "segment_status": "Segment Status",
     "skip_reason": "Remarks",
-    "current_phase": "Stage",
+    "current_state": "Stage",
     "current_process": "Process",
     "process_id": "Process ID",
     "trade_date": "Trade Date",
@@ -74,19 +74,16 @@ _PROCESS_DISPLAY: Dict[str, str] = {
     "WEEKLYAUTOCLOSURE": "Weekly Auto Closure",
 }
 
-# Customer-facing pipeline stage (current_phase -> readable label).
+# Customer-facing pipeline stage (current_state -> readable label).
 _STAGE_DISPLAY: Dict[str, str] = {
-    "HOLIDAY_CHECK": "Good to Go",
-    "AWAIT_FILE_UPLOAD": "Good to Go",
-    "AWAIT_GTG": "Good to Go",
-    "RESERVE_PID": "Triggering",
-    "TRIGGER": "Triggering",
-    "TRIGGER_JOB": "Triggering",
-    "AWAIT_BILLPOSTING": "Completion",
-    "AWAIT_RECON": "Completion",
-    "AWAIT_CONTRACT_NOTE": "Completion",
-    "AWAIT_CONFIRM": "Completion",
-    "DONE": "—",
+    "INIT": "Good to Go",
+    "WAITING_FOR_FILE_UPLOAD": "Good to Go",
+    "WAITING_FOR_GTG": "Good to Go",
+    "TRIGGERED": "Triggering",
+    "WAITING_FOR_BILLPOSTING": "Completion",
+    "WAITING_FOR_RECON": "Completion",
+    "WAITING_FOR_CONTRACT_NOTE_GENERATION": "Completion",
+    "WAITING_FOR_COMPLETION": "Completion",
 }
 
 # Fallback when phase is missing but current_process is set.
@@ -157,9 +154,9 @@ def _display_token(value: str, mapping: Dict[str, str]) -> str:
     return mapping.get(value.strip().upper(), mapping.get(value.strip(), value))
 
 
-def _format_stage(phase: Any, row: Optional[dict] = None) -> str:
-    if phase is not None and str(phase).strip():
-        key = str(phase).strip().upper()
+def _format_stage(state: Any, row: Optional[dict] = None) -> str:
+    if state is not None and str(state).strip():
+        key = str(state).strip().upper()
         if key in _STAGE_DISPLAY:
             return _STAGE_DISPLAY[key]
     if row:
@@ -171,13 +168,13 @@ def _format_stage(phase: Any, row: Optional[dict] = None) -> str:
             )
             if stage:
                 return stage
-    if phase is None or phase == "":
+    if state is None or state == "":
         return "—"
-    return str(phase).replace("_", " ").title()
+    return str(state).replace("_", " ").title()
 
 
 def _format_segment_cell(column: str, value: Any, row: Optional[dict] = None) -> str:
-    if column == "current_phase":
+    if column == "current_state":
         return _format_stage(value, row)
 
     if value is None or value == "":

@@ -14,22 +14,19 @@ Enum segment_status {
   FAILED
 }
 
-Enum segment_phase {
-  HOLIDAY_CHECK
-  RESERVE_PID
-  AWAIT_FILE_UPLOAD
-  TRIGGER
-  AWAIT_BILLPOSTING
-  AWAIT_RECON
-  AWAIT_CONTRACT_NOTE
-  AWAIT_GTG
-  TRIGGER_JOB
-  AWAIT_CONFIRM
-  DONE
+Enum segment_state {
+  INIT
+  WAITING_FOR_FILE_UPLOAD
+  TRIGGERED
+  WAITING_FOR_BILLPOSTING
+  WAITING_FOR_RECON
+  WAITING_FOR_CONTRACT_NOTE_GENERATION
+  WAITING_FOR_GTG
+  WAITING_FOR_COMPLETION
 }
-// HOLIDAY_CHECK..AWAIT_CONTRACT_NOTE: 10-segment pipeline (EQ,DR,CUR,SLB,NCDEX,NCDEXPHY,MCX,MCXPHY,NSECOM,MF)
-// AWAIT_GTG..AWAIT_CONFIRM: 5 post-trade process pipeline (COLVAL,COLALLOC,MTFFT,DMRPT,DMSTMT)
-// DONE is shared terminal state for both
+// INIT..WAITING_FOR_CONTRACT_NOTE_GENERATION: 10-segment pipeline (EQ,DR,CUR,SLB,NCDEX,NCDEXPHY,MCX,MCXPHY,NSECOM,MF); TRIGGERED shared with post-trade
+// WAITING_FOR_GTG..WAITING_FOR_COMPLETION: 5 post-trade process pipeline (COLVAL,COLALLOC,MTFFT,DMRPT,DMSTMT)
+// No states here for terminal outcomes — those live on segment_status. current_state is set to NULL once COMPLETED/SKIPPED, or left frozen where it broke for FAILED.
 
 Enum agent_control_action {
   START
@@ -58,14 +55,14 @@ Table edpb_segment_execution {
   config_id_used varchar(36) [note: 'Soft ref to edpb_properties.id (real segments only)']
   status segment_status [not null, default: 'PENDING']
   current_process varchar(64) [note: 'CBOS ProcessName e.g. BILLPOSTING or CollateralValuation']
-  current_phase segment_phase [note: 'Active pipeline stage — see segment_phase enum note']
+  current_state segment_state [note: 'Active state — see segment_state enum note']
   process_id varchar(64) [note: 'From getNewTradeProcess PROCESSID=0 (real segments only)']
   process_id_reserved_at timestamp
-  processes_json json [not null, note: 'Real segments: holiday_check file_upload_ready trigger bill_posting recon contract_note | Post-trade: gtg trigger confirm | Real-segment "trigger" substate is PID_RESERVED -> TRIGGERING -> TRIGGERED/FAILED; TRIGGERING is committed (session.commit, not just flush) BEFORE the CBOS trigger call so a crash can never lose it (double-trigger crash protection, see state_machine.RealSegmentStateMachine.handle_trigger / _recover_trigger). Post-trade "trigger" substate is the same TRIGGERING marker + commit before the call, but since post-trade CBOS endpoints have no Table2-equivalent status check, a resume that finds TRIGGERING already set refuses to re-fire and marks the process FAILED for manual verification instead (state_machine.PostTradeStateMachine.handle_trigger_job).']
+  processes_json json [not null, note: 'Real segments: holiday_check file_upload_ready trigger bill_posting recon contract_note | Post-trade: gtg trigger confirm | Real-segment "trigger" substate is PID_RESERVED -> TRIGGERING -> TRIGGERED/FAILED; TRIGGERING is committed (session.commit, not just flush) BEFORE the CBOS trigger call so a crash can never lose it (double-trigger crash protection, see state_machine.RealSegmentStateMachine.handle_triggered / _recover_trigger). Post-trade "trigger" substate is the same TRIGGERING marker + commit before the call; the WAITING_FOR_GTG "already triggered" CBOS check (state_machine.PostTradeStateMachine.handle_waiting_for_gtg) rules out most double-trigger risk before TRIGGERED is even entered, but a resume that still finds TRIGGERING set refuses to re-fire and marks the process FAILED for manual verification instead (handle_triggered).']
   started_at timestamp [note: 'PENDING to IN_PROGRESS']
   completed_at timestamp [note: 'COMPLETED FAILED or SKIPPED']
   last_heartbeat_at timestamp [note: 'Updated each cycle while IN_PROGRESS']
-  skip_category varchar(32) [note: 'SKIPPED: CBOS_SKIP MANUAL_SKIP | FAILED: CBOS_ERROR SYSTEM_ERROR (unmapped pipeline phase) TIMEOUT (window deadline exceeded)']
+  skip_category varchar(32) [note: 'SKIPPED: CBOS_SKIP MANUAL_SKIP | FAILED: CBOS_ERROR SYSTEM_ERROR (unmapped state) TIMEOUT (window deadline exceeded)']
   skip_reason text
   created_at timestamp [not null, default: `now()`]
   updated_at timestamp [not null, default: `now()`]

@@ -10,3 +10,4 @@ from ..PostTradeStateMachine import PostTradeStateMachine
 class DmStmtStateMachine(PostTradeStateMachine):
     SEGMENT_CODE = "DMSTMT"
     TRIGGER_METHOD_NAME = "trigger_daily_margin_statements"
+    CHECK_TRIGGERED_METHOD_NAME = "check_daily_margin_statements_triggered"

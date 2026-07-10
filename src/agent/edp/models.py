@@ -51,35 +51,53 @@ class SegmentStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class SegmentPhase(str, enum.Enum):
+class SegmentState(str, enum.Enum):
     """
-    Shared by two pipelines, distinguished by segment_code (see
+    There are no "phases" — only states and the actions a state's handler
+    takes. Shared by two pipelines, distinguished by segment_code (see
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
-    (1) 7-step pipeline for the 10 real segments (EQ/DR/CUR/SLB/NCDEX/
-        NCDEXPHY/MCX/MCXPHY/NSECOM/MF):
-      HOLIDAY_CHECK -> RESERVE_PID -> AWAIT_FILE_UPLOAD -> TRIGGER ->
-      AWAIT_BILLPOSTING -> AWAIT_RECON -> AWAIT_CONTRACT_NOTE
+    (1) Real-segment pipeline (10x: EQ/DR/CUR/SLB/NCDEX/NCDEXPHY/MCX/
+        MCXPHY/NSECOM/MF) — happy flow:
+      INIT -> WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING
+      -> WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
 
-    (2) 3-step pipeline for the 5 T+1 post-trade processes
-        (COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT):
-      AWAIT_GTG -> TRIGGER_JOB -> AWAIT_CONFIRM
+      INIT's handler does the holiday-check operation (not a separate
+      state); WAITING_FOR_FILE_UPLOAD's handler does the reserve/confirm-PID
+      operation on its first entry, then polls FILEUPLOAD on later cycles
+      (also not a separate state) — both are pure gate/ops-driven waits with
+      no CBOS trigger involved. TRIGGERED is the one genuine crash-safety
+      wait (getNewTradeProcess with the real PID). WAITING_FOR_BILLPOSTING/
+      _RECON/_CONTRACT_NOTE_GENERATION are pure polls — CBOS auto-runs each
+      step, the agent only observes.
 
-    DONE is the shared terminal state for both.
+    (2) Post-trade pipeline (5x: COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT) —
+        happy flow:
+      WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED)
+
+      WAITING_FOR_GTG's handler polls process readiness, then (once ready)
+      calls the process's "already triggered" CBOS check: if already
+      triggered, it takes the direct edge straight to WAITING_FOR_COMPLETION
+      (no new trigger fired); otherwise it moves to TRIGGERED, which fires
+      the real trigger call next cycle.
+
+    Terminal outcomes (SUCCEEDED/FAILED/SKIPPED) are not values here — they
+    live on segment_status (SegmentStatus); a row's current_state is set to
+    None once segment_status reaches COMPLETED/SKIPPED, or left frozen at
+    the state it was in when FAILED, for diagnostics.
     """
-    HOLIDAY_CHECK = "HOLIDAY_CHECK"
-    RESERVE_PID = "RESERVE_PID"
-    AWAIT_FILE_UPLOAD = "AWAIT_FILE_UPLOAD"
-    TRIGGER = "TRIGGER"
-    AWAIT_BILLPOSTING = "AWAIT_BILLPOSTING"
-    AWAIT_RECON = "AWAIT_RECON"
-    AWAIT_CONTRACT_NOTE = "AWAIT_CONTRACT_NOTE"
+    # Real-segment pipeline
+    INIT = "INIT"
+    WAITING_FOR_FILE_UPLOAD = "WAITING_FOR_FILE_UPLOAD"
+    TRIGGERED = "TRIGGERED"
+    WAITING_FOR_BILLPOSTING = "WAITING_FOR_BILLPOSTING"
+    WAITING_FOR_RECON = "WAITING_FOR_RECON"
+    WAITING_FOR_CONTRACT_NOTE_GENERATION = "WAITING_FOR_CONTRACT_NOTE_GENERATION"
 
-    AWAIT_GTG = "AWAIT_GTG"
-    TRIGGER_JOB = "TRIGGER_JOB"
-    AWAIT_CONFIRM = "AWAIT_CONFIRM"
-
-    DONE = "DONE"
+    # Post-trade pipeline (TRIGGERED shared with the real-segment pipeline —
+    # same "genuine crash-safety trigger wait" concept in both).
+    WAITING_FOR_GTG = "WAITING_FOR_GTG"
+    WAITING_FOR_COMPLETION = "WAITING_FOR_COMPLETION"
 
 
 class AgentControlAction(str, enum.Enum):
@@ -115,9 +133,12 @@ class EdpProperties(Base):
 
     Segments run same-day; window_end only rolls onto the next calendar
     day if it's chronologically at/before window_start (e.g. an overnight
-    17:00->06:00 window). Post-trade processes always gate on T+1
-    regardless of the times configured. Both rules live in
-    orchestrator.py, not fields a config uploader needs to state.
+    17:00->06:00 window).     Post-trade processes always gate on T+1
+    regardless of the times configured — both window_start (opening gate,
+    default 02:00) and window_end (closing deadline, default 06:00) are
+    optional per-process overrides in "post_trade_processes", always
+    resolved against trade_date+1. Both T+1 rules live in orchestrator.py,
+    not fields a config uploader needs to state.
 
     sequence_order and segment_name are fixed code constants (see
     utils/constants.py), not stored.
@@ -173,13 +194,13 @@ class SegmentExecution(Base):
     """
     One row per (trade_date, segment_code) — either a real segment or a
     T+1 post-trade process; both share this table's status/lock/heartbeat
-    machinery, differing only in processes_json shape and current_phase.
+    machinery, differing only in processes_json shape and current_state.
 
     Each polling stage key (holiday_check, file_upload_ready, bill_posting,
     recon, contract_note, gtg, confirm) has no "status" field while still
     being polled — only poll_count/last_response accumulate. "status"
     appears once CBOS returns TRUE/SKIP: "COMPLETED" plus a stage-specific
-    completion timestamp (checked_at/ready_at/confirmed_at). current_phase
+    completion timestamp (checked_at/ready_at/confirmed_at). current_state
     on the row (not this JSON) is what actually drives control flow.
 
     processes_json shape, 10 real segments (6 stages):
@@ -203,7 +224,7 @@ class SegmentExecution(Base):
     }
 
     current_process holds the CBOS ProcessName currently being polled
-    (null during RESERVE_PID/TRIGGER/TRIGGER_JOB).
+    (null while resolving the process_id, or during TRIGGERED).
     """
 
     __tablename__ = "edpb_segment_execution"
@@ -234,8 +255,8 @@ class SegmentExecution(Base):
         String(64), nullable=True,
         comment="Active CBOS ProcessName being polled"
     )
-    current_phase: Mapped[SegmentPhase | None] = mapped_column(
-        Enum(SegmentPhase), nullable=True,
+    current_state: Mapped[SegmentState | None] = mapped_column(
+        Enum(SegmentState), nullable=True,
     )
 
     # process_id resolved once per segment-day (getdropdown or
@@ -300,7 +321,7 @@ class AgentControl(Base):
     Append-only audit log of agent START/STOP commands (market holidays,
     maintenance windows). snapshot_json captures live state at the time:
     {
-      "active_segment": "EQ", "active_process": "BillPost", "active_phase": "CONFIRM",
+      "active_segment": "EQ", "active_process": "BillPost", "active_state": "WAITING_FOR_BILLPOSTING",
       "pending_count": 5, "in_progress_count": 1, "completed_count": 1
     }
     """

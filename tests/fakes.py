@@ -18,7 +18,7 @@ class FailingCbosClient(CbosClient):
     Behaves exactly like CbosClient(use_mock=True) for every call EXCEPT
     one (segment, process_name) pair, which always returns a permanent
     (non-transient) CBOS error — used to simulate a segment failing partway
-    through its 7-stage pipeline (e.g. BILLPOSTING, the 2nd process after
+    through its state pipeline (e.g. BILLPOSTING, the 2nd process after
     fileupload, per the process "order" convention documented in
     models.EdpProperties).
 
@@ -52,7 +52,7 @@ class TransientTriggerFailureCbosClient(CbosClient):
     other call (including retries and the recovery check) behaves exactly
     like the normal in-process mock.
 
-    Used to prove state_machine.RealSegmentStateMachine.handle_trigger()
+    Used to prove state_machine.RealSegmentStateMachine.handle_triggered()
     leaves processes_json["trigger"]["status"] == "TRIGGERING" on a
     transient trigger-call error (never downgrading it to "FAILED", and
     never treating the row itself as failed) — so the very next wake cycle
@@ -105,11 +105,12 @@ class CountingPostTradeTriggerCbosClient(CbosClient):
     Behaves exactly like the normal in-process mock, but counts every real
     call to a post-trade trigger endpoint (GetCollateralValuation,
     MTFTradeProcessCollateralAllocation, etc — all 5 funnel through
-    CbosClient._post_trade_trigger).     Used to prove state_machine.PostTradeStateMachine.handle_trigger_job()
+    CbosClient._post_trade_trigger). Used to prove state_machine.PostTradeStateMachine.handle_triggered()
     never calls the trigger endpoint a second time once it sees its own
-    "TRIGGERING" marker on resume — post-trade triggers have no CBOS-side
-    status check, so unlike the real-segment TRIGGER step, that must be a
-    hard refusal, not a CBOS-verified decision.
+    "TRIGGERING" marker on resume — the "already triggered" check only
+    runs BEFORE entering TRIGGERED, so a resume that's already inside
+    TRIGGERED with an unconfirmed attempt must be a hard refusal, not a
+    fresh CBOS-verified decision.
     """
 
     def __init__(self, status_url: str, process_url: str):

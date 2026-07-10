@@ -9,7 +9,7 @@
     "segment_name": "SLB",
     "segment_status": "FAILED",
     "current_process": "FILEUPLOAD",
-    "current_phase": "AWAIT_FILE_UPLOAD",
+    "current_state": "WAITING_FOR_FILE_UPLOAD",
     "process_id": "17004",
     "skip_category": "CBOS_ERROR",
     "skip_reason": "File upload Good-to-Go check failed — exchange files not available for upload (CBOS Status: NOT_READY)",

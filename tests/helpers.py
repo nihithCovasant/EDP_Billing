@@ -52,7 +52,7 @@ def fixed_now_for(trade_date: date, tz) -> datetime:
 
 def fixed_post_trade_now_for(trade_date: date, tz) -> datetime:
     """A stable "now" for the post-trade processes, anchored to trade_date+1
-    03:00 — inside Process 1's (COLVAL) 02:30-06:00 IST window."""
+    03:00 — inside Process 1's (COLVAL) 02:00-06:00 IST window."""
     return datetime.combine(trade_date + timedelta(days=1), dtime(3, 0), tzinfo=tz)
 
 

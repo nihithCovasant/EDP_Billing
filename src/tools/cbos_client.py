@@ -24,16 +24,20 @@ ProcessName values for file_process_status (segment pipeline):
   RECON                  — reconciliation complete
   CONTRACTNOTEGENERATION — contract note generation complete
 
-Post-trade pipeline (T+1) — 5 processes, run once per trade_date after all 7
-segments, each through the same 3-step GTG → trigger → confirm pattern:
-  1. Collateral Valuation   (COLVAL)   → trigger_collateral_valuation()
-  2. Collateral Allocation  (COLALLOC) → trigger_collateral_allocation()
-  3. MTF Fund Transfer      (MTFFT)    → trigger_mtf_fund_transfer()
-  4. Daily Margin Reporting (DMRPT)    → trigger_daily_margin_reporting()
-  5. Daily Margin Statements(DMSTMT)   → trigger_daily_margin_statements()
+Post-trade pipeline (T+1) — 5 processes, run once per trade_date after all 10
+segments, each through the same WAITING_FOR_GTG -> [TRIGGERED ->]
+WAITING_FOR_COMPLETION pattern:
+  1. Collateral Valuation   (COLVAL)   → trigger_collateral_valuation()   / check_collateral_valuation_triggered()
+  2. Collateral Allocation  (COLALLOC) → trigger_collateral_allocation()  / check_collateral_allocation_triggered()
+  3. MTF Fund Transfer      (MTFFT)    → trigger_mtf_fund_transfer()      / check_mtf_fund_transfer_triggered()
+  4. Daily Margin Reporting (DMRPT)    → trigger_daily_margin_reporting() / check_daily_margin_reporting_triggered()
+  5. Daily Margin Statements(DMSTMT)   → trigger_daily_margin_statements()/ check_daily_margin_statements_triggered()
 Each uses file_process_status(Segment=<code>, ProcessName=<see
 utils/constants.POST_TRADE_GTG_PROCESS_NAME>) for both the pre-trigger GTG
-poll and the post-trigger confirm poll.
+poll and the post-trigger confirm poll. The check_*_triggered() calls are
+the WAITING_FOR_GTG "already triggered" pre-check — REFRESH-variant calls
+to the same trigger endpoint for COLVAL/DMRPT, file_process_status with a
+dedicated check ProcessName for COLALLOC/MTFFT/DMSTMT.
 
 CBOS API request / response shapes
   file_process_status
@@ -160,6 +164,23 @@ class ExistingProcessResult:
 
 
 @dataclass
+class AlreadyTriggeredResult:
+    """
+    Result of an "already triggered" pre-check for a post-trade process —
+    called at the WAITING_FOR_GTG state to decide whether to take the
+    direct edge to WAITING_FOR_COMPLETION (already_triggered=True, no new
+    trigger fired) or move to TRIGGERED (already_triggered=False). Exists
+    so a resumed pod can never double-fire a post-trade trigger, the same
+    crash-safety guarantee the real-segment pipeline gets for free from
+    getNewTradeProcess's Table2 step statuses.
+    """
+    already_triggered: bool
+    raw_body: str = ""
+    error: Optional[str] = None
+    is_transient: bool = False
+
+
+@dataclass
 class PostTradeTriggerResult:
     """
     Result of one of the 5 T+1 post-trade trigger calls (GetCollateralValuation
@@ -218,9 +239,13 @@ class CbosClient:
         # (PROCESSID != "0") made so far — lets the mock simulate Table2
         # progressing from "nothing started" (1st call) to "IN_PROGRESS"
         # (2nd+ call), so tests can exercise the TRIGGERING recovery
-        # decision tree in state_machine.RealSegmentStateMachine.handle_trigger()
+        # decision tree in state_machine.RealSegmentStateMachine.handle_triggered()
         # realistically.
         self._mock_trigger_calls: dict[tuple[str, str], int] = {}
+        # Post-trade "already triggered" pre-checks default to False (never
+        # already triggered) — tests opt a segment into the "direct edge"
+        # branch via mock_mark_already_triggered().
+        self._mock_already_triggered_segments: set[str] = set()
 
     # -------------------------------------------------------------------------
     # 1. file_process_status — Good-to-Go / completion checks
@@ -526,6 +551,144 @@ class CbosClient:
             "DailyMarginStatements", login_id, trade_date, segment="DMSTMT",
         )
 
+    # -------------------------------------------------------------------------
+    # 6. "Already triggered" pre-checks — called at WAITING_FOR_GTG before
+    #    firing a post-trade trigger, so a resumed pod never double-fires one.
+    # -------------------------------------------------------------------------
+
+    @otel_trace
+    async def check_collateral_valuation_triggered(
+        self, login_id: str, margin_date: date,
+    ) -> AlreadyTriggeredResult:
+        """
+        POST {PROCESS_URL}/v1/api/process/GetCollateralValuation with
+        BUTTONNAME="COLLATERAL_VALUATION_REFRESH" (the read-only companion
+        to the COLLATERAL_VALUATION_DATEWISE trigger call) — a non-empty
+        Result.Table1 means a valuation run for this date already exists.
+        """
+        payload = {
+            "BUTTONNAME": "COLLATERAL_VALUATION_REFRESH",
+            "LOGINID": login_id,
+            "MARGINDATE": to_ddmmmyyyy(margin_date),
+        }
+        return await self._already_triggered_check("GetCollateralValuation", payload, segment="COLVAL")
+
+    @otel_trace
+    async def check_daily_margin_reporting_triggered(
+        self, login_id: str, margin_date: date,
+    ) -> AlreadyTriggeredResult:
+        """
+        POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess with
+        BUTTONNAME="COMBINEDMARGIN_REFRESH" — the read-only companion to
+        the COMBINEDMARGIN_PROCESS trigger call.
+        """
+        payload = {
+            "BUTTONNAME": "COMBINEDMARGIN_REFRESH",
+            "LOGINID": login_id,
+            "MARGINDATE": to_ddmmmyyyy(margin_date),
+        }
+        return await self._already_triggered_check("CombinedMarginProcess", payload, segment="DMRPT")
+
+    @otel_trace
+    async def check_collateral_allocation_triggered(
+        self, login_id: str, trade_date: date,
+    ) -> AlreadyTriggeredResult:
+        """Reuses file_process_status(MTFCOLLALLOC) — CBOS's own check
+        endpoint for whether collateral allocation already ran today."""
+        return await self._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", login_id)
+
+    @otel_trace
+    async def check_mtf_fund_transfer_triggered(
+        self, login_id: str, trade_date: date,
+    ) -> AlreadyTriggeredResult:
+        """Reuses file_process_status(MTFFUNDTRAN)."""
+        return await self._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", login_id)
+
+    @otel_trace
+    async def check_daily_margin_statements_triggered(
+        self, login_id: str, trade_date: date,
+    ) -> AlreadyTriggeredResult:
+        """Reuses file_process_status(CHECKDAILYMARGINSTATEMENT)."""
+        return await self._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", login_id)
+
+    async def _already_triggered_via_file_status(
+        self, segment: str, process_name: str, user_id: str,
+    ) -> AlreadyTriggeredResult:
+        """
+        Real mode: reuses file_process_status(process_name) — TRUE means
+        already triggered/running.
+
+        Mock mode: deliberately does NOT reuse file_process_status's own
+        mock_set_ready_after() poll counter (that counter is keyed by
+        (segment, process_name) and would independently "become ready"
+        after the same N calls tests use for the GTG poll, incorrectly
+        reporting "already triggered" on a plain happy-path run). Instead
+        it shares the same explicit, opt-in mock as the two REFRESH-based
+        checks — always False unless mock_mark_already_triggered() was called.
+        """
+        if self.use_mock:
+            return self._mock_already_triggered(segment)
+        result = await self.file_process_status(segment=segment, process_name=process_name, user_id=user_id)
+        if result.is_error:
+            return AlreadyTriggeredResult(
+                already_triggered=False, raw_body=result.raw_body,
+                error=result.error, is_transient=result.is_transient,
+            )
+        return AlreadyTriggeredResult(already_triggered=result.is_ready, raw_body=result.raw_body)
+
+    async def _already_triggered_check(
+        self, endpoint_name: str, payload: dict, segment: str,
+    ) -> AlreadyTriggeredResult:
+        """Shared REFRESH-variant call — same Table1-non-empty-means-running
+        response shape as getNewTradeProcess, reused here for the "already
+        triggered" pre-checks that share an endpoint with a trigger call."""
+        if self.use_mock:
+            result = self._mock_already_triggered(segment)
+            logger.info(
+                f"[CBOS][MOCK] segment={segment} api={endpoint_name}(REFRESH) "
+                f"| already_triggered={result.already_triggered}"
+            )
+            return result
+
+        url = f"{self.process_url}/v1/api/process/{endpoint_name}"
+        logger.info(f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) | POST {url}")
+
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload)
+                elapsed_ms = int((_time.monotonic() - t0) * 1000)
+                body = resp.text[:5000]
+                if resp.status_code != 200:
+                    logger.error(
+                        f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
+                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
+                    )
+                    return AlreadyTriggeredResult(
+                        already_triggered=False, raw_body=body,
+                        error=f"HTTP {resp.status_code}", is_transient=resp.status_code >= 500,
+                    )
+                data = _json.loads(body)
+                if data.get("Status") != "Success":
+                    return AlreadyTriggeredResult(
+                        already_triggered=False, raw_body=body,
+                        error=f"CBOS Status={data.get('Status')}",
+                    )
+                table1 = data.get("Result", {}).get("Table1", [])
+                already_triggered = bool(table1)
+                logger.info(
+                    f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
+                    f"| already_triggered={already_triggered} elapsed_ms={elapsed_ms}"
+                )
+                return AlreadyTriggeredResult(already_triggered=already_triggered, raw_body=body)
+        except Exception as exc:
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            logger.error(
+                f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
+                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+            )
+            return AlreadyTriggeredResult(already_triggered=False, error=str(exc), is_transient=True)
+
     async def _trigger_post_trade_job(
         self, endpoint_name: str, login_id: str, trade_date: date, segment: str,
     ) -> PostTradeTriggerResult:
@@ -636,7 +799,7 @@ class CbosClient:
         returns Table2 with one step IN_PROGRESS, simulating that CBOS is
         now actively executing that PROCESSID — this is what lets tests
         exercise both branches of the TRIGGERING recovery decision tree in
-        state_machine.RealSegmentStateMachine.handle_trigger().
+        state_machine.RealSegmentStateMachine.handle_triggered().
         """
         key = (group_name.upper(), trade_date.isoformat())
         if process_id == "0":
@@ -692,6 +855,11 @@ class CbosClient:
             description=f"{pid} - CV0001 - Mock Entry",
         )
 
+    def _mock_already_triggered(self, segment: str) -> AlreadyTriggeredResult:
+        """Simulates a REFRESH-variant "already triggered" check — True only
+        for segments explicitly marked via mock_mark_already_triggered()."""
+        return AlreadyTriggeredResult(already_triggered=segment.upper() in self._mock_already_triggered_segments)
+
     def _mock_post_trade_trigger(self) -> PostTradeTriggerResult:
         """Post-trade triggers always succeed deterministically in mock mode."""
         return PostTradeTriggerResult(
@@ -713,6 +881,13 @@ class CbosClient:
         self._mock_call_counts.clear()
         self._mock_reserved_pids.clear()
         self._mock_trigger_calls.clear()
+        self._mock_already_triggered_segments.clear()
+
+    def mock_mark_already_triggered(self, segment: str) -> None:
+        """Opt a post-trade process into the "already triggered" branch —
+        its next WAITING_FOR_GTG check takes the direct edge straight to
+        WAITING_FOR_COMPLETION instead of moving to TRIGGERED."""
+        self._mock_already_triggered_segments.add(segment.upper())
 
 
 # =============================================================================

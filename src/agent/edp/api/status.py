@@ -31,7 +31,7 @@ router = APIRouter()
 @otel_trace
 async def get_day_status(trade_date: date):
     """
-    Full day summary — all segments with their status, current process/phase,
+    Full day summary — all segments with their status, current process/state,
     timing, and processes_json detail.
 
     Answers:

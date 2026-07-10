@@ -1,0 +1,945 @@
+P: EDP TRADE PROCESS
+P: API Details —Full Process Walkthrough (38 Steps)
+P: Trade Segments Covered
+TABLE:
+# | Code | Segment Type
+1 | EQ | CASH
+2 | DR | DERIVATIVE
+3 | CUR | CURRENCY
+4 | SLB | SLB
+5 | NCDEX | COMMODITY
+6 | NCDEXPHY | PHYSICAL COMMODITY
+7 | MCX | COMMODITY
+8 | MCXPHY | PHYSICAL COMMODITY
+9 | NSECOM | COMMODITY
+10 | MF | MUTUAL FUND
+P: The same step-by-step process below is followed for every segment listed above. This document walks through the flow using EQ (Cash) as the reference example.
+P: Reference User ID used in examples: CV0001  |  Confidential — Internal Use Only
+P: High-Level Process Flow
+TABLE:
+Step | Purpose | API Server | Endpoint / ProcessName
+1 | Check Holiday Master | EDP Status API | BeginFileUpload
+2 | Get New Trade Process (Create Process ID) | Main Process API | /getNewTradeProcess (PROCESSID:0)
+3 | Check Process ID Created/Triggered | EDP Status API | CheckProcessIDExist
+4 | Get File Upload Setting Details | Main Process API | /GetNewTradeProcessPromodalUploadSettings
+5 | File Upload — Chunk API | Main Process API | /SaveTradePromodalUploadChunkFile
+6 | Get Existing Process ID | Brokerage API | /getdropdown
+7 | File Details Entry in CBOS Source | Main Process API | /SaveNewTradeProcessPromodalUploadFile
+8 | Skip Optional Subprocess in Template | Main Process API | /UpdateNewTradeProcessProcessDetailsIsMandatory
+9 | File Upload Status (Good To Go) | EDP Status API | FILEUPLOAD
+10 | Get New Trade Process (With ProcessID) | Main Process API | /getNewTradeProcess (with ProcessID)
+11 | Check EDP Bill Posting | EDP Status API | BILLPOSTING (EQ)
+12 | Segment Recon | EDP Status API | RECON (DR)
+13 | Segment Recon Trigger Check | EDP Status API | CHECKRECON (DR)
+14 | Contract Note Generation | EDP Status API | CONTRACTNOTEGENERATION (DR)
+15 | Contract Note Generation Triggered Check | EDP Status API | CHECKCONTRACTNOTEGENERATION (DR)
+16 | Collateral Valuation — Good To Go | EDP Status API | CollateralValuation
+17 | Collateral Valuation Check Status | Main Process API | /GetCollateralValuation (REFRESH)
+18 | Collateral Valuation Trigger | Main Process API | /GetCollateralValuation (DATEWISE)
+19 | Collateral Allocation — Good To Go | EDP Status API | CollateralAllocation
+20 | Collateral Allocation Check Status | EDP Status API | MTFCOLLALLOC
+21 | Collateral Allocation Trigger | Main Process API | /MTFTradeProcessCollateralAllocation
+22 | Fund Transfer — Good To Go | EDP Status API | FundTransfer
+23 | Fund Transfer Check Status | EDP Status API | MTFFUNDTRAN
+24 | Fund Transfer Trigger | Main Process API | /MTFTradeProcessFundTransfer
+25 | Cash Bill Posting GTG (MTF Buy) | EDP Status API | BILLPOSTING (EQ)
+26 | MTF Buy Trade | Main Process API | /MTFTradeProcess (BUY PROCESS)
+27 | MTF Buy Trade Posting | Main Process API | /MTFTradeProcess (BUY POSTING)
+28 | MTF Sell Process & Posting — GTG | EDP Status API | EARLYPAYIN
+29 | MTF Sell Process and Posting | Main Process API | /MTFTradeProcess (SELL PROCESS AND POSTING)
+30 | Weekly Auto Closure — Good To Go | EDP Status API | WEEKLYAUTOCLOSURE
+31 | Weekly Auto Closure — Already Triggered Check | EDP Status API | CHECKWEEKLYAUTOCLOSURE
+32 | Weekly Auto Closure (4PM Trading Day) | Main Process API | /MTFTradeProcess (WEEKLY AUTOCLOSURE)
+33 | Corporate Action — FO Bill GTG | EDP Status API | BILLPOSTING (DR)
+34 | Corporate Action Position Change | Main Process API | /getNewTradeProcess (FOPositionChange)
+35 | Daily Margin Reporting Check Status | Main Process API | /CombinedMarginProcess (REFRESH)
+36 | Daily Margin Reporting Trigger | Main Process API | /CombinedMarginProcess (COMBINEDMARGIN_PROCESS)
+37 | Daily Margin Statement — Triggered Check | EDP Status API | CHECKDAILYMARGINSTATEMENT
+38 | Daily Margin Statement — Trigger | EDP Status API | DAILYMARGINSTATEMENT
+P: Step-by-Step API Details — EQ (Cash) Segment
+P: Each step below lists the Postman request URL, the exact request payload, the sample JSON response returned, and — where available in the source material — a placeholder for the corresponding Postman screenshot.
+TABLE:
+STEP 1   Check Holiday Master (Good To Go)
+P: Before starting any trade process, verify whether today is a holiday for the given segment. If MSG returns SKIP, the process must not proceed for the day.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | BeginFileUpload
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "EQ",
+  "ProcessName": "BeginFileUpload",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "SKIP" }] }
+TABLE:
+📌 NOTE: If MSG = "SKIP" it is a holiday — stop here. Otherwise proceed to Step 2.
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 1 — Check Holiday | Postman
+TABLE:
+STEP 2   Get New Trade Process (Create Process ID)
+P: Creates a new trade process for the segment/trade date. Pass PROCESSID = 0 to create a fresh process. Returns the new PROCESSID (Table1) and the full 28-step upload template with statuses (Table2).
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/getNewTradeProcess
+P: Request Payload (JSON)
+TABLE:
+{
+  "GROUPNAME": "EQ",          -- SegmentName
+  "LOGINID": "CV0001",        -- UserID
+  "TRADEDATE": "2026-06-29",  -- TradeDate
+  "PROCESSID": "0"            -- ProcessID (0 = create new)
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": {
+    "Table1": [
+      { "PROCESSID": 17658, "ISRUNNABLE": true, "ISAUTOUPLOAD": true }
+    ],
+    "Table2": [
+      { "ID": 143129, "STEPNO": 1,  "NAME": "Settlement Master NSE Upload",               "STATUS": "PENDING", "UPLOADID": 551 },
+      { "ID": 143123, "STEPNO": 2,  "NAME": "Settlement Master BSE Upload",               "STATUS": "PENDING", "UPLOADID": 678 },
+      { "ID": 143130, "STEPNO": 3,  "NAME": "BSE Scrip Upload",                           "STATUS": "PENDING", "UPLOADID": 81  },
+      { "ID": 143131, "STEPNO": 4,  "NAME": "NSE Scrip Upload",                           "STATUS": "PENDING", "UPLOADID": 82  }
+      // ... full 28-row Table2 — see Upload Steps Reference below
+    ]
+  },
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📌 NOTE: Save the PROCESSID (e.g. 17658) from Table1 — it is required in Steps 7, 8, 10, and all subsequent calls.
+P: Upload Steps Reference (Table2 — full 28 rows)
+TABLE:
+Step | Name | Upload ID | Optional
+1 | Settlement Master NSE Upload | 551 | No
+2 | Settlement Master BSE Upload | 678 | No
+3 | BSE Scrip Upload | 81 | No
+4 | NSE Scrip Upload | 82 | No
+5 | NSE BSE InterOperable Scrip Mapping Upload | 83 | No
+6 | STT Indicator Upload | 84 | No
+7 | STT not to Charge Upload | 94 | No
+8 | BSE UDIFF Trade File Upload | 546 | No
+9 | BSE Trade File Upload | 85 | Yes (visible)
+10 | NSE Trade File Upload | 545 | No
+11 | NSE Notice Trade File Upload | 86 | Yes (visible)
+12 | BSE AUCTION Trade File Upload | 451 | Yes (visible)
+13 | Trade data Merger | 0 | No
+14 | Trade Amendment Check | 0 | No
+15 | Retail Trade Data Transfer | 0 | No
+16 | Insti Trade Data Transfer | 0 | No
+17 | Brokerage Calculation | 0 | No
+18 | SEBI Charge Calculation | 0 | No
+19 | IPFT Charge calculation | 0 | No
+20 | Stamp Duty Calculation | 0 | No
+21 | STT Calculation | 0 | No
+22 | Transaction Charge Calculation | 0 | No
+23 | GST Calculation | 0 | No
+24 | Transfer to main table | 0 | No
+25 | Generate Summary Trade data | 0 | No
+26 | Bill Posting | 0 | No
+27 | STK Generation | 0 | No
+28 | ASBA FUND EXCHANGE UPLOAD | 0 | No
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 2 — Get New Trade Process | Postman
+TABLE:
+STEP 3   Check Process ID Created / Triggered / Generated
+P: Confirms whether a Process ID already exists for the segment/day — useful to avoid creating duplicate processes.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | CheckProcessIDExist
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "EQ",
+  "ProcessName": "CheckProcessIDExist",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "PROCESS ID ALREADY GENERATED : 17649" }] }
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 3 — Check Process ID Exist | Postman
+TABLE:
+STEP 4   Get the File Upload Setting Details
+P: Retrieves the expected file name pattern, extension, column count, and a sample file link for a given Upload ID — used to confirm the correct file before uploading.
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/GetNewTradeProcessPromodalUploadSettings
+P: Request Payload (JSON)
+TABLE:
+{
+  "UPLOADID": "81"   -- UploadID
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    {
+      "ID": 81,
+      "NAME": "BSE SCRIP",
+      "SAMPLE FILE": "<a href=\"https://bizops.motilaloswal.com/pdf/Commodity.jpg\" target=\"_blank\">Download</a>",
+      "FILE NAME (CONTAINS)": "SCRIP",
+      "FILEEXTENSION": "TXT",
+      "NO. OF COLUMNS": 30
+    }
+  ],
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 4 — Get File Upload Settings | Postman
+TABLE:
+STEP 5   File Upload — Chunk API
+P: Uploads the source file in chunks. For small files a single chunk is sufficient (CurrentChunk: 0, TotalChunks: 1).
+TABLE:
+Method | POST (multipart/form-data)
+URL | http://10.167.202.164:8003/v1/api/process/SaveTradePromodalUploadChunkFile
+P: Request Payload (JSON)
+TABLE:
+FormData:
+  file:          <binary file data>
+  CurrentChunk:  0
+  TotalChunks:   1
+  Guid:          "a1b2c3d4-e5f6-4789-abcd-ef0123456789"
+  FileName:      "SCRIP_190626.TXT"
+P: Response (JSON)
+TABLE:
+{
+  "Status": "ChunkUploaded",
+  "Guid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "FileName": "SCRIP_190626.TXT",
+  "currentChunk": "0",
+  "totalChunks": "1",
+  "fCount": "2"
+}
+TABLE:
+📌 NOTE: Save the Guid from the response — it becomes the uploadfoldername field in Step 7.
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 5 — File Upload Chunk API | Postman
+TABLE:
+STEP 6   To Get Existing Process ID
+P: Retrieves an existing Process ID for a given segment and trade date — used to resume or confirm an in-progress process.
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/brokerage/getdropdown
+P: Request Payload (JSON)
+TABLE:
+{
+  "TAG": "EXISTINGPROCESSID",
+  "LOGINID": "CV0001",
+  "FILTER1": "EQ",
+  "FILTER2": "2026-06-29",
+  "extraoption2": "",
+  "extraoption3": ""
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    { "_KEY": 17658, "_DESC": "17658 - CV0001 - Jun 29 2026  2:19PM" }
+  ],
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 6 — Get Existing Process ID | Postman
+TABLE:
+STEP 7   File Details Entry in CBOS Source
+P: After chunk upload completes, this call inserts the file record into the backend (CBOS) source, triggering the EXE to pick up the file from the GUID-named folder passed in the Chunk API.
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/SaveNewTradeProcessPromodalUploadFile
+P: Request Payload (JSON)
+TABLE:
+{
+  "uploadid": 81,                                              -- Upload ID
+  "loginid": "CV001",                                          -- Username
+  "uploadfoldername": "3fa85f64-5717-4562-b3fc-2c963f66afa6",  -- GUID Folder Name
+  "uploadfilename": "SCRIP_190626.TXT",                        -- FileName
+  "ipaddress": "10.167.202.164",                               -- IP Address
+  "file": "",
+  "paraM1": "2026-06-22",                                      -- TradeDate
+  "paraM2": "",
+  "paraM3": "",
+  "paraM4": "",
+  "paraM5": "",
+  "paraM6": "",
+  "paraM7": "",
+  "paraM8": "",
+  "paraM9": "17649",                                           -- ProcessID
+  "chunkFileUpload": "YES"
+}
+TABLE:
+📌 NOTE: Repeat Steps 4 → 5 → 7 for every Upload ID listed in Table2 of Step 2 before calling Step 9.
+TABLE:
+STEP 8   Skip Optional Subprocess in Template
+P: Marks a specific step in the process template as not mandatory, so the flow can proceed without it.
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/UpdateNewTradeProcessProcessDetailsIsMandatory
+P: Request Payload (JSON)
+TABLE:
+{
+  "PROCESSID": "17649",
+  "STEPNO": "12",
+  "ISOPTIONAL": "0"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Result": {
+    "Table1": [
+      { "MSG": "Updated Successfully" }
+    ]
+  }
+}
+TABLE:
+STEP 9   File Upload Status (Good To Go)
+P: Confirms whether all required files for the segment have been uploaded before executing the process.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | FILEUPLOAD
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "EQ",
+  "ProcessName": "FILEUPLOAD",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "FALSE" }] }
+TABLE:
+📌 NOTE: Poll this API until MSG = "TRUE" before calling Step 10.
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 9 — File Upload Status | Postman
+TABLE:
+STEP 10   Get New Trade Process (With ProcessID — Completion Call)
+P: Once all files are uploaded, this call is repeated with the real Process ID to progress and complete the queued steps.
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/getNewTradeProcess
+P: Request Payload (JSON)
+TABLE:
+{
+  "GROUPNAME": "EQ",          -- SegmentName
+  "LOGINID": "CV0001",        -- UserID
+  "TRADEDATE": "2026-06-29",  -- TradeDate
+  "PROCESSID": "17658"        -- ProcessID
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": {
+    "Table1": [
+      { "PROCESSID": 17658, "ISRUNNABLE": true, "ISAUTOUPLOAD": true }
+    ],
+    "Table2": [
+      { "STEPNO": 1, "NAME": "Settlement Master NSE Upload", "STARTDATETIME": "Jun 29 2026 2:26PM", "ENDDATETIME": "Jun 29 2026 2:26PM", "STATUS": "SUCCESS", "STATUSDESC": "SUCCESS" },
+      { "STEPNO": 2, "NAME": "Settlement Master BSE Upload", "STARTDATETIME": "Jun 29 2026 2:26PM", "ENDDATETIME": "Jun 29 2026 2:26PM", "STATUS": "SUCCESS", "STATUSDESC": "SUCCESS" },
+      { "STEPNO": 3, "NAME": "BSE Scrip Upload", "STARTDATETIME": "Jun 29 2026 2:26PM", "ENDDATETIME": "Jun 29 2026 2:26PM", "STATUS": "PENDING", "STATUSDESC": "UPLOAD FILE PENDING" }
+      // Remaining rows (4-28) follow the same shape, updated per completed upload
+    ]
+  },
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 10 — Get New Trade Process (With ProcessID) | Postman
+TABLE:
+STEP 11   To Check EDP Bill Posting
+P: Checks whether Bill Posting has completed for the EQ segment.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | EQ
+ProcessName | BILLPOSTING
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "EQ",
+  "ProcessName": "BILLPOSTING",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "False" }] }
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 11 — Check EDP Bill Posting | Postman
+TABLE:
+STEP 12   Segment Recon
+P: Checks whether segment reconciliation is complete for the DR segment.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | DR
+ProcessName | RECON
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "DR",
+  "ProcessName": "RECON",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "FALSE" }] }
+TABLE:
+STEP 13   Segment Recon Trigger Check
+P: Confirms whether Recon has already been triggered for the segment.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | DR
+ProcessName | CHECKRECON
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "DR",
+  "ProcessName": "CHECKRECON",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "RECON IS ALREADY TRIGGERED" }] }
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 13 — Segment Recon Trigger Check | Postman
+TABLE:
+STEP 14   Contract Note Generation
+P: Once Recon is confirmed True, checks whether Contract Note Generation is complete.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | DR
+ProcessName | CONTRACTNOTEGENERATION
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "DR",
+  "ProcessName": "CONTRACTNOTEGENERATION",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "FALSE" }] }
+TABLE:
+STEP 15   Contract Note Generation Triggered Check
+P: Confirms whether Contract Note Generation has already been triggered.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | DR
+ProcessName | CHECKCONTRACTNOTEGENERATION
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "DR",
+  "ProcessName": "CHECKCONTRACTNOTEGENERATION",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "CONTRACTNOTEGENERATION IS ALREADY TRIGGERED" }] }
+TABLE:
+STEP 16   Collateral Valuation — Good To Go
+P: Checks whether Collateral Valuation can be triggered.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | CollateralValuation
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "CollateralValuation",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "FALSE" }] }
+TABLE:
+STEP 17   Collateral Valuation — Check Status If Already Triggered
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/GetCollateralValuation
+P: Request Payload (JSON)
+TABLE:
+{
+  "BUTTONNAME": "REFRESH",
+  "LOGINID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": { "Table1": [] },
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📌 NOTE: If Table1 is blank, the process has not yet been triggered.
+TABLE:
+STEP 18   Collateral Valuation — Trigger
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/GetCollateralValuation
+P: Request Payload (JSON)
+TABLE:
+{
+  "BUTTONNAME": "COLLATERAL_VALUATION_DATEWISE",
+  "LOGINID": "CV0001",
+  "MARGINDATE": "19-Jun-2026"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": {
+    "Table1": [
+      { "MSG": "Process started successfully ! Click Refresh Button for Current Status." }
+    ]
+  },
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+STEP 19   Collateral Allocation — Good To Go
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | CollateralAllocation
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "CollateralAllocation",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "FALSE" }] }
+TABLE:
+STEP 20   Collateral Allocation — Check Status If Already Triggered
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | MTFCOLLALLOC
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "MTFCOLLALLOC",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "PROCESS TRIGGERED IS PENDING " }] }
+TABLE:
+STEP 21   Collateral Allocation — Trigger
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/MTFTradeProcessCollateralAllocation
+P: Request Payload (JSON)
+TABLE:
+{
+  "LOGINID": "CV0001",
+  "TRADEDATE": "19-Jun-2026"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": {
+    "Table1": [
+      { "MSG": "Process started successfully ! Click Refresh Button for Current Status." }
+    ]
+  }
+}
+TABLE:
+STEP 22   Fund Transfer — Good To Go
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | FundTransfer
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "FundTransfer",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "FALSE" }] }
+TABLE:
+STEP 23   Fund Transfer — Check Status If Already Triggered
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | MTFFUNDTRAN
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "MTFFUNDTRAN",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "PROCESS TRIGGERED IS PENDING " }] }
+TABLE:
+STEP 24   Fund Transfer — Trigger
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/MTFTradeProcessFundTransfer
+P: Request Payload (JSON)
+TABLE:
+{
+  "LOGINID": "CV0001",
+  "TRADEDATE": "19-Jun-2026"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    { "Result": "The specified @job_name ('MTF_RISK_UPDATE') does not exist." }
+  ],
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📌 NOTE: Sample response shows a SQL job-name error. Coordinate with the DBA team to confirm the MTF_RISK_UPDATE job exists on the DB server before relying on this trigger.
+TABLE:
+STEP 25   Check Cash Bill Posting Good To Go (for MTF Buy Trade Process)
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | EQ
+ProcessName | BILLPOSTING
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "EQ",
+  "ProcessName": "BILLPOSTING",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "False" }] }
+TABLE:
+📷 Postman Screenshot Placeholder
+Step 25 — Cash Bill Posting GTG (MTF Buy) | Postman
+TABLE:
+STEP 26   MTF Buy Trade
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/MTFTradeProcess
+Date Format | DD-MMM-YYYY
+P: Request Payload (JSON)
+TABLE:
+{
+  "LOGINID": "CV0001",
+  "TRADEDATE": "30-JUN-2026",   // Format: DD-MMM-YYYY
+  "TYPE": "BUY PROCESS"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    { "MSG": "Process completed successfully" }
+  ]
+}
+TABLE:
+📌 NOTE: On completion of the MTF Buy Trade Process, immediately call MTF Buy Trade Posting (Step 27).
+TABLE:
+STEP 27   MTF Buy Trade Posting
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/MTFTradeProcess
+P: Request Payload (JSON)
+TABLE:
+{
+  "LOGINID": "CV0001",
+  "TRADEDATE": "30-JUN-2026",   // Format: DD-MMM-YYYY
+  "TYPE": "BUY POSTING"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    { "MSG": "Process completed successfully" }
+  ]
+}
+TABLE:
+STEP 28   MTF Sell Process and Posting (Good To Go)
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | EARLYPAYIN
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "EARLYPAYIN",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "True" }] }
+TABLE:
+STEP 29   MTF Sell Process and Posting
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/MTFTradeProcess
+P: Request Payload (JSON)
+TABLE:
+{
+  "LOGINID": "CV0001",
+  "TRADEDATE": "30-JUN-2026",   // Format: DD-MMM-YYYY
+  "TYPE": "SELL PROCESS AND POSTING"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    { "MSG": "Process completed successfully" }
+  ]
+}
+TABLE:
+STEP 30   Weekly Auto Closure (Good To Go)
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | WEEKLYAUTOCLOSURE
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "WEEKLYAUTOCLOSURE",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "True" }] }
+TABLE:
+STEP 31   Weekly Auto Closure — Check Already Triggered
+P: Confirms whether the Weekly Auto Closure process has already been triggered for the day, to avoid firing it twice.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | CHECKWEEKLYAUTOCLOSURE
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "CHECKWEEKLYAUTOCLOSURE",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "True" }] }
+TABLE:
+STEP 32   Weekly Auto Closure
+P: Runs independently at 4:00 PM on the trading day.
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/MTFTradeProcess
+Schedule | 4:00 PM on trading day
+P: Request Payload (JSON)
+TABLE:
+{
+  "LOGINID": "CV0001",
+  "TRADEDATE": "30-JUN-2026",   // Format: DD-MMM-YYYY
+  "TYPE": "WEEKLY AUTOCLOSURE"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": [
+    { "MSG": "Process completed successfully" }
+  ]
+}
+TABLE:
+📌 NOTE: Runs independently at 4:00 PM. Do not trigger manually outside this window.
+TABLE:
+STEP 33   Corporate Action Position Change (FO Bill Posting — Good To Go)
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+Segment | DR
+ProcessName | BILLPOSTING
+P: Request Payload (JSON)
+TABLE:
+{
+  "Segment": "DR",
+  "ProcessName": "BILLPOSTING",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "True" }] }
+TABLE:
+STEP 34   Corporate Action Position Change
+P: The Covasant team first confirms both source files — _10412_ADJUSTED_POSITIONS.csv and _10412_EXISTING_POSITIONS.csv — are available at the specified location (shared by the Ops team) between 10:00 PM and 11:59 PM. Only after both files are confirmed should the template be created and processed, following the same pattern used for Equity (Steps 2–10).
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/getNewTradeProcess
+GROUPNAME | FOPositionChange
+P: Request Payload (JSON)
+TABLE:
+// 1) Create the Process ID
+{
+  "GROUPNAME": "FOPositionChange",  -- SegmentName
+  "LOGINID": "CV0001",              -- UserID
+  "TRADEDATE": "2026-06-29",        -- TradeDate
+  "PROCESSID": "0"
+}
+ 
+// 2) Upload both files via the Chunk Upload flow (Steps 4, 5, 7)
+ 
+// 3) Re-call with the generated Process ID to progress/complete the template
+{
+  "GROUPNAME": "FOPositionChange",
+  "LOGINID": "CV0001",
+  "TRADEDATE": "2026-06-29",
+  "PROCESSID": "18756"
+}
+TABLE:
+📌 NOTE: Do not create the FOPositionChange template until both required CSV files have been verified as present — attempting the process before both files land can leave the template in an incomplete state.
+TABLE:
+STEP 35   Daily Margin Reporting — Check Status
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/CombinedMarginProcess
+P: Request Payload (JSON)
+TABLE:
+{
+  "BUTTONNAME": "REFRESH",
+  "LOGINID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": { "Table1": [] },
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+📌 NOTE: If Table1 is blank, the process has not yet been triggered.
+TABLE:
+STEP 36   Daily Margin Reporting API — Trigger
+TABLE:
+Method | POST
+URL | http://10.167.202.164:8003/v1/api/process/CombinedMarginProcess
+P: Request Payload (JSON)
+TABLE:
+{
+  "BUTTONNAME": "COMBINEDMARGIN_PROCESS",
+  "LOGINID": "CV0001",
+  "MARGINDATE": "19-Jun-2026"
+}
+P: Response (JSON)
+TABLE:
+{
+  "Status": "Success",
+  "Result": {
+    "Table1": [
+      { "MSG": "Process started successfully ! Click Refresh Button for Current Status." }
+    ]
+  },
+  "filename": null,
+  "PDFData": null
+}
+TABLE:
+STEP 37   Daily Margin Statement — Already Triggered Check
+P: Checks whether the Daily Margin Statement process has already been triggered for the day.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | CHECKDAILYMARGINSTATEMENT
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "CHECKDAILYMARGINSTATEMENT",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "DAILYMARGINSTATEMENT IS NOT TRIGGERED" }] }
+TABLE:
+STEP 38   Daily Margin Statement — Trigger
+P: Triggers generation of the Daily Margin Statement.
+TABLE:
+Method | POST
+URL | http://10.167.202.234:8087/api/edp/file_process_status
+ProcessName | DAILYMARGINSTATEMENT
+P: Request Payload (JSON)
+TABLE:
+{
+  "ProcessName": "DAILYMARGINSTATEMENT",
+  "UserID": "CV0001"
+}
+P: Response (JSON)
+TABLE:
+{ "Status": "Success", "Data": [{ "MSG": "TRUE" }] }
+P: Quick Reference — All 38 Steps
+TABLE:
+Step | Purpose | API Server — Endpoint
+1 | Check Holiday Master | EDP Status API — BeginFileUpload
+2 | Get New Trade Process (Create Process ID) | Main Process API — /getNewTradeProcess (PROCESSID:0)
+3 | Check Process ID Created/Triggered | EDP Status API — CheckProcessIDExist
+4 | Get File Upload Setting Details | Main Process API — /GetNewTradeProcessPromodalUploadSettings
+5 | File Upload — Chunk API | Main Process API — /SaveTradePromodalUploadChunkFile
+6 | Get Existing Process ID | Brokerage API — /getdropdown
+7 | File Details Entry in CBOS Source | Main Process API — /SaveNewTradeProcessPromodalUploadFile
+8 | Skip Optional Subprocess in Template | Main Process API — /UpdateNewTradeProcessProcessDetailsIsMandatory
+9 | File Upload Status (Good To Go) | EDP Status API — FILEUPLOAD
+10 | Get New Trade Process (With ProcessID) | Main Process API — /getNewTradeProcess (with ProcessID)
+11 | Check EDP Bill Posting | EDP Status API — BILLPOSTING (EQ)
+12 | Segment Recon | EDP Status API — RECON (DR)
+13 | Segment Recon Trigger Check | EDP Status API — CHECKRECON (DR)
+14 | Contract Note Generation | EDP Status API — CONTRACTNOTEGENERATION (DR)
+15 | Contract Note Generation Triggered Check | EDP Status API — CHECKCONTRACTNOTEGENERATION (DR)
+16 | Collateral Valuation — Good To Go | EDP Status API — CollateralValuation
+17 | Collateral Valuation Check Status | Main Process API — /GetCollateralValuation (REFRESH)
+18 | Collateral Valuation Trigger | Main Process API — /GetCollateralValuation (DATEWISE)
+19 | Collateral Allocation — Good To Go | EDP Status API — CollateralAllocation
+20 | Collateral Allocation Check Status | EDP Status API — MTFCOLLALLOC
+21 | Collateral Allocation Trigger | Main Process API — /MTFTradeProcessCollateralAllocation
+22 | Fund Transfer — Good To Go | EDP Status API — FundTransfer
+23 | Fund Transfer Check Status | EDP Status API — MTFFUNDTRAN
+24 | Fund Transfer Trigger | Main Process API — /MTFTradeProcessFundTransfer
+25 | Cash Bill Posting GTG (MTF Buy) | EDP Status API — BILLPOSTING (EQ)
+26 | MTF Buy Trade | Main Process API — /MTFTradeProcess (BUY PROCESS)
+27 | MTF Buy Trade Posting | Main Process API — /MTFTradeProcess (BUY POSTING)
+28 | MTF Sell Process & Posting — GTG | EDP Status API — EARLYPAYIN
+29 | MTF Sell Process and Posting | Main Process API — /MTFTradeProcess (SELL PROCESS AND POSTING)
+30 | Weekly Auto Closure — Good To Go | EDP Status API — WEEKLYAUTOCLOSURE
+31 | Weekly Auto Closure — Already Triggered Check | EDP Status API — CHECKWEEKLYAUTOCLOSURE
+32 | Weekly Auto Closure (4PM Trading Day) | Main Process API — /MTFTradeProcess (WEEKLY AUTOCLOSURE)
+33 | Corporate Action — FO Bill GTG | EDP Status API — BILLPOSTING (DR)
+34 | Corporate Action Position Change | Main Process API — /getNewTradeProcess (FOPositionChange)
+35 | Daily Margin Reporting Check Status | Main Process API — /CombinedMarginProcess (REFRESH)
+36 | Daily Margin Reporting Trigger | Main Process API — /CombinedMarginProcess (COMBINEDMARGIN_PROCESS)
+37 | Daily Margin Statement — Triggered Check | EDP Status API — CHECKDAILYMARGINSTATEMENT
+38 | Daily Margin Statement — Trigger | EDP Status API — DAILYMARGINSTATEMENT
+P: EDP Trade Process API Details  |  Confidential  |  Internal Use Only

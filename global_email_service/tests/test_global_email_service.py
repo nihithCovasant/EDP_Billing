@@ -39,7 +39,7 @@ MCX_RECON_ROW = {
     "sequence_order": 6,
     "segment_status": "FAILED",
     "current_process": "RECON",
-    "current_phase": "AWAIT_RECON",
+    "current_state": "WAITING_FOR_RECON",
     "process_id": "17006",
     "skip_category": "CBOS_ERROR",
     "skip_reason": "RECON check error: CBOS Status=RECON_MISMATCH — reconciliation could not be completed",
@@ -215,17 +215,17 @@ def test_customer_facing_status_labels():
     assert ">FAILED<" not in html_body
 
 
-def test_customer_facing_column_headers_and_phase_labels():
+def test_customer_facing_column_headers_and_state_labels():
     html_body, _ = render_email_body([MCX_RECON_ROW])
     assert "Remarks" in html_body
     assert "Stage" in html_body
     assert "Outcome" not in html_body
     assert "Skip Category" not in html_body
     assert "Skip Reason" not in html_body
-    assert "Current Phase" not in html_body
+    assert "Current State" not in html_body
     assert "Completion" in html_body
     assert "Timed Out" not in html_body
-    assert "AWAIT_RECON" not in html_body
+    assert "WAITING_FOR_RECON" not in html_body
 
 
 def test_stage_good_to_go_for_file_upload_failure():
@@ -233,7 +233,7 @@ def test_stage_good_to_go_for_file_upload_failure():
         "segment_code": "SL",
         "segment_status": "FAILED",
         "current_process": "FILEUPLOAD",
-        "current_phase": "AWAIT_FILE_UPLOAD",
+        "current_state": "WAITING_FOR_FILE_UPLOAD",
     }
     html_body, _ = render_email_body([row])
     assert "Good to Go" in html_body

@@ -249,6 +249,8 @@ def build_default_workflow_json(
             entry["gtg_process_name"] = proc["gtg_process_name"]
         if proc.get("window_start"):
             entry["window_start"] = proc["window_start"]
+        if proc.get("window_end"):
+            entry["window_end"] = proc["window_end"]
         built_post_trade.append(entry)
 
     return {

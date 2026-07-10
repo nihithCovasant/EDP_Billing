@@ -62,7 +62,7 @@ class SegmentSummary(BaseModel):
     sequence_order: int
     segment_status: str
     current_process: Optional[str] = None
-    current_phase: Optional[str] = None
+    current_state: Optional[str] = None
     process_id: Optional[str] = None
     process_id_reserved_at: Optional[str] = None
     skip_category: Optional[str] = None
@@ -100,7 +100,7 @@ class SegmentDetailResponse(BaseModel):
     sequence_order: int
     segment_status: str
     current_process: Optional[str] = None
-    current_phase: Optional[str] = None
+    current_state: Optional[str] = None
     process_id: Optional[str] = None
     process_id_reserved_at: Optional[str] = None
     skip_category: Optional[str] = None

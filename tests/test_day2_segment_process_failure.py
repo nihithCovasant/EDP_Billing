@@ -9,7 +9,7 @@ normally. Ops can then recover via repository.retry_segment().
 from __future__ import annotations
 
 from src.agent.edp import repository
-from src.agent.edp.models import SegmentPhase, SegmentStatus
+from src.agent.edp.models import SegmentState, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.repository import get_day_summary
 from src.agent.edp.utils.constants import SEGMENT_ORDER
@@ -39,7 +39,7 @@ async def test_second_process_failure_does_not_block_other_segments(cfg, session
     assert failing_row.segment_status == SegmentStatus.FAILED
     assert failing_row.skip_category == "CBOS_ERROR"
     assert FAILING_PROCESS in failing_row.skip_reason
-    assert failing_row.current_phase == SegmentPhase.AWAIT_BILLPOSTING
+    assert failing_row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
     assert failing_row.completed_at is not None
     assert failing_row.started_at is not None
 
@@ -86,7 +86,7 @@ async def test_manual_retry_then_day_completes(cfg, session_factory, test_date):
 
     assert retried is not None
     assert retried.segment_status == SegmentStatus.PENDING
-    assert retried.current_phase is None
+    assert retried.current_state is None
     assert retried.skip_category is None
     assert retried.skip_reason is None
     assert retried.processes_json == {}

@@ -10,3 +10,4 @@ from ..PostTradeStateMachine import PostTradeStateMachine
 class ColValStateMachine(PostTradeStateMachine):
     SEGMENT_CODE = "COLVAL"
     TRIGGER_METHOD_NAME = "trigger_collateral_valuation"
+    CHECK_TRIGGERED_METHOD_NAME = "check_collateral_valuation_triggered"

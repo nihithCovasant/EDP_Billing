@@ -4,15 +4,21 @@ SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF) — none are special-cased, so
 every one of the 10 files under segments/ is a ~5-line subclass that just
 sets SEGMENT_CODE; all step logic lives once, here.
 
-Ported from the old pipeline/stages.py free functions — same CBOS calls,
-same processes_json bookkeeping, same crash-recovery logic for TRIGGER —
-just returning a SegmentHandlerResult instead of mutating row.current_phase
-directly and returning a bare StageResult. AbstractStateMachine.update_state()
-is what actually applies next_phase/next_process/next_status to the row.
+flow states (no "phases" — see models.SegmentState):
+  INIT -> WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING ->
+  WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
 
-7-step pipeline:
-  HOLIDAY_CHECK -> RESERVE_PID -> AWAIT_FILE_UPLOAD -> TRIGGER ->
-  AWAIT_BILLPOSTING -> AWAIT_RECON -> AWAIT_CONTRACT_NOTE -> (COMPLETED)
+INIT's handler does the holiday-check operation; WAITING_FOR_FILE_UPLOAD's
+handler does the reserve/confirm-PID operation on its first entry (no
+process_id yet), then polls FILEUPLOAD on every later entry — neither
+"holiday check" nor "reserve process id" is its own state, both are
+operations folded into the state that owns them, per the happy-flow tables.
+TRIGGERED is the one genuine crash-safety-critical wait in this pipeline.
+WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION are pure polls —
+CBOS auto-runs each step once TRIGGERED fires, the agent only observes.
+
+Each handler call does exactly one action and returns — AbstractStateMachine
+applies the resulting single state transition; there is no internal loop.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import SegmentExecution, SegmentPhase
+from ..models import SegmentExecution, SegmentState
 from ..utils.json_helpers import (
     get_proc,
     inc_poll,
@@ -33,7 +39,7 @@ from ..utils.json_helpers import (
 )
 from ..utils.log_fmt import stage_log
 from .AbstractStateMachine import AbstractSegmentStateMachine
-from .SegmentHandlerResult import ADVANCE, BLOCKED, STOP_NEXT, SegmentHandlerResult
+from .SegmentHandlerResult import ADVANCE, BLOCKED, SegmentHandlerResult
 from .TradeSegmentTransitionFactory import REAL_SEGMENT_TRANSITION_MAP
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
@@ -43,27 +49,26 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
     def __init__(self) -> None:
         super().__init__(REAL_SEGMENT_TRANSITION_MAP)
 
-    def get_state_handler(self, phase: SegmentPhase | None):
+    def get_state_handler(self, state: SegmentState | None):
         handlers = {
-            SegmentPhase.HOLIDAY_CHECK: self.handle_holiday_check,
-            SegmentPhase.RESERVE_PID: self.handle_reserve_pid,
-            SegmentPhase.AWAIT_FILE_UPLOAD: self.handle_await_file_upload,
-            SegmentPhase.TRIGGER: self.handle_trigger,
-            SegmentPhase.AWAIT_BILLPOSTING: self.handle_await_billposting,
-            SegmentPhase.AWAIT_RECON: self.handle_await_recon,
-            SegmentPhase.AWAIT_CONTRACT_NOTE: self.handle_await_contract_note,
+            SegmentState.INIT: self.handle_init,
+            SegmentState.WAITING_FOR_FILE_UPLOAD: self.handle_waiting_for_file_upload,
+            SegmentState.TRIGGERED: self.handle_triggered,
+            SegmentState.WAITING_FOR_BILLPOSTING: self.handle_waiting_for_billposting,
+            SegmentState.WAITING_FOR_RECON: self.handle_waiting_for_recon,
+            SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION: self.handle_waiting_for_contract_note_generation,
         }
-        return handlers.get(phase)
+        return handlers.get(state)
 
     # ---------------------------------------------------------------
-    # Stage 1 — Holiday Check
+    # INIT — operation: holiday check
     # ---------------------------------------------------------------
 
-    async def handle_holiday_check(
+    async def handle_init(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(BeginFileUpload). SKIP -> holiday | FALSE -> not yet open | TRUE -> proceed."""
-        logger.info(stage_log(row.segment_code, "HOLIDAY_CHECK", "Checking holiday gate (BeginFileUpload)"))
+        logger.info(stage_log(row.segment_code, "INIT", "Checking holiday gate (BeginFileUpload)"))
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="BeginFileUpload", user_id=login_id,
@@ -76,20 +81,20 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if result.is_error:
             if result.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, "HOLIDAY_CHECK",
+                    row.segment_code, "INIT",
                     "Transient CBOS error — will retry next cycle",
                     error=result.error, poll=poll_count,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, "HOLIDAY_CHECK",
+                row.segment_code, "INIT",
                 "Permanent CBOS error — marking FAILED", error=result.error,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"BeginFileUpload error: {result.error}", now)
 
         if result.is_skip:
             logger.info(stage_log(
-                row.segment_code, "HOLIDAY_CHECK",
+                row.segment_code, "INIT",
                 "Market HOLIDAY — segment will be SKIPPED",
                 response=result.response, at=now.strftime("%H:%M:%S %Z"),
             ))
@@ -98,26 +103,43 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         if result.is_pending:
             logger.info(stage_log(
-                row.segment_code, "HOLIDAY_CHECK",
+                row.segment_code, "INIT",
                 "EDP window not yet open — will check next cycle",
                 response=result.response, poll=poll_count,
             ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
         logger.info(stage_log(
-            row.segment_code, "HOLIDAY_CHECK",
-            "Holiday check PASSED — proceeding to RESERVE_PID",
+            row.segment_code, "INIT",
+            "Holiday check PASSED — proceeding to WAITING_FOR_FILE_UPLOAD",
             response=result.response, at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_stage_done(row, "holiday_check", result.response, now)
-        return SegmentHandlerResult(outcome=ADVANCE, next_phase=SegmentPhase.RESERVE_PID, next_process=None)
+        return SegmentHandlerResult(
+            outcome=ADVANCE, next_state=SegmentState.WAITING_FOR_FILE_UPLOAD, next_process=None,
+        )
 
     # ---------------------------------------------------------------
-    # Stage 2 — Get or Reserve Process ID
+    # WAITING_FOR_FILE_UPLOAD — operation on entry: reserve/confirm PID
+    # (once); then poll FILEUPLOAD on every later entry.
     # ---------------------------------------------------------------
 
-    async def handle_reserve_pid(
+    async def handle_waiting_for_file_upload(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
+    ) -> SegmentHandlerResult:
+        """
+        First entry (row.process_id not yet resolved): reserve/confirm the
+        process ID so RPA/Ops can reference it during upload — one action,
+        stays in this same state (BLOCKED — no transition). Every later
+        entry: poll file_process_status(FILEUPLOAD) until exchange files
+        are uploaded, then advance to TRIGGERED.
+        """
+        if not row.process_id:
+            return await self._reserve_process_id(cbos, row, login_id, now)
+        return await self._poll_file_upload(cbos, row, session, login_id, now)
+
+    async def _reserve_process_id(
+        self, cbos: CbosClient, row: SegmentExecution, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """
         1. POST getdropdown(EXISTINGPROCESSID) — reuse an existing PID if RPA
@@ -125,7 +147,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         2. Else POST getNewTradeProcess(PROCESSID="0") — reserve a new PID.
         """
         logger.info(stage_log(
-            row.segment_code, "RESERVE_PID",
+            row.segment_code, "WAITING_FOR_FILE_UPLOAD",
             "Checking for an existing process ID (getdropdown EXISTINGPROCESSID)",
             trade_date=str(row.trade_date),
         ))
@@ -136,7 +158,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         if existing.found and existing.process_id:
             logger.info(stage_log(
-                row.segment_code, "RESERVE_PID",
+                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                 "Existing process ID found — reusing it, skipping reservation",
                 pid=existing.process_id, desc=existing.description,
             ))
@@ -144,14 +166,14 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         if existing.error and existing.is_transient:
             logger.warning(stage_log(
-                row.segment_code, "RESERVE_PID",
+                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                 "Transient CBOS error on getdropdown(EXISTINGPROCESSID) — will retry next cycle",
                 error=existing.error,
             ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
         logger.info(stage_log(
-            row.segment_code, "RESERVE_PID",
+            row.segment_code, "WAITING_FOR_FILE_UPLOAD",
             "No existing process ID — reserving a new one (PROCESSID=0)",
             trade_date=str(row.trade_date),
         ))
@@ -163,12 +185,12 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if not result.success or not result.process_id:
             if result.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, "RESERVE_PID",
+                    row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                     "Transient CBOS error — will retry next cycle", error=result.error,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, "RESERVE_PID",
+                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                 "Failed to allocate process ID — marking FAILED", error=result.error,
             ))
             return self._fail_result(
@@ -180,7 +202,10 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
     def _pid_resolved(
         self, row: SegmentExecution, process_id: str, source: str, now: datetime,
     ) -> SegmentHandlerResult:
-        """Shared bookkeeping once Step 2 resolves a process_id, either way."""
+        """Shared bookkeeping once the process_id resolves, either way.
+        Stays in WAITING_FOR_FILE_UPLOAD (BLOCKED — no state change); the
+        next entry to this handler will see row.process_id set and poll
+        FILEUPLOAD instead of reserving again."""
         row.process_id = process_id
         row.process_id_reserved_at = now
         set_proc(row, "trigger", {
@@ -191,19 +216,13 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         })
 
         logger.info(stage_log(
-            row.segment_code, "RESERVE_PID",
-            f"Process ID resolved ({source}) — proceeding to AWAIT_FILE_UPLOAD",
+            row.segment_code, "WAITING_FOR_FILE_UPLOAD",
+            f"Process ID resolved ({source}) — will poll FILEUPLOAD next cycle",
             pid=process_id, source=source, resolved_at=now.strftime("%H:%M:%S %Z"),
         ))
-        return SegmentHandlerResult(
-            outcome=ADVANCE, next_phase=SegmentPhase.AWAIT_FILE_UPLOAD, next_process="FILEUPLOAD",
-        )
+        return SegmentHandlerResult(outcome=BLOCKED, next_process="FILEUPLOAD")
 
-    # ---------------------------------------------------------------
-    # Stage 3 — Await File Upload
-    # ---------------------------------------------------------------
-
-    async def handle_await_file_upload(
+    async def _poll_file_upload(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(FILEUPLOAD) — poll until exchange files are uploaded."""
@@ -219,45 +238,49 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if result.is_error:
             if result.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, "AWAIT_FILE_UPLOAD",
+                    row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                     "Transient CBOS error — will retry next cycle", error=result.error, poll=poll_count,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, "AWAIT_FILE_UPLOAD",
+                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                 "Permanent CBOS error — marking FAILED", error=result.error,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"FILEUPLOAD check error: {result.error}", now)
 
-        if result.is_skip:
-            logger.info(stage_log(
-                row.segment_code, "AWAIT_FILE_UPLOAD",
-                "CBOS returned SKIP for FILEUPLOAD — segment will be SKIPPED",
-                response=result.response, poll=poll_count,
-            ))
-            return self._skip_result(row, "CBOS_SKIP", "FILEUPLOAD returned SKIP", now)
-
         if result.is_pending:
             if poll_count == 1 or poll_count % 5 == 0:
                 logger.info(stage_log(
-                    row.segment_code, "AWAIT_FILE_UPLOAD",
+                    row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                     "Exchange files not yet uploaded — waiting", response=result.response, poll=poll_count,
                 ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
+        # result.is_skip is deliberately not a distinct edge here — the
+        # happy-flow tables document SKIPPED only off INIT (holiday check);
+        # an unexpected SKIP mid-pipeline is treated as a CBOS error.
+        if result.is_skip:
+            logger.error(stage_log(
+                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
+                "Unexpected SKIP for FILEUPLOAD (not a holiday-check state) — marking FAILED",
+                response=result.response, poll=poll_count,
+            ))
+            return self._fail_result(row, "CBOS_ERROR", "Unexpected FILEUPLOAD SKIP response", now)
+
         logger.info(stage_log(
-            row.segment_code, "AWAIT_FILE_UPLOAD",
-            "All exchange files uploaded — proceeding to TRIGGER",
+            row.segment_code, "WAITING_FOR_FILE_UPLOAD",
+            "All exchange files uploaded — proceeding to TRIGGERED",
             response=result.response, total_polls=poll_count, ready_at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_stage_done(row, "file_upload_ready", result.response, now)
-        return SegmentHandlerResult(outcome=ADVANCE, next_phase=SegmentPhase.TRIGGER, next_process=None)
+        return SegmentHandlerResult(outcome=ADVANCE, next_state=SegmentState.TRIGGERED, next_process=None)
 
     # ---------------------------------------------------------------
-    # Stage 4 — Trigger Processing
+    # TRIGGERED — the one genuine crash-safety-critical wait: fire
+    # getNewTradeProcess with the real PID.
     # ---------------------------------------------------------------
 
-    async def handle_trigger(
+    async def handle_triggered(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """
@@ -272,7 +295,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         """
         if not row.process_id:
             logger.warning(stage_log(
-                row.segment_code, "TRIGGER",
+                row.segment_code, "TRIGGERED",
                 "process_id missing — attempting crash recovery from CBOS",
                 trade_date=str(row.trade_date),
             ))
@@ -282,12 +305,12 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             if recovery.found and recovery.process_id:
                 row.process_id = recovery.process_id
                 logger.info(stage_log(
-                    row.segment_code, "TRIGGER", "process_id recovered from CBOS",
+                    row.segment_code, "TRIGGERED", "process_id recovered from CBOS",
                     pid=recovery.process_id, desc=recovery.description,
                 ))
             else:
                 logger.error(stage_log(
-                    row.segment_code, "TRIGGER",
+                    row.segment_code, "TRIGGERED",
                     "Cannot recover process_id — marking FAILED", error=recovery.error,
                 ))
                 return self._fail_result(row, "CBOS_ERROR", "No process_id available for trigger", now)
@@ -305,7 +328,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         await session.commit()
 
         logger.info(stage_log(
-            row.segment_code, "TRIGGER", "Firing process trigger (getNewTradeProcess)",
+            row.segment_code, "TRIGGERED", "Firing process trigger (getNewTradeProcess)",
             pid=row.process_id, trade_date=str(row.trade_date), triggered_at=now.strftime("%H:%M:%S %Z"),
         ))
 
@@ -324,7 +347,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         TRIGGERED, don't re-fire); all PENDING means safe to trigger now.
         """
         logger.warning(stage_log(
-            row.segment_code, "TRIGGER",
+            row.segment_code, "TRIGGERED",
             "Resuming with an unconfirmed trigger attempt — checking CBOS "
             "before deciding whether to re-trigger",
             pid=row.process_id,
@@ -335,13 +358,13 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if not check.success:
             if check.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, "TRIGGER",
+                    row.segment_code, "TRIGGERED",
                     "Transient CBOS error while checking recovery state — will retry next cycle",
                     pid=row.process_id, error=check.error,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, "TRIGGER",
+                row.segment_code, "TRIGGERED",
                 "Permanent CBOS error while checking recovery state — marking FAILED",
                 pid=row.process_id, error=check.error,
             ))
@@ -353,15 +376,15 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         )
         if already_running:
             logger.info(stage_log(
-                row.segment_code, "TRIGGER",
+                row.segment_code, "TRIGGERED",
                 "CBOS already received/executing the trigger — NOT re-triggering; "
-                "catching DB up to TRIGGERED",
+                "catching DB up to WAITING_FOR_BILLPOSTING",
                 pid=row.process_id, steps=[f"{s.name}:{s.status}" for s in check.steps],
             ))
             return self._finalize_trigger_success(row, row.process_id, check.is_runnable, now)
 
         logger.info(stage_log(
-            row.segment_code, "TRIGGER",
+            row.segment_code, "TRIGGERED",
             "CBOS never received the trigger (all steps PENDING) — safe to re-trigger",
             pid=row.process_id,
         ))
@@ -377,7 +400,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if not result.success:
             if result.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, "TRIGGER",
+                    row.segment_code, "TRIGGERED",
                     "Transient CBOS error — leaving TRIGGERING; will re-check next cycle",
                     pid=row.process_id, error=result.error,
                 ))
@@ -386,7 +409,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                 # _recover_trigger() instead of blindly re-firing.
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, "TRIGGER", "Trigger FAILED — marking segment FAILED",
+                row.segment_code, "TRIGGERED", "Trigger FAILED — marking segment FAILED",
                 pid=row.process_id, error=result.error,
             ))
             record_trigger_failed(row, result.error or "TRIGGER_FAILED", now)
@@ -404,38 +427,40 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         record_trigger(row, process_id, is_runnable, now)
 
         logger.info(stage_log(
-            row.segment_code, "TRIGGER", "Process TRIGGERED successfully — will poll BILLPOSTING next cycle",
+            row.segment_code, "TRIGGERED", "Process TRIGGERED successfully — will poll BILLPOSTING next cycle",
             pid=process_id, is_runnable=is_runnable, triggered_at=now.strftime("%H:%M:%S %Z"),
         ))
         return SegmentHandlerResult(
-            outcome=STOP_NEXT, next_phase=SegmentPhase.AWAIT_BILLPOSTING, next_process="BILLPOSTING",
+            outcome=ADVANCE, next_state=SegmentState.WAITING_FOR_BILLPOSTING, next_process="BILLPOSTING",
         )
 
     # ---------------------------------------------------------------
-    # Stages 5 / 6 / 7 — Poll CBOS completion status
+    # WAITING_FOR_BILLPOSTING / WAITING_FOR_RECON /
+    # WAITING_FOR_CONTRACT_NOTE_GENERATION — pure polls, CBOS auto-runs
+    # each step once TRIGGERED fires; the agent only observes.
     # ---------------------------------------------------------------
 
-    async def handle_await_billposting(
+    async def handle_waiting_for_billposting(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(BILLPOSTING) — wait until billing calculations complete."""
         return await self._poll_confirmation(
             cbos, row, session, login_id, now,
             process_name="BILLPOSTING", stage_key="bill_posting",
-            next_phase=SegmentPhase.AWAIT_RECON, next_process="RECON",
+            next_state=SegmentState.WAITING_FOR_RECON, next_process="RECON",
         )
 
-    async def handle_await_recon(
+    async def handle_waiting_for_recon(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(RECON) — wait until reconciliation completes."""
         return await self._poll_confirmation(
             cbos, row, session, login_id, now,
             process_name="RECON", stage_key="recon",
-            next_phase=SegmentPhase.AWAIT_CONTRACT_NOTE, next_process="CONTRACTNOTEGENERATION",
+            next_state=SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION, next_process="CONTRACTNOTEGENERATION",
         )
 
-    async def handle_await_contract_note(
+    async def handle_waiting_for_contract_note_generation(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(CONTRACTNOTEGENERATION) — wait until contract notes complete."""
@@ -451,34 +476,34 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if result.is_error:
             if result.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, "AWAIT_CONTRACT_NOTE",
+                    row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
                     "Transient CBOS error — will retry next cycle", error=result.error, poll=poll_count,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, "AWAIT_CONTRACT_NOTE",
+                row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
                 "Permanent CBOS error — marking FAILED", error=result.error,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"CONTRACTNOTEGENERATION error: {result.error}", now)
 
-        if result.is_skip:
-            logger.info(stage_log(
-                row.segment_code, "AWAIT_CONTRACT_NOTE",
-                "CBOS returned SKIP for CONTRACTNOTEGENERATION — segment will be SKIPPED",
-                response=result.response, poll=poll_count,
-            ))
-            return self._skip_result(row, "CBOS_SKIP", "CONTRACTNOTEGENERATION returned SKIP", now)
-
         if result.is_pending:
             if poll_count == 1 or poll_count % 5 == 0:
                 logger.info(stage_log(
-                    row.segment_code, "AWAIT_CONTRACT_NOTE",
+                    row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
                     "Contract notes not yet generated — waiting", response=result.response, poll=poll_count,
                 ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
+        if result.is_skip:
+            logger.error(stage_log(
+                row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
+                "Unexpected SKIP for CONTRACTNOTEGENERATION — marking FAILED",
+                response=result.response, poll=poll_count,
+            ))
+            return self._fail_result(row, "CBOS_ERROR", "Unexpected CONTRACTNOTEGENERATION SKIP response", now)
+
         logger.info(stage_log(
-            row.segment_code, "AWAIT_CONTRACT_NOTE",
+            row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
             "Contract notes CONFIRMED — segment COMPLETED",
             response=result.response, total_polls=poll_count, confirmed_at=now.strftime("%H:%M:%S %Z"),
         ))
@@ -494,7 +519,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         now: datetime,
         process_name: str,
         stage_key: str,
-        next_phase: SegmentPhase,
+        next_state: SegmentState,
         next_process: str,
     ) -> SegmentHandlerResult:
         poll_state = get_proc(row, stage_key)
@@ -506,39 +531,39 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         inc_poll(row, stage_key, result.response)
         await session.flush()
 
-        stage_name = f"AWAIT_{process_name}"
+        state_name = f"WAITING_FOR_{process_name}"
 
         if result.is_error:
             if result.is_transient:
                 logger.warning(stage_log(
-                    row.segment_code, stage_name,
+                    row.segment_code, state_name,
                     "Transient CBOS error — will retry next cycle", error=result.error, poll=poll_count,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
-                row.segment_code, stage_name, "Permanent CBOS error — marking FAILED", error=result.error,
+                row.segment_code, state_name, "Permanent CBOS error — marking FAILED", error=result.error,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"{process_name} check error: {result.error}", now)
-
-        if result.is_skip:
-            logger.info(stage_log(
-                row.segment_code, stage_name,
-                f"CBOS returned SKIP for {process_name} — segment will be SKIPPED",
-                response=result.response, poll=poll_count,
-            ))
-            return self._skip_result(row, "CBOS_SKIP", f"{process_name} returned SKIP", now)
 
         if result.is_pending:
             if poll_count == 1 or poll_count % 5 == 0:
                 logger.info(stage_log(
-                    row.segment_code, stage_name,
+                    row.segment_code, state_name,
                     f"{process_name} not yet complete — waiting", response=result.response, poll=poll_count,
                 ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
+        if result.is_skip:
+            logger.error(stage_log(
+                row.segment_code, state_name,
+                f"Unexpected SKIP for {process_name} — marking FAILED",
+                response=result.response, poll=poll_count,
+            ))
+            return self._fail_result(row, "CBOS_ERROR", f"Unexpected {process_name} SKIP response", now)
+
         logger.info(stage_log(
-            row.segment_code, stage_name, f"{process_name} CONFIRMED — advancing to {next_phase.value}",
+            row.segment_code, state_name, f"{process_name} CONFIRMED — advancing to {next_state.value}",
             response=result.response, total_polls=poll_count, confirmed_at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_stage_done(row, stage_key, result.response, now)
-        return SegmentHandlerResult(outcome=ADVANCE, next_phase=next_phase, next_process=next_process)
+        return SegmentHandlerResult(outcome=ADVANCE, next_state=next_state, next_process=next_process)

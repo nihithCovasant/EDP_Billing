@@ -11,7 +11,7 @@ Usage:
   from .utils.log_fmt import edp_log, seg_log, stage_log, cbos_log
 
   logger.info(seg_log("EQ", "2026-07-01", "Segment started", window_start="17:00"))
-  logger.info(stage_log("EQ", "HOLIDAY_CHECK", "poll", poll=3, response="FALSE"))
+  logger.info(stage_log("EQ", "INIT", "poll", poll=3, response="FALSE"))
   logger.info(cbos_log("EQ", "BeginFileUpload", "OK", elapsed_ms=120, response="TRUE"))
 """
 

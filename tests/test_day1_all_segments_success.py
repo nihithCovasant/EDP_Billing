@@ -3,9 +3,9 @@ Day 1 — happy path.
 
 All 10 segments (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY,
 NSECOM, MF) complete successfully in sequence order, each driven through
-the identical generic 7-step pipeline — none are special-cased — via the
-real orchestrator + pipeline + CbosClient in-process mock (no network calls,
-fully deterministic).
+the identical generic 6-state pipeline — none are special-cased — via the
+real orchestrator + state machine + CbosClient in-process mock (no network
+calls, fully deterministic).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ async def test_all_segments_complete_successfully(cfg, session_factory, test_dat
             f"segment {code} expected COMPLETED, got {row.segment_status} "
             f"(skip_category={row.skip_category!r} skip_reason={row.skip_reason!r})"
         )
-        assert row.current_phase is not None and row.current_phase.value == "DONE"
+        assert row.current_state is None, "current_state is cleared (no DONE sentinel) once COMPLETED"
         assert row.completed_at is not None
         assert row.started_at is not None
         assert row.skip_category is None
@@ -73,7 +73,7 @@ async def test_segments_run_in_fixed_sequence_order(cfg, session_factory, test_d
 
 async def test_reserve_pid_step2_reuses_existing_process_id(cfg, session_factory, test_date):
     """
-    Step 2 of the pipeline: RESERVE_PID must check getdropdown
+    WAITING_FOR_FILE_UPLOAD's PID-reservation step must check getdropdown
     (EXISTINGPROCESSID) first. Simulate RPA having already reserved a PID
     for CUR by calling get_new_trade_process(PROCESSID="0") directly against
     the same CbosClient mock before the orchestrator ever touches CUR — the

@@ -3,7 +3,7 @@ edpb_segment_execution table — CRUD, seeding, state transitions, heartbeat,
 and queries.
 
 No pod-to-pod locking (single-instance deployment) — an IN_PROGRESS row
-resumes at its persisted current_phase on restart. The TRIGGERING
+resumes at its persisted current_state on restart. The TRIGGERING
 pre-commit marker (utils/json_helpers.py) still protects the CBOS trigger
 call itself from double-firing.
 """
@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import (
     EdpProperties,
     SegmentExecution,
-    SegmentPhase,
     SegmentStatus,
 )
 from ..utils.constants import get_sequence_order, POST_TRADE_ORDER
@@ -224,7 +223,7 @@ async def move_to_state(
 ) -> None:
     """
     Move a row to a new status, updating terminal bookkeeping fields
-    (phase/process/completed_at/category/reason), then fire a best-effort
+    (state/process/completed_at/category/reason), then fire a best-effort
     alert email on a genuine change into a terminal status.
     """
     now = now or now_ist()
@@ -232,10 +231,10 @@ async def move_to_state(
     row.segment_status = new_status
 
     if new_status in (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED):
-        row.current_phase = SegmentPhase.DONE
+        row.current_state = None
         row.current_process = None
     if new_status in _TERMINAL_STATUSES:
-        # FAILED deliberately leaves current_phase/current_process untouched
+        # FAILED deliberately leaves current_state/current_process untouched
         # (frozen where the pipeline broke) for diagnostics.
         row.completed_at = now
     if category is not None:
@@ -290,7 +289,7 @@ async def touch_heartbeat(session: AsyncSession, row: SegmentExecution) -> None:
     await session.flush()
     logger.info(
         f"[HEARTBEAT] segment={row.segment_code} | Heartbeat updated "
-        f"phase={row.current_phase.value if row.current_phase else 'N/A'} "
+        f"state={row.current_state.value if row.current_state else 'N/A'} "
         f"at={ts.strftime('%H:%M:%S')}"
     )
 
@@ -313,7 +312,7 @@ async def retry_segment(
     ops-approved manual override) land a segment in SKIPPED, not FAILED —
     ops still needs a way to re-drive it without directly touching the DB.
 
-    Clears: status, phase, process_id, error fields, processes_json.
+    Clears: status, state, process_id, error fields, processes_json.
     Returns None if segment not found or not in FAILED/SKIPPED status.
     """
     row = await get_one(session, trade_date, segment_code)
@@ -321,7 +320,7 @@ async def retry_segment(
         return None
 
     row.segment_status = SegmentStatus.PENDING
-    row.current_phase = None
+    row.current_state = None
     row.current_process = None
     row.process_id = None
     row.process_id_reserved_at = None

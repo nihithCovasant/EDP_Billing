@@ -85,7 +85,7 @@ async def agent_stop(body: AgentControlRequest):
             if seg["segment_status"] == "IN_PROGRESS":
                 snapshot["active_segment"] = seg["segment_code"]
                 snapshot["active_process"] = seg.get("current_process")
-                snapshot["active_phase"] = seg.get("current_phase")
+                snapshot["active_state"] = seg.get("current_state")
                 break
     except Exception as exc:
         logger.warning(f"Could not capture snapshot for agent stop: {exc}")

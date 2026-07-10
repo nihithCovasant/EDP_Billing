@@ -83,7 +83,7 @@ async def test_post_trade_default_window_gate_applies_independently_per_process(
     cfg, session_factory, test_date,
 ):
     """
-    The default 02:30 IST (T+1) gate applies to EVERY post-trade process
+    The default 02:00 IST (T+1) gate applies to EVERY post-trade process
     that doesn't have its own explicit window_start — an override on one
     process (here: COLALLOC's 03:00) must have no effect on another
     process's (COLVAL's) default gate.
@@ -114,16 +114,16 @@ async def test_post_trade_default_window_gate_applies_independently_per_process(
     orchestrator = EdpOrchestrator(cfg, cbos)
     orchestrator._cycle_active_date = test_date
 
-    # Before COLVAL's default 02:30 gate opens — must stay blocked, even
+    # Before COLVAL's default 02:00 gate opens — must stay blocked, even
     # though COLALLOC's own override is a different, unrelated time.
     before_window = datetime.combine(
         test_date + timedelta(days=1), dtime(0, 30), tzinfo=orchestrator._tz
     )
     orchestrator._cycle_now = before_window
     outcome = await orchestrator._process_one_post_trade("COLVAL")
-    assert outcome == "blocked", "COLVAL must still default-gate at 02:30 T+1"
+    assert outcome == "blocked", "COLVAL must still default-gate at 02:00 T+1"
 
-    # Past 02:30 T+1 — COLVAL proceeds normally.
+    # Past 02:00 T+1 — COLVAL proceeds normally.
     orchestrator._cycle_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome in ("advanced", "completed")
