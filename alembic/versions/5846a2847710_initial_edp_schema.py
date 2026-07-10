@@ -29,7 +29,7 @@ def upgrade() -> None:
         sa.Column(
             "requested_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.Column("requested_by", sa.String(length=256), nullable=False),
@@ -124,13 +124,13 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -156,14 +156,14 @@ def upgrade() -> None:
         sa.Column(
             "uploaded_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.Column("superseded_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -186,8 +186,11 @@ def downgrade() -> None:
     )
     op.drop_table("segment_execution")
     op.drop_table("agent_control")
-    op.execute("DROP TYPE IF EXISTS agentcontrolaction")
-    op.execute("DROP TYPE IF EXISTS segmentstatus")
-    op.execute("DROP TYPE IF EXISTS segmentphase")
-    op.execute("DROP TYPE IF EXISTS lockstate")
-    op.execute("DROP TYPE IF EXISTS runtimehealth")
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        op.execute("DROP TYPE IF EXISTS agentcontrolaction")
+        op.execute("DROP TYPE IF EXISTS segmentstatus")
+        op.execute("DROP TYPE IF EXISTS segmentphase")
+        op.execute("DROP TYPE IF EXISTS lockstate")
+        op.execute("DROP TYPE IF EXISTS runtimehealth")
+

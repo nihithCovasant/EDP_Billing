@@ -31,31 +31,33 @@ _COLLATERAL_PHASE_VALUES = ("AWAIT_GTG", "TRIGGER_JOB", "AWAIT_CONFIRM", "DONE")
 
 
 def upgrade() -> None:
-    # IF EXISTS: on a fresh install this table was never part of the
-    # migration chain — it only existed as a stray manual/orphan table in
-    # some environments. A bare DROP TABLE aborts the whole upgrade on a
-    # new database and prevents the agent from starting.
+    bind = op.get_bind()
     op.execute("DROP TABLE IF EXISTS collateral_execution")
-    op.execute("DROP TYPE IF EXISTS collateralphase")
-    op.execute("DROP TYPE IF EXISTS collateralstatus")
+    if bind.dialect.name != "sqlite":
+        op.execute("DROP TYPE IF EXISTS collateralphase")
+        op.execute("DROP TYPE IF EXISTS collateralstatus")
 
 
 def downgrade() -> None:
-    # Recreates the table as it was found (empty, standalone) in case
-    # anything outside this codebase still expects it to exist. Not
-    # wired up to any model/repository code -- purely a schema-level
-    # rollback.
-    collateral_status = sa.Enum(*_COLLATERAL_STATUS_VALUES, name="collateralstatus")
-    collateral_phase = sa.Enum(*_COLLATERAL_PHASE_VALUES, name="collateralphase")
-    collateral_status.create(op.get_bind())
-    collateral_phase.create(op.get_bind())
+    bind = op.get_bind()
+
+    if bind.dialect.name != "sqlite":
+        collateral_status = sa.Enum(*_COLLATERAL_STATUS_VALUES, name="collateralstatus")
+        collateral_phase = sa.Enum(*_COLLATERAL_PHASE_VALUES, name="collateralphase")
+        collateral_status.create(bind)
+        collateral_phase.create(bind)
+        status_col = collateral_status
+        phase_col = collateral_phase
+    else:
+        status_col = sa.String(length=32)
+        phase_col = sa.String(length=32)
 
     op.create_table(
         "collateral_execution",
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("trade_date", sa.Date(), nullable=False),
-        sa.Column("status", collateral_status, nullable=False),
-        sa.Column("current_phase", collateral_phase, nullable=True),
+        sa.Column("status", status_col, nullable=False),
+        sa.Column("current_phase", phase_col, nullable=True),
         sa.Column("lock_json", sa.JSON(), nullable=False),
         sa.Column("processes_json", sa.JSON(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
@@ -71,3 +73,4 @@ def downgrade() -> None:
     op.create_index(
         "ix_collateral_execution_trade_date", "collateral_execution", ["trade_date"],
     )
+

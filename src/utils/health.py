@@ -95,15 +95,20 @@ class HealthChecker:
     @otel_trace
     async def check_llm_availability(self) -> ComponentHealth:
         """
-        Check if LLM API is available.
+        Check if an LLM is available — either a direct provider API key
+        (settings.*_api_key) or the LiteLLM gateway configured in
+        agent_config.json -> secrets.litellm (see src.utils.llm_provider,
+        which routes through the gateway whenever it's enabled, independent
+        of whether a direct provider key is set).
 
         Returns:
             ComponentHealth with LLM status
         """
         try:
             from src.config.settings import settings
+            from src.utils.llm_provider import _get_litellm_config
 
-            # Check which providers are configured
+            # Check which direct-key providers are configured
             available_providers = []
 
             if settings.openai_api_key:
@@ -115,28 +120,47 @@ class HealthChecker:
             if settings.google_api_key:
                 available_providers.append("google")
 
-            if not available_providers:
+            litellm_config = _get_litellm_config()
+            litellm_enabled = bool(litellm_config.get("enabled")) and bool(
+                litellm_config.get("base_url")
+            )
+
+            if not available_providers and not litellm_enabled:
                 return ComponentHealth(
                     name="llm",
                     status=HealthStatus.UNHEALTHY,
-                    message="No LLM API keys configured",
-                    details={"configured_providers": []},
+                    message="No LLM API keys and no LiteLLM gateway configured",
+                    details={"configured_providers": [], "litellm_enabled": False},
                 )
 
-            # Try a lightweight check with the first provider
+            # Try a lightweight check — don't make an actual API call, just
+            # instantiate the model client for whichever path is active.
             try:
+                from src.config.agent_config import load_agent_config
                 from src.utils.llm_provider import get_llm_model
 
-                # Just check model instantiation, don't make actual API call
-                provider = available_providers[0]
-                get_llm_model(provider)
+                if litellm_enabled:
+                    tenant_cfg = load_agent_config().get("default", {})
+                    response_cfg = tenant_cfg.get("llm_config", {}).get("response", {})
+                    provider = response_cfg.get("provider", "openai")
+                    model = response_cfg.get("model")
+                else:
+                    provider = available_providers[0]
+                    model = None
+
+                get_llm_model(provider, model_name=model)
 
                 return ComponentHealth(
                     name="llm",
                     status=HealthStatus.HEALTHY,
-                    message=f"LLM providers available: {', '.join(available_providers)}",
+                    message=(
+                        f"LLM available via LiteLLM gateway ({litellm_config.get('base_url')})"
+                        if litellm_enabled
+                        else f"LLM providers available: {', '.join(available_providers)}"
+                    ),
                     details={
                         "configured_providers": available_providers,
+                        "litellm_enabled": litellm_enabled,
                         "primary_provider": provider,
                     },
                 )
@@ -146,7 +170,10 @@ class HealthChecker:
                     name="llm",
                     status=HealthStatus.DEGRADED,
                     message=f"LLM configured but instantiation warning: {str(e)}",
-                    details={"configured_providers": available_providers},
+                    details={
+                        "configured_providers": available_providers,
+                        "litellm_enabled": litellm_enabled,
+                    },
                 )
 
         except Exception as e:
@@ -160,61 +187,40 @@ class HealthChecker:
     @otel_trace
     async def check_database_connectivity(self) -> ComponentHealth:
         """
-        Check database connectivity (if configured).
+        Check connectivity of the actual EDP database (sqlite or postgres,
+        whichever src.agent.edp.config resolved at startup — see
+        EdpBootstrapConfig.database_url).
 
         Returns:
             ComponentHealth with database status
         """
         try:
-            from src.config.settings import settings
+            from sqlalchemy import text
 
-            if not settings.postgres_connection_string:
-                return ComponentHealth(
-                    name="database",
-                    status=HealthStatus.HEALTHY,
-                    message="Database not configured (using in-memory storage)",
-                    details={"type": "in-memory"},
-                )
+            from src.agent.edp.database import get_session
 
-            # Test PostgreSQL connection using psycopg (v3) — the driver
-            # installed by the postgresql feature (psycopg[binary]>=3.1.0).
-            try:
-                import psycopg
+            async with get_session() as session:
+                await session.execute(text("SELECT 1"))
 
-                async with await psycopg.AsyncConnection.connect(
-                    settings.postgres_connection_string
-                ) as conn:
-                    await conn.execute("SELECT 1")
+            return ComponentHealth(
+                name="database",
+                status=HealthStatus.HEALTHY,
+                message="EDP database connection successful",
+            )
 
-                return ComponentHealth(
-                    name="database",
-                    status=HealthStatus.HEALTHY,
-                    message="Database connection successful",
-                    details={"type": "postgresql"},
-                )
-
-            except ImportError:
-                return ComponentHealth(
-                    name="database",
-                    status=HealthStatus.HEALTHY,
-                    message="PostgreSQL driver not installed (feature not selected)",
-                    details={"type": "in-memory"},
-                )
-            except Exception as e:
-                logger.error(f"Database health check failed: {e}")
-                return ComponentHealth(
-                    name="database",
-                    status=HealthStatus.UNHEALTHY,
-                    message=f"Database connection failed: {str(e)}",
-                    details={"type": "postgresql"},
-                )
-
-        except Exception as e:
-            logger.error(f"Database health check error: {e}")
+        except RuntimeError as e:
+            # get_session() raises this when init_database() hasn't run yet.
             return ComponentHealth(
                 name="database",
                 status=HealthStatus.UNHEALTHY,
-                message=f"Database check failed: {str(e)}",
+                message=f"EDP database not initialized: {e}",
+            )
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return ComponentHealth(
+                name="database",
+                status=HealthStatus.UNHEALTHY,
+                message=f"Database connection failed: {str(e)}",
             )
 
     @otel_trace
@@ -322,6 +328,13 @@ class HealthChecker:
                 details={"enabled": metrics.enabled, "endpoint": "/metrics"},
             )
 
+        except ModuleNotFoundError:
+            return ComponentHealth(
+                name="metrics",
+                status=HealthStatus.HEALTHY,
+                message="Metrics collector not implemented in this build",
+                details={"enabled": False},
+            )
         except Exception as e:
             logger.error(f"Metrics health check error: {e}")
             return ComponentHealth(
@@ -366,6 +379,13 @@ class HealthChecker:
                 },
             )
 
+        except ModuleNotFoundError:
+            return ComponentHealth(
+                name="rate_limiter",
+                status=HealthStatus.HEALTHY,
+                message="Rate limiter not implemented in this build",
+                details={"enabled": False},
+            )
         except Exception as e:
             logger.error(f"Rate limiter health check error: {e}")
             return ComponentHealth(

@@ -10,12 +10,9 @@ flow states (no "phases" — see models.SegmentState):
 
 INIT's handler does the holiday-check operation; WAITING_FOR_FILE_UPLOAD's
 handler does the reserve/confirm-PID operation on its first entry (no
-process_id yet, recorded as a nested "pid_reservation" field inside its own
-processes_json["WAITING_FOR_FILE_UPLOAD"] dict), then polls FILEUPLOAD on
-every later entry — neither "holiday check" nor "reserve process id" is
-its own state, both are operations folded into the state that owns them,
-per the happy-flow tables. Every processes_json top-level key is exactly a
-SegmentState.value string (see json_helpers.py's module docstring).
+process_id yet), then polls FILEUPLOAD on every later entry — neither
+"holiday check" nor "reserve process id" is its own state, both are
+operations folded into the state that owns them, per the happy-flow tables.
 TRIGGERED is the one genuine crash-safety-critical wait in this pipeline.
 WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION are pure polls —
 CBOS auto-runs each step once TRIGGERED fires, the agent only observes.
@@ -35,10 +32,10 @@ from ..utils.json_helpers import (
     get_proc,
     inc_poll,
     mark_stage_done,
-    record_pid_reservation,
     record_trigger,
     record_trigger_attempt,
     record_trigger_failed,
+    set_proc,
 )
 from ..utils.log_fmt import stage_log
 from .AbstractStateMachine import AbstractSegmentStateMachine
@@ -76,9 +73,9 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="BeginFileUpload", user_id=login_id,
         )
-        poll_state = get_proc(row, SegmentState.INIT.value)
+        poll_state = get_proc(row, "holiday_check")
         poll_count = poll_state.get("poll_count", 0) + 1
-        inc_poll(row, SegmentState.INIT.value, result.response)
+        inc_poll(row, "holiday_check", result.response)
         await session.flush()
 
         if result.is_error:
@@ -101,7 +98,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                 "Market HOLIDAY — segment will be SKIPPED",
                 response=result.response, at=now.strftime("%H:%M:%S %Z"),
             ))
-            mark_stage_done(row, SegmentState.INIT.value, result.response, now)
+            mark_stage_done(row, "holiday_check", result.response, now)
             return self._skip_result(row, "CBOS_SKIP", "BeginFileUpload returned SKIP — market holiday", now)
 
         if result.is_pending:
@@ -117,7 +114,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             "Holiday check PASSED — proceeding to WAITING_FOR_FILE_UPLOAD",
             response=result.response, at=now.strftime("%H:%M:%S %Z"),
         ))
-        mark_stage_done(row, SegmentState.INIT.value, result.response, now)
+        mark_stage_done(row, "holiday_check", result.response, now)
         return SegmentHandlerResult(
             outcome=ADVANCE, next_state=SegmentState.WAITING_FOR_FILE_UPLOAD, next_process=None,
         )
@@ -211,7 +208,12 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         FILEUPLOAD instead of reserving again."""
         row.process_id = process_id
         row.process_id_reserved_at = now
-        record_pid_reservation(row, process_id, source, now)
+        set_proc(row, "trigger", {
+            "status": "PID_RESERVED",
+            "process_id_reserved": process_id,
+            "process_id_source": source,
+            "reserved_at": now.isoformat(),
+        })
 
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_FILE_UPLOAD",
@@ -224,13 +226,13 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(FILEUPLOAD) — poll until exchange files are uploaded."""
-        poll_state = get_proc(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value)
+        poll_state = get_proc(row, "file_upload_ready")
         poll_count = poll_state.get("poll_count", 0) + 1
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="FILEUPLOAD", user_id=login_id,
         )
-        inc_poll(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, result.response)
+        inc_poll(row, "file_upload_ready", result.response)
         await session.flush()
 
         if result.is_error:
@@ -270,7 +272,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             "All exchange files uploaded — proceeding to TRIGGERED",
             response=result.response, total_polls=poll_count, ready_at=now.strftime("%H:%M:%S %Z"),
         ))
-        mark_stage_done(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, result.response, now)
+        mark_stage_done(row, "file_upload_ready", result.response, now)
         return SegmentHandlerResult(outcome=ADVANCE, next_state=SegmentState.TRIGGERED, next_process=None)
 
     # ---------------------------------------------------------------
@@ -313,7 +315,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                 ))
                 return self._fail_result(row, "CBOS_ERROR", "No process_id available for trigger", now)
 
-        if get_proc(row, SegmentState.TRIGGERED.value).get("status") == "TRIGGERING":
+        if get_proc(row, "trigger").get("status") == "TRIGGERING":
             return await self._recover_trigger(cbos, row, session, login_id, now)
 
         # First attempt for this segment-day — commit the pre-commit marker
@@ -444,7 +446,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         """POST file_process_status(BILLPOSTING) — wait until billing calculations complete."""
         return await self._poll_confirmation(
             cbos, row, session, login_id, now,
-            process_name="BILLPOSTING", stage_key=SegmentState.WAITING_FOR_BILLPOSTING.value,
+            process_name="BILLPOSTING", stage_key="bill_posting",
             next_state=SegmentState.WAITING_FOR_RECON, next_process="RECON",
         )
 
@@ -454,7 +456,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         """POST file_process_status(RECON) — wait until reconciliation completes."""
         return await self._poll_confirmation(
             cbos, row, session, login_id, now,
-            process_name="RECON", stage_key=SegmentState.WAITING_FOR_RECON.value,
+            process_name="RECON", stage_key="recon",
             next_state=SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION, next_process="CONTRACTNOTEGENERATION",
         )
 
@@ -462,13 +464,13 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(CONTRACTNOTEGENERATION) — wait until contract notes complete."""
-        poll_state = get_proc(row, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION.value)
+        poll_state = get_proc(row, "contract_note")
         poll_count = poll_state.get("poll_count", 0) + 1
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="CONTRACTNOTEGENERATION", user_id=login_id,
         )
-        inc_poll(row, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION.value, result.response)
+        inc_poll(row, "contract_note", result.response)
         await session.flush()
 
         if result.is_error:
@@ -505,7 +507,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             "Contract notes CONFIRMED — segment COMPLETED",
             response=result.response, total_polls=poll_count, confirmed_at=now.strftime("%H:%M:%S %Z"),
         ))
-        mark_stage_done(row, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION.value, result.response, now)
+        mark_stage_done(row, "contract_note", result.response, now)
         return self._complete_result(row, now)
 
     async def _poll_confirmation(

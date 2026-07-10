@@ -46,24 +46,43 @@ _NEW_STATES = (
 
 
 def upgrade() -> None:
-    op.drop_column("edpb_segment_execution", "current_phase")
-    op.execute("DROP TYPE IF EXISTS segmentphase")
+    bind = op.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
 
-    segment_state = sa.Enum(*_NEW_STATES, name="segmentstate")
-    segment_state.create(op.get_bind())
-    op.add_column(
-        "edpb_segment_execution",
-        sa.Column("current_state", segment_state, nullable=True),
-    )
+    with op.batch_alter_table("edpb_segment_execution") as batch_op:
+        batch_op.drop_column("current_phase")
+
+    if not is_sqlite:
+        op.execute("DROP TYPE IF EXISTS segmentphase")
+        segment_state = sa.Enum(*_NEW_STATES, name="segmentstate")
+        segment_state.create(bind)
+        col_type = segment_state
+    else:
+        col_type = sa.String(length=64)
+
+    with op.batch_alter_table("edpb_segment_execution") as batch_op:
+        batch_op.add_column(
+            sa.Column("current_state", col_type, nullable=True),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("edpb_segment_execution", "current_state")
-    op.execute("DROP TYPE IF EXISTS segmentstate")
+    bind = op.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
 
-    segment_phase = sa.Enum(*_OLD_PHASES, name="segmentphase")
-    segment_phase.create(op.get_bind())
-    op.add_column(
-        "edpb_segment_execution",
-        sa.Column("current_phase", segment_phase, nullable=True),
-    )
+    with op.batch_alter_table("edpb_segment_execution") as batch_op:
+        batch_op.drop_column("current_state")
+
+    if not is_sqlite:
+        op.execute("DROP TYPE IF EXISTS segmentstate")
+        segment_phase = sa.Enum(*_OLD_PHASES, name="segmentphase")
+        segment_phase.create(bind)
+        col_type = segment_phase
+    else:
+        col_type = sa.String(length=64)
+
+    with op.batch_alter_table("edpb_segment_execution") as batch_op:
+        batch_op.add_column(
+            sa.Column("current_phase", col_type, nullable=True),
+        )
+

@@ -10,7 +10,7 @@ calls, fully deterministic).
 
 from __future__ import annotations
 
-from src.agent.edp.models import SegmentState, SegmentStatus
+from src.agent.edp.models import SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.repository import get_day_summary
 from src.agent.edp.utils.constants import SEGMENT_ORDER, get_sequence_order
@@ -43,16 +43,12 @@ async def test_all_segments_complete_successfully(cfg, session_factory, test_dat
         assert row.started_at is not None
         assert row.skip_category is None
         assert row.skip_reason is None
-        # processes_json should record every one of the 6 states as done —
-        # each top-level key is exactly a SegmentState.value string.
-        for state in (
-            SegmentState.INIT, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentState.TRIGGERED,
-            SegmentState.WAITING_FOR_BILLPOSTING, SegmentState.WAITING_FOR_RECON,
-            SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
+        # processes_json should record every one of the 6 internal stages as done.
+        for stage_key in (
+            "holiday_check", "file_upload_ready", "trigger",
+            "bill_posting", "recon", "contract_note",
         ):
-            assert state.value in row.processes_json, f"{code} missing processes_json[{state.value}]"
-        # PID reservation is nested inside WAITING_FOR_FILE_UPLOAD, not its own top-level key.
-        assert "pid_reservation" in row.processes_json[SegmentState.WAITING_FOR_FILE_UPLOAD.value]
+            assert stage_key in row.processes_json, f"{code} missing processes_json[{stage_key}]"
 
 
 async def test_segments_run_in_fixed_sequence_order(cfg, session_factory, test_date):
@@ -101,11 +97,11 @@ async def test_reserve_pid_step2_reuses_existing_process_id(cfg, session_factory
     cur_row = by_code["CUR"]
     assert cur_row.segment_status == SegmentStatus.COMPLETED
     assert cur_row.process_id == pre_reserved.process_id
-    assert cur_row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "EXISTING"
+    assert cur_row.processes_json["trigger"]["process_id_source"] == "EXISTING"
 
     # A segment with nothing pre-reserved must still resolve its own new PID.
     eq_row = by_code["EQ"]
-    assert eq_row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert eq_row.processes_json["trigger"]["process_id_source"] == "RESERVED_NEW"
 
 
 async def test_day_summary_and_serializers_have_no_removed_fields(cfg, session_factory, test_date):

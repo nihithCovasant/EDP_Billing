@@ -48,9 +48,21 @@ _OLD_PHASES = _NEW_PHASES + (
 
 
 def upgrade() -> None:
-    # No real row could ever have landed on an MTF-ops-only phase value
-    # (that chain never shipped past the virtual MTFOPS segment code, which
-    # is itself removed), but guard defensively rather than assume.
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        # SQLite stores enums as plain TEXT — no type manipulation needed.
+        # Just clean up any stray MTF-ops phase values (defensive).
+        bind.execute(
+            sa.text(
+                "UPDATE segment_execution SET current_phase = 'DONE' "
+                "WHERE current_phase IN ("
+                "'COLLATERAL_VALUATION', 'COLLATERAL_ALLOCATION', 'FUND_TRANSFER', "
+                "'MTF_BUY', 'MTF_SELL', 'WEEKLY_AUTO_CLOSURE')"
+            )
+        )
+        return
+
+    # PostgreSQL path
     op.execute(
         """
         UPDATE segment_execution
@@ -61,11 +73,9 @@ def upgrade() -> None:
         )
         """
     )
-
     op.execute("ALTER TYPE segmentphase RENAME TO segmentphase_old")
     new_enum = sa.Enum(*_NEW_PHASES, name="segmentphase")
     new_enum.create(op.get_bind())
-
     op.execute(
         "ALTER TABLE segment_execution "
         "ALTER COLUMN current_phase TYPE segmentphase "
@@ -75,13 +85,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        return  # No enum manipulation needed on SQLite
+
     op.execute("ALTER TYPE segmentphase RENAME TO segmentphase_new")
     old_enum = sa.Enum(*_OLD_PHASES, name="segmentphase")
     old_enum.create(op.get_bind())
-
     op.execute(
         "ALTER TABLE segment_execution "
         "ALTER COLUMN current_phase TYPE segmentphase "
         "USING current_phase::text::segmentphase"
     )
     op.execute("DROP TYPE segmentphase_new")
+

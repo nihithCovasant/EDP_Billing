@@ -47,9 +47,9 @@ async def _seed_and_prime_triggering_row(
         row.current_state = SegmentState.TRIGGERED
         row.current_process = None
         row.processes_json = {
-            SegmentState.INIT.value: {"status": "COMPLETED", "last_response": "TRUE"},
-            SegmentState.WAITING_FOR_FILE_UPLOAD.value: {"status": "COMPLETED", "last_response": "TRUE"},
-            SegmentState.TRIGGERED.value: {
+            "holiday_check": {"status": "COMPLETED", "last_response": "TRUE"},
+            "file_upload_ready": {"status": "COMPLETED", "last_response": "TRUE"},
+            "trigger": {
                 "status": "TRIGGERING",
                 "attempt_started_at": fixed_now.isoformat(),
                 "process_id_source": "RESERVED_NEW",
@@ -83,8 +83,8 @@ async def test_recovery_retriggers_when_cbos_never_received_the_call(cfg, sessio
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
-    assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
-    assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert row.processes_json["trigger"]["status"] == "TRIGGERED"
+    assert row.processes_json["trigger"]["process_id_source"] == "RESERVED_NEW"
     assert row.segment_status == SegmentStatus.IN_PROGRESS
 
     rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
@@ -124,8 +124,8 @@ async def test_recovery_does_not_retrigger_when_cbos_already_has_it(cfg, session
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
-    assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
-    assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert row.processes_json["trigger"]["status"] == "TRIGGERED"
+    assert row.processes_json["trigger"]["process_id_source"] == "RESERVED_NEW"
 
     rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
     by_code = {r.segment_code: r for r in rows}
@@ -150,7 +150,7 @@ async def test_resuming_in_progress_row_after_restart_reaches_recovery(cfg, sess
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.segment_status == SegmentStatus.IN_PROGRESS
     assert row.current_state == SegmentState.TRIGGERED
-    assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERING"
+    assert row.processes_json["trigger"]["status"] == "TRIGGERING"
 
     key = (SEGMENT, test_date.isoformat())
     assert key not in cbos._mock_trigger_calls, "sanity: CBOS never saw this PID before"
@@ -169,7 +169,7 @@ async def test_resuming_in_progress_row_after_restart_reaches_recovery(cfg, sess
 
 async def test_transient_trigger_failure_stays_triggering_and_recovers(cfg, session_factory, test_date):
     """End-to-end, no manual DB manipulation: a transient error on the
-    first real trigger call must leave processes_json[TRIGGERED]["status"]
+    first real trigger call must leave processes_json["trigger"]["status"]
     as "TRIGGERING" (never FAILED) so the next cycle runs the same
     recovery path."""
     cbos = TransientTriggerFailureCbosClient(
@@ -183,6 +183,6 @@ async def test_transient_trigger_failure_stays_triggering_and_recovers(cfg, sess
     by_code = {r.segment_code: r for r in rows}
 
     assert by_code[SEGMENT].segment_status == SegmentStatus.COMPLETED
-    assert by_code[SEGMENT].processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
+    assert by_code[SEGMENT].processes_json["trigger"]["status"] == "TRIGGERED"
     for code in SEGMENT_ORDER:
         assert by_code[code].segment_status == SegmentStatus.COMPLETED

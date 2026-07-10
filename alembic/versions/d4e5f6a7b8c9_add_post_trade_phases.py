@@ -54,19 +54,22 @@ _NEW_PHASES = (
 
 
 def upgrade() -> None:
-    # ALTER TYPE ... ADD VALUE cannot run inside the same transaction as a
-    # statement that uses the new value, but adding it on its own is fine
-    # even inside alembic's per-migration transaction on PG12+.
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        # SQLite stores enums as plain TEXT — adding values is a no-op.
+        return
+
+    # PostgreSQL: ALTER TYPE ... ADD VALUE
     op.execute("ALTER TYPE segmentphase ADD VALUE IF NOT EXISTS 'AWAIT_GTG'")
     op.execute("ALTER TYPE segmentphase ADD VALUE IF NOT EXISTS 'TRIGGER_JOB'")
     op.execute("ALTER TYPE segmentphase ADD VALUE IF NOT EXISTS 'AWAIT_CONFIRM'")
 
 
 def downgrade() -> None:
-    # Postgres can't drop enum values directly — recreate the type without
-    # them (same pattern as c3d4e5f6a7b8), first clearing any row that
-    # landed on one of the 3 post-trade-only phases (there won't be any if
-    # the post-trade feature is being fully rolled back, but guard anyway).
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        return  # No enum manipulation needed on SQLite
+
     op.execute(
         """
         UPDATE segment_execution
@@ -74,14 +77,13 @@ def downgrade() -> None:
         WHERE current_phase::text IN ('AWAIT_GTG', 'TRIGGER_JOB', 'AWAIT_CONFIRM')
         """
     )
-
     op.execute("ALTER TYPE segmentphase RENAME TO segmentphase_new")
     old_enum = sa.Enum(*_OLD_PHASES, name="segmentphase")
     old_enum.create(op.get_bind())
-
     op.execute(
         "ALTER TABLE segment_execution "
         "ALTER COLUMN current_phase TYPE segmentphase "
         "USING current_phase::text::segmentphase"
     )
     op.execute("DROP TYPE segmentphase_new")
+

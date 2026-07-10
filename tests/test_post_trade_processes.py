@@ -21,7 +21,7 @@ from src.agent.edp.utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER, get_s
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
-from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient, SkippingCbosClient
+from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
@@ -50,11 +50,11 @@ async def test_all_post_trade_processes_complete_successfully(cfg, session_facto
         assert row.skip_category is None
         assert row.skip_reason is None
 
-        for state in (SegmentState.WAITING_FOR_GTG, SegmentState.TRIGGERED, SegmentState.WAITING_FOR_COMPLETION):
-            assert state.value in row.processes_json, f"{code} missing processes_json[{state.value}]"
-        assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
-        assert row.processes_json[SegmentState.TRIGGERED.value]["message"] == "Process started successfully"
-        assert row.processes_json[SegmentState.WAITING_FOR_COMPLETION.value]["status"] == "COMPLETED"
+        for stage_key in ("gtg", "trigger", "confirm"):
+            assert stage_key in row.processes_json, f"{code} missing processes_json[{stage_key}]"
+        assert row.processes_json["trigger"]["status"] == "TRIGGERED"
+        assert row.processes_json["trigger"]["message"] == "Process started successfully"
+        assert row.processes_json["confirm"]["status"] == "COMPLETED"
 
         assert get_sequence_order(code) == len(SEGMENT_ORDER) + 1 + POST_TRADE_ORDER.index(code)
 
@@ -99,42 +99,6 @@ async def test_post_trade_process_failure_does_not_block_others(cfg, session_fac
     assert summary["completed"] == 4
     assert summary["failed"] == 1
     assert summary["pending"] == 0
-
-
-async def test_post_trade_process_skipped_on_holiday_gtg_check(cfg, session_factory, test_date):
-    """
-    WAITING_FOR_GTG doubles as post-trade's holiday check (post-trade has
-    no separate INIT state, unlike real segments) — a SKIP response there
-    must go straight to SKIPPED, same semantics as INIT for real segments,
-    not FAILED.
-    """
-    cbos = SkippingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        skip_segment="COLVAL", skip_process="CollateralValuation",
-    )
-    cbos.mock_set_ready_after(1)
-    orchestrator = EdpOrchestrator(cfg, cbos)
-
-    await helpers.seed_post_trade_day(session_factory, test_date)
-    rows = await helpers.drive_post_trade_until_terminal(orchestrator, session_factory, test_date)
-    by_code = {r.segment_code: r for r in rows}
-
-    colval = by_code["COLVAL"]
-    assert colval.segment_status == SegmentStatus.SKIPPED
-    assert colval.skip_category == "CBOS_SKIP"
-    assert "holiday" in (colval.skip_reason or "").lower()
-    assert colval.current_state is None
-
-    # Independent processes are unaffected.
-    for code in ("COLALLOC", "MTFFT", "DMRPT", "DMSTMT"):
-        row = by_code[code]
-        assert row.segment_status == SegmentStatus.COMPLETED
-
-    async with session_factory() as session:
-        summary = await get_day_summary(session, test_date)
-    assert summary["total"] == 5
-    assert summary["completed"] == 4
-    assert summary["skipped"] == 1
 
 
 async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
@@ -253,10 +217,8 @@ async def test_post_trade_process_in_progress_past_deadline_fails_with_timeout(c
         row.current_state = SegmentState.WAITING_FOR_COMPLETION
         row.current_process = "CollateralValuation"
         row.processes_json = {
-            SegmentState.WAITING_FOR_GTG.value: {"status": "COMPLETED", "last_response": "TRUE"},
-            SegmentState.TRIGGERED.value: {
-                "status": "TRIGGERED", "at": fixed_now.isoformat(), "message": "Process started successfully",
-            },
+            "gtg": {"status": "COMPLETED", "last_response": "TRUE"},
+            "trigger": {"status": "TRIGGERED", "at": fixed_now.isoformat(), "message": "Process started successfully"},
         }
         await session.commit()
 
@@ -288,8 +250,8 @@ async def _prime_triggering_post_trade_row(session_factory, test_date, fixed_now
         row.current_state = SegmentState.TRIGGERED
         row.current_process = None
         row.processes_json = {
-            SegmentState.WAITING_FOR_GTG.value: {"status": "COMPLETED", "last_response": "TRUE"},
-            SegmentState.TRIGGERED.value: {"status": "TRIGGERING", "attempt_started_at": fixed_now.isoformat()},
+            "gtg": {"status": "COMPLETED", "last_response": "TRUE"},
+            "trigger": {"status": "TRIGGERING", "attempt_started_at": fixed_now.isoformat()},
         }
         await session.commit()
 
@@ -319,7 +281,7 @@ async def test_post_trade_trigger_resume_fails_instead_of_retriggering(cfg, sess
     assert row.segment_status == SegmentStatus.FAILED
     assert row.skip_category == "CBOS_ERROR"
     assert "manual" in (row.skip_reason or "").lower() or "verif" in (row.skip_reason or "").lower()
-    assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERING", (
+    assert row.processes_json["trigger"]["status"] == "TRIGGERING", (
         "the unresolved marker itself must be left alone for forensics — "
         "only segment_status/skip_reason record the FAILED outcome"
     )

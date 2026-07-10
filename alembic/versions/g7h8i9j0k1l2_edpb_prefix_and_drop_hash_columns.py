@@ -37,56 +37,106 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # 1. Rename tables (and their indexes, for naming consistency).
+    bind = op.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
+
+    # 1. Rename tables
     op.rename_table("edp_properties", "edpb_properties")
-    op.execute(
-        "ALTER INDEX ix_edp_properties_trade_date "
-        "RENAME TO ix_edpb_properties_trade_date"
-    )
-    op.execute(
-        "ALTER INDEX ix_edp_properties_one_active_per_date "
-        "RENAME TO ix_edpb_properties_one_active_per_date"
-    )
-
     op.rename_table("segment_execution", "edpb_segment_execution")
-    op.execute(
-        "ALTER INDEX ix_segment_execution_trade_date "
-        "RENAME TO ix_edpb_segment_execution_trade_date"
-    )
-
     op.rename_table("agent_control", "edpb_agent_control")
 
+    # Rename indexes
+    if is_sqlite:
+        op.drop_index("ix_edp_properties_trade_date", table_name="edpb_properties")
+        op.create_index("ix_edpb_properties_trade_date", "edpb_properties", ["trade_date"])
+
+        op.drop_index("ix_edp_properties_one_active_per_date", table_name="edpb_properties")
+        op.create_index(
+            "ix_edpb_properties_one_active_per_date", "edpb_properties",
+            ["trade_date"], unique=True,
+            sqlite_where=sa.text("is_active"),
+        )
+
+        op.drop_index("ix_segment_execution_trade_date", table_name="edpb_segment_execution")
+        op.create_index("ix_edpb_segment_execution_trade_date", "edpb_segment_execution", ["trade_date"])
+    else:
+        op.execute(
+            "ALTER INDEX ix_edp_properties_trade_date "
+            "RENAME TO ix_edpb_properties_trade_date"
+        )
+        op.execute(
+            "ALTER INDEX ix_edp_properties_one_active_per_date "
+            "RENAME TO ix_edpb_properties_one_active_per_date"
+        )
+        op.execute(
+            "ALTER INDEX ix_segment_execution_trade_date "
+            "RENAME TO ix_edpb_segment_execution_trade_date"
+        )
+
     # 2 & 3. Drop the now-unused hash columns.
-    op.drop_column("edpb_properties", "content_hash")
-    op.drop_column("edpb_segment_execution", "config_hash_used")
+    if is_sqlite:
+        with op.batch_alter_table("edpb_properties") as batch_op:
+            batch_op.drop_column("content_hash")
+        with op.batch_alter_table("edpb_segment_execution") as batch_op:
+            batch_op.drop_column("config_hash_used")
+    else:
+        op.drop_column("edpb_properties", "content_hash")
+        op.drop_column("edpb_segment_execution", "config_hash_used")
 
 
 def downgrade() -> None:
-    op.add_column(
-        "edpb_segment_execution",
-        sa.Column("config_hash_used", sa.String(length=64), nullable=True),
-    )
-    op.add_column(
-        "edpb_properties",
-        sa.Column(
-            "content_hash", sa.String(length=64), nullable=False, server_default=""
-        ),
-    )
+    bind = op.get_bind()
+    is_sqlite = bind.dialect.name == "sqlite"
+
+    if is_sqlite:
+        with op.batch_alter_table("edpb_segment_execution") as batch_op:
+            batch_op.add_column(
+                sa.Column("config_hash_used", sa.String(length=64), nullable=True),
+            )
+        with op.batch_alter_table("edpb_properties") as batch_op:
+            batch_op.add_column(
+                sa.Column("content_hash", sa.String(length=64), nullable=False, server_default=""),
+            )
+    else:
+        op.add_column(
+            "edpb_segment_execution",
+            sa.Column("config_hash_used", sa.String(length=64), nullable=True),
+        )
+        op.add_column(
+            "edpb_properties",
+            sa.Column(
+                "content_hash", sa.String(length=64), nullable=False, server_default=""
+            ),
+        )
 
     op.rename_table("edpb_agent_control", "agent_control")
-
-    op.execute(
-        "ALTER INDEX ix_edpb_segment_execution_trade_date "
-        "RENAME TO ix_segment_execution_trade_date"
-    )
     op.rename_table("edpb_segment_execution", "segment_execution")
-
-    op.execute(
-        "ALTER INDEX ix_edpb_properties_one_active_per_date "
-        "RENAME TO ix_edp_properties_one_active_per_date"
-    )
-    op.execute(
-        "ALTER INDEX ix_edpb_properties_trade_date "
-        "RENAME TO ix_edp_properties_trade_date"
-    )
     op.rename_table("edpb_properties", "edp_properties")
+
+    if is_sqlite:
+        op.drop_index("ix_edpb_segment_execution_trade_date", table_name="segment_execution")
+        op.create_index("ix_segment_execution_trade_date", "segment_execution", ["trade_date"])
+
+        op.drop_index("ix_edpb_properties_one_active_per_date", table_name="edp_properties")
+        op.create_index(
+            "ix_edp_properties_one_active_per_date", "edp_properties",
+            ["trade_date"], unique=True,
+            sqlite_where=sa.text("is_active"),
+        )
+
+        op.drop_index("ix_edpb_properties_trade_date", table_name="edp_properties")
+        op.create_index("ix_edp_properties_trade_date", "edp_properties", ["trade_date"])
+    else:
+        op.execute(
+            "ALTER INDEX ix_edpb_segment_execution_trade_date "
+            "RENAME TO ix_segment_execution_trade_date"
+        )
+        op.execute(
+            "ALTER INDEX ix_edpb_properties_one_active_per_date "
+            "RENAME TO ix_edp_properties_one_active_per_date"
+        )
+        op.execute(
+            "ALTER INDEX ix_edpb_properties_trade_date "
+            "RENAME TO ix_edp_properties_trade_date"
+        )
+

@@ -27,6 +27,7 @@ tzdata>=2024.1
 # Local sibling project — segment/process terminal-status email alerts
 # (see src/agent/edp/repository/segment.py::move_to_state()).
 -e ./global_email_service
+-e dev/cams_otel_lib
 opentelemetry-instrumentation-fastapi>=0.48b0
 opentelemetry-instrumentation-requests>=0.48b0
 opentelemetry-instrumentation-httpx>=0.48b0

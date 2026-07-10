@@ -2,7 +2,8 @@
 EDP agent bootstrap configuration loaded from agent_config.json.
 
 This config covers agent-level settings (DB URL, CBOS URL, etc.).
-Wake interval is read from EDP_WAKE_INTERVAL_SECONDS env var only.
+Wake interval: EDP_WAKE_INTERVAL_SECONDS env var, else edp.wake_interval_seconds
+in agent_config.json, else 60.
 Segment schedules and process definitions are stored in the edpb_properties DB
 table and uploaded daily by ops.
 
@@ -180,7 +181,9 @@ def load_edp_config() -> EdpBootstrapConfig:
                 "agent_config.json 'edp' fields explicitly"
             )
 
-    wake_interval_seconds = int(os.getenv("EDP_WAKE_INTERVAL_SECONDS", "60"))
+    wake_interval_seconds = int(
+        os.getenv("EDP_WAKE_INTERVAL_SECONDS", str(edp_raw.get("wake_interval_seconds", 60)))
+    )
 
     return EdpBootstrapConfig(
         wake_interval_seconds=wake_interval_seconds,

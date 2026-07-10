@@ -27,11 +27,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.drop_column("edpb_segment_execution", "lock_json")
+    with op.batch_alter_table("edpb_segment_execution") as batch_op:
+        batch_op.drop_column("lock_json")
 
 
 def downgrade() -> None:
-    op.add_column(
-        "edpb_segment_execution",
-        sa.Column("lock_json", sa.JSON(), nullable=False, server_default="{}"),
-    )
+    with op.batch_alter_table("edpb_segment_execution") as batch_op:
+        batch_op.add_column(
+            sa.Column("lock_json", sa.JSON(), nullable=False, server_default="{}"),
+        )
+
