@@ -45,6 +45,22 @@ CBOS API request / response shapes
     Body: {"Segment":"EQ","ProcessName":"BeginFileUpload","UserID":"CV0001"}
     OK:   {"Status":"Success","Data":[{"MSG":"TRUE|FALSE|SKIP"}]}
 
+    EXCEPTION — the 3 "already triggered" ProcessNames reused via this same
+    endpoint for COLALLOC/MTFFT/DMSTMT (MTFCOLLALLOC / MTFFUNDTRAN /
+    CHECKDAILYMARGINSTATEMENT) do NOT return the TRUE/FALSE/SKIP vocabulary —
+    MSG is a full sentence instead (confirmed against EDP_Trade_Process_API_v3
+    steps 20/23/37):
+      MTFCOLLALLOC:               {"MSG":"PROCESS TRIGGERED IS PENDING"}
+      MTFFUNDTRAN:                {"MSG":"PROCESS TRIGGERED IS PENDING"}
+      CHECKDAILYMARGINSTATEMENT:  {"MSG":"DAILYMARGINSTATEMENT IS NOT TRIGGERED"}
+    Both documented samples mean NOT yet triggered — see
+    _parse_already_triggered_sentence() for how these (and the undocumented
+    "already triggered" phrasing CBOS presumably returns once one of these
+    3 processes has genuinely already run) are classified. FileStatusResult
+    .is_ready (a strict "== TRUE" check) must NOT be used for these 3 — it
+    would silently and permanently read as "not yet triggered" no matter
+    what CBOS actually says, defeating the double-trigger guard entirely.
+
   getdropdown EXISTINGPROCESSID  (Step 2 — check before reserving)
     POST {PROCESS_URL}/v1/api/brokerage/getdropdown
     Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ","FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
@@ -67,6 +83,21 @@ CBOS API request / response shapes
     POST {PROCESS_URL}/v1/api/process/DailyMarginStatements
       Body (last 3): {"LOGINID":"G_LID","TRADEDATE":"29-Jun-2026"}
     OK: {"Status":"Success","Data":[{"MSG":"Process started successfully"}]}
+
+  Post-trade "already triggered" REFRESH checks (COLVAL/DMRPT only —
+  COLALLOC/MTFFT/DMSTMT go through file_process_status instead, see above)
+    POST {PROCESS_URL}/v1/api/process/GetCollateralValuation
+    POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess
+      Body (both): {"BUTTONNAME":"REFRESH","LOGINID":"G_LID"} — literally
+      "REFRESH", no MARGINDATE, confirmed verbatim against
+      EDP_Trade_Process_API_v3 steps 17/35. NOT
+      "COLLATERAL_VALUATION_REFRESH"/"COMBINEDMARGIN_REFRESH" plus an
+      invented MARGINDATE field — CBOS's well-documented lack of input
+      validation means a wrong BUTTONNAME/extra field is likely to be
+      silently accepted and misbehave (e.g. always return an empty
+      Table1) rather than raise a clean, catchable error.
+    OK: {"Status":"Success","Result":{"Table1":[...]}} — non-empty Table1
+      means already triggered/running; {"Table1":[]} means not yet.
 """
 
 from __future__ import annotations
@@ -94,7 +125,7 @@ class FileStatusResult:
     raw_body: str = ""
     http_status: int = 200
     error: Optional[str] = None
-    is_transient: bool = False  # True for network errors and HTTP 5xx (retryable)
+    is_transient: bool = False  # True for network errors and HTTP 5xx/429 (retryable)
 
     @property
     def is_ready(self) -> bool:
@@ -145,7 +176,7 @@ class NewTradeProcessResult:
     raw_body: str = ""
     http_status: int = 200
     error: Optional[str] = None
-    is_transient: bool = False  # True for network errors and HTTP 5xx (retryable)
+    is_transient: bool = False  # True for network errors and HTTP 5xx/429 (retryable)
 
 
 @dataclass
@@ -293,7 +324,7 @@ class CbosClient:
                         raw_body=body,
                         http_status=resp.status_code,
                         error=f"HTTP {resp.status_code}",
-                        is_transient=resp.status_code >= 500,
+                        is_transient=_is_transient_http_status(resp.status_code),
                     )
                 msg = _parse_msg(body)
                 if msg.startswith("ERROR:"):
@@ -378,7 +409,7 @@ class CbosClient:
                         raw_body=body,
                         http_status=resp.status_code,
                         error=f"HTTP {resp.status_code}",
-                        is_transient=resp.status_code >= 500,
+                        is_transient=_is_transient_http_status(resp.status_code),
                     )
                 result = _parse_new_trade_process(body)
                 logger.info(
@@ -452,7 +483,7 @@ class CbosClient:
                     return ExistingProcessResult(
                         found=False, raw_body=body,
                         error=f"HTTP {resp.status_code}",
-                        is_transient=resp.status_code >= 500,
+                        is_transient=_is_transient_http_status(resp.status_code),
                     )
                 data = _json.loads(body)
                 items = data.get("Result", [])
@@ -562,15 +593,19 @@ class CbosClient:
     ) -> AlreadyTriggeredResult:
         """
         POST {PROCESS_URL}/v1/api/process/GetCollateralValuation with
-        BUTTONNAME="COLLATERAL_VALUATION_REFRESH" (the read-only companion
-        to the COLLATERAL_VALUATION_DATEWISE trigger call) — a non-empty
-        Result.Table1 means a valuation run for this date already exists.
+        BUTTONNAME="REFRESH" and no MARGINDATE — confirmed verbatim against
+        EDP_Trade_Process_API_v3 step 17 (sample request:
+        {"BUTTONNAME":"REFRESH","LOGINID":"CV0001"}; NOT
+        "COLLATERAL_VALUATION_REFRESH" plus MARGINDATE, an earlier,
+        invented value/field that CBOS's well-documented lack of input
+        validation would accept without complaint while silently
+        misbehaving). A non-empty Result.Table1 means a valuation run for
+        this date already exists. margin_date is accepted but unused —
+        kept only so this matches the (login_id, date) signature every
+        check_*_triggered() method shares for PostTradeStateMachine's
+        generic dispatch.
         """
-        payload = {
-            "BUTTONNAME": "COLLATERAL_VALUATION_REFRESH",
-            "LOGINID": login_id,
-            "MARGINDATE": to_ddmmmyyyy(margin_date),
-        }
+        payload = {"BUTTONNAME": "REFRESH", "LOGINID": login_id}
         return await self._already_triggered_check("GetCollateralValuation", payload, segment="COLVAL")
 
     @otel_trace
@@ -579,14 +614,14 @@ class CbosClient:
     ) -> AlreadyTriggeredResult:
         """
         POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess with
-        BUTTONNAME="COMBINEDMARGIN_REFRESH" — the read-only companion to
-        the COMBINEDMARGIN_PROCESS trigger call.
+        BUTTONNAME="REFRESH" and no MARGINDATE — confirmed verbatim against
+        EDP_Trade_Process_API_v3 step 35 (sample request:
+        {"BUTTONNAME":"REFRESH","LOGINID":"CV0001"}; NOT
+        "COMBINEDMARGIN_REFRESH" plus MARGINDATE — same invented-payload
+        issue as check_collateral_valuation_triggered() above).
+        margin_date is accepted but unused, same reason as above.
         """
-        payload = {
-            "BUTTONNAME": "COMBINEDMARGIN_REFRESH",
-            "LOGINID": login_id,
-            "MARGINDATE": to_ddmmmyyyy(margin_date),
-        }
+        payload = {"BUTTONNAME": "REFRESH", "LOGINID": login_id}
         return await self._already_triggered_check("CombinedMarginProcess", payload, segment="DMRPT")
 
     @otel_trace
@@ -615,8 +650,13 @@ class CbosClient:
         self, segment: str, process_name: str, user_id: str,
     ) -> AlreadyTriggeredResult:
         """
-        Real mode: reuses file_process_status(process_name) — TRUE means
-        already triggered/running.
+        Real mode: reuses file_process_status(process_name), but — unlike
+        every other file_process_status caller — does NOT use
+        FileStatusResult.is_ready. This ProcessName's MSG is a full
+        sentence, not TRUE/FALSE/SKIP (see module docstring and
+        _parse_already_triggered_sentence()); is_ready's strict "== TRUE"
+        check would always read False here regardless of CBOS's actual
+        state, silently defeating the double-trigger guard.
 
         Mock mode: deliberately does NOT reuse file_process_status's own
         mock_set_ready_after() poll counter (that counter is keyed by
@@ -634,7 +674,8 @@ class CbosClient:
                 already_triggered=False, raw_body=result.raw_body,
                 error=result.error, is_transient=result.is_transient,
             )
-        return AlreadyTriggeredResult(already_triggered=result.is_ready, raw_body=result.raw_body)
+        already_triggered = _parse_already_triggered_sentence(result.response)
+        return AlreadyTriggeredResult(already_triggered=already_triggered, raw_body=result.raw_body)
 
     async def _already_triggered_check(
         self, endpoint_name: str, payload: dict, segment: str,
@@ -666,7 +707,7 @@ class CbosClient:
                     )
                     return AlreadyTriggeredResult(
                         already_triggered=False, raw_body=body,
-                        error=f"HTTP {resp.status_code}", is_transient=resp.status_code >= 500,
+                        error=f"HTTP {resp.status_code}", is_transient=_is_transient_http_status(resp.status_code),
                     )
                 data = _json.loads(body)
                 if data.get("Status") != "Success":
@@ -726,7 +767,7 @@ class CbosClient:
                         raw_body=body,
                         http_status=resp.status_code,
                         error=f"HTTP {resp.status_code}",
-                        is_transient=resp.status_code >= 500,
+                        is_transient=_is_transient_http_status(resp.status_code),
                     )
                 success, message = _parse_post_trade_trigger(body)
                 if not success:
@@ -894,6 +935,21 @@ class CbosClient:
 # Response parsers
 # =============================================================================
 
+def _is_transient_http_status(status_code: int) -> bool:
+    """
+    Whether a non-200 HTTP status from CBOS should be retried (BLOCKED,
+    poll again next cycle) rather than treated as a permanent failure.
+
+    5xx (CBOS-side fault) was already covered. 429 (Too Many Requests) is
+    also transient — a rate-limit response means "back off and retry," not
+    "this segment is broken." Misclassifying it as permanent would fail a
+    segment outright the first time polling frequency ever triggers
+    CBOS-side throttling, instead of just slowing down and succeeding on a
+    later cycle.
+    """
+    return status_code >= 500 or status_code == 429
+
+
 def _parse_msg(body: str) -> str:
     """
     Parse the MSG value from a file_process_status response.
@@ -918,6 +974,29 @@ def _parse_msg(body: str) -> str:
             if val in upper:
                 return val
         return "FALSE"
+
+
+def _parse_already_triggered_sentence(msg: str) -> bool:
+    """
+    Classify the MSG sentence returned by the 3 "already triggered" checks
+    that share file_process_status but do NOT use its TRUE/FALSE/SKIP
+    vocabulary (MTFCOLLALLOC / MTFFUNDTRAN / CHECKDAILYMARGINSTATEMENT —
+    see the module docstring). msg is already uppercased by _parse_msg().
+
+    Both documented sample responses (captured while walking the happy
+    path BEFORE the process had ever been triggered) mean "not yet
+    triggered": "PROCESS TRIGGERED IS PENDING" (MTFCOLLALLOC/MTFFUNDTRAN)
+    and "DAILYMARGINSTATEMENT IS NOT TRIGGERED" (CHECKDAILYMARGINSTATEMENT).
+    The doc has no sample of the genuinely-already-triggered phrasing, so
+    any OTHER sentence is conservatively treated as already triggered —
+    this check exists purely to prevent a double-fire, so an unrecognized
+    response is safer read as "don't re-fire" than as "safe to fire again".
+    """
+    if msg == "TRUE":
+        return True
+    if msg == "FALSE" or "NOT TRIGGERED" in msg or "PENDING" in msg:
+        return False
+    return True
 
 
 def _parse_post_trade_trigger(body: str) -> tuple[bool, str]:
@@ -946,7 +1025,21 @@ def _parse_post_trade_trigger(body: str) -> tuple[bool, str]:
 
 
 def _parse_new_trade_process(body: str) -> NewTradeProcessResult:
-    """Parse the getNewTradeProcess response and extract PROCESSID + step list."""
+    """
+    Parse the getNewTradeProcess response and extract PROCESSID + step list.
+
+    Two distinct failure modes, deliberately classified differently:
+      - CBOS explicitly returned Status != "Success": a real, well-formed
+        rejection — permanent (is_transient=False, the default), the
+        request itself was refused.
+      - The body is HTTP 200 but doesn't parse/shape as expected (garbled
+        JSON, missing keys, etc — the `except` below): NOT the same as a
+        rejection. A one-off malformed response is far more likely to be a
+        transient CBOS-side glitch than a permanent problem with this
+        segment's trigger — misclassifying it as permanent would fail the
+        segment outright instead of letting the next poll's presumably
+        well-formed response succeed.
+    """
     try:
         data = _json.loads(body)
         if data.get("Status") != "Success":
@@ -985,4 +1078,4 @@ def _parse_new_trade_process(body: str) -> NewTradeProcessResult:
             raw_body=body,
         )
     except Exception as exc:
-        return NewTradeProcessResult(success=False, raw_body=body, error=str(exc))
+        return NewTradeProcessResult(success=False, raw_body=body, error=str(exc), is_transient=True)

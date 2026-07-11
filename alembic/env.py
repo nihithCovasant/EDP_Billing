@@ -2,8 +2,8 @@
 Alembic migration environment for EDP Billing agent tables.
 
 Uses the same DATABASE_URL / DB_* resolution as the running agent (see
-src/agent/edp/config.py). Migrations run on a sync driver (psycopg / sqlite);
-the app runtime continues to use asyncpg / aiosqlite.
+src/agent/edp/config.py). Migrations run on a sync driver (psycopg);
+the app runtime continues to use asyncpg.
 """
 
 from __future__ import annotations

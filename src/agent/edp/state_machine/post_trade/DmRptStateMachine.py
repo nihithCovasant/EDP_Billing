@@ -11,3 +11,7 @@ class DmRptStateMachine(PostTradeStateMachine):
     SEGMENT_CODE = "DMRPT"
     TRIGGER_METHOD_NAME = "trigger_daily_margin_reporting"
     CHECK_TRIGGERED_METHOD_NAME = "check_daily_margin_reporting_triggered"
+    # No CBOS GTG/holiday-check endpoint exists for DMRPT — its readiness
+    # gate is "MTFFT (previous in POST_TRADE_ORDER) reached a terminal DB
+    # status", checked in PostTradeStateMachine._check_previous_process_terminal().
+    DEPENDS_ON_PREVIOUS_PROCESS = True

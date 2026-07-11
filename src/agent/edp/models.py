@@ -81,6 +81,16 @@ class SegmentState(str, enum.Enum):
       (no new trigger fired); otherwise it moves to TRIGGERED, which fires
       the real trigger call next cycle.
 
+      DMRPT and DMSTMT have no CBOS GTG/holiday-check endpoint at all —
+      their "readiness" is instead purely sequential and DB-only: DMRPT
+      waits for MTFFT (the previous process in POST_TRADE_ORDER) to reach
+      a terminal segment_status, DMSTMT waits for DMRPT, with no CBOS call
+      made for this check (see PostTradeStateMachine.DEPENDS_ON_PREVIOUS_PROCESS).
+      "Terminal" includes FAILED/SKIPPED, not just COMPLETED, so a
+      predecessor's failure doesn't block them forever; and since no CBOS
+      call happens, neither can be individually SKIPPED for a holiday the
+      way the other 3 can.
+
     Terminal outcomes (SUCCEEDED/FAILED/SKIPPED) are not values here — they
     live on segment_status (SegmentStatus); a row's current_state is set to
     None once segment_status reaches COMPLETED/SKIPPED, or left frozen at
@@ -153,7 +163,6 @@ class EdpProperties(Base):
             "trade_date",
             unique=True,
             postgresql_where=text("is_active"),
-            sqlite_where=text("is_active"),
         ),
     )
 
@@ -199,39 +208,49 @@ class SegmentExecution(Base):
     Every top-level processes_json key is exactly a SegmentState.value
     string — the same vocabulary current_state uses — so there is exactly
     one name for "the RECON step" (see utils/json_helpers.py's module
-    docstring for the full rationale). Each polling-state key has no
-    "status" field while still being polled — only poll_count/last_response
-    accumulate. "status" appears once CBOS returns TRUE/SKIP: "COMPLETED"
-    plus a stage-specific completion timestamp (checked_at/ready_at/
-    confirmed_at). current_state on the row (not this JSON) is what
-    actually drives control flow.
+    docstring for the full rationale). Every state's dict (other than
+    TRIGGERED) holds a "steps" sub-dict, one entry per distinct CBOS call
+    that state makes, keyed by a name identifying exactly which
+    endpoint/operation it recorded (e.g. "BILLPOSTING_STATUS"). A step has
+    no "status" field while still pending — only last_response/
+    last_checked_at accumulate; once CBOS returns TRUE/SKIP the step gets
+    a completion timestamp (checked_at/ready_at/confirmed_at) and the
+    *state's* own "status" becomes "COMPLETED". current_state on the row
+    (not this JSON) is what actually drives control flow. No poll count is
+    tracked — only the latest observed response matters.
 
     processes_json shape, 10 real segments (6 keys — insertion order
     matches pipeline order, since each key is only ever created when that
     state is first entered):
     {
-      "INIT":                                  {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "checked_at"?: ...},
-      "WAITING_FOR_FILE_UPLOAD":                {"pid_reservation"?: {"status": "PID_RESERVED", "process_id_reserved": ..., "process_id_source": "EXISTING"|"RESERVED_NEW", "reserved_at": ...}, "poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
+      "INIT":                                  {"status"?: "COMPLETED", "steps": {"BeginFileUpload_STATUS": {"last_response": ..., "last_checked_at"|"checked_at": ...}}},
+      "WAITING_FOR_FILE_UPLOAD":                {"status"?: "COMPLETED", "steps": {"reserve_process_id"?: {"process_id_reserved": ..., "process_id_source": "EXISTING"|"RESERVED_NEW", "reserved_at": ...}, "FILEUPLOAD_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
       "TRIGGERED":                              {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
-      "WAITING_FOR_BILLPOSTING":                {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
-      "WAITING_FOR_RECON":                      {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...},
-      "WAITING_FOR_CONTRACT_NOTE_GENERATION":   {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
+      "WAITING_FOR_BILLPOSTING":                {"status"?: "COMPLETED", "steps": {"BILLPOSTING_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
+      "WAITING_FOR_RECON":                      {"status"?: "COMPLETED", "steps": {"RECON_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
+      "WAITING_FOR_CONTRACT_NOTE_GENERATION":   {"status"?: "COMPLETED", "steps": {"CONTRACTNOTEGENERATION_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
     }
-    The nested "pid_reservation" field is written once, on
-    WAITING_FOR_FILE_UPLOAD's first entry (before poll_count/last_response
-for the FILEUPLOAD poll even exist) — nested rather than another
-top-level key so processes_json's top-level keys stay exactly the
-    SegmentState vocabulary; "TRIGGERED" copies process_id_source forward
-    from it once TRIGGERED genuinely fires.
-    CBOS ProcessName -> state key: BeginFileUpload->INIT,
+    "reserve_process_id" is written once, on WAITING_FOR_FILE_UPLOAD's
+    first entry (before FILEUPLOAD_STATUS even exists) — nested as a step
+    rather than another top-level key so processes_json's top-level keys
+    stay exactly the SegmentState vocabulary; "TRIGGERED" copies
+    process_id_source forward from it once TRIGGERED genuinely fires.
+    TRIGGERED itself has no "steps" wrapper — it's a single atomic action
+    already fully described by its own flat status/process_id/is_runnable
+    fields. CBOS ProcessName -> state key: BeginFileUpload->INIT,
     FILEUPLOAD->WAITING_FOR_FILE_UPLOAD, BILLPOSTING->WAITING_FOR_BILLPOSTING,
     RECON->WAITING_FOR_RECON, CONTRACTNOTEGENERATION->WAITING_FOR_CONTRACT_NOTE_GENERATION.
 
-    processes_json shape, 5 post-trade processes (3 keys):
+    processes_json shape, 5 post-trade processes (3 keys). The step key
+    embeds the resolved ProcessName (ops-configurable, e.g. "COLVAL"),
+    same convention as the real-segment endpoint-named step keys. For
+    DMRPT/DMSTMT specifically, WAITING_FOR_GTG's step key is instead the
+    fixed "PREV_PROCESS_STATUS" — its last_response is the predecessor's
+    terminal segment_status (e.g. "COMPLETED"/"FAILED"), not a CBOS reply:
     {
-      "WAITING_FOR_GTG":        {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "ready_at"?: ...},
+      "WAITING_FOR_GTG":        {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
       "TRIGGERED":               {"status": ..., "at": ..., "message": ...},
-      "WAITING_FOR_COMPLETION": {"poll_count": int, "last_response": ..., "status"?: "COMPLETED", "confirmed_at"?: ...}
+      "WAITING_FOR_COMPLETION": {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
     }
 
     current_process holds the CBOS ProcessName currently being polled

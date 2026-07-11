@@ -86,7 +86,6 @@
       "cbos_status_url": "http://10.167.202.234:8087",
       "cbos_process_url": "http://10.167.202.164:8003",
       "cbos_use_mock": true,
-      "database_url": "sqlite+aiosqlite:///./edp_agent.db",
       "cbos_login_id": "CV0001",
       "post_trade_login_id": "G_LID",
       "agent_instance_id": "edp-agent-1",

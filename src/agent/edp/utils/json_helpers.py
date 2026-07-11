@@ -3,24 +3,36 @@ processes_json read/write helpers — per-state execution state for a
 segment_execution row (see models.SegmentExecution docstring for shapes).
 
 Every top-level processes_json key is exactly a SegmentState.value string —
-the same vocabulary current_state uses — so there is exactly one way to
-name "the RECON step", not two. Where a state does more than one
-sub-operation (WAITING_FOR_FILE_UPLOAD does PID reservation on its first
-entry, then polls FILEUPLOAD on every later one), that state's dict nests
-the earlier sub-operation's result under its own key
-(WAITING_FOR_FILE_UPLOAD["pid_reservation"]) rather than using a second
-top-level key — insertion order still reads chronologically, since that
-nested field is written before the poll_count/last_response fields that
-share the same top-level dict ever appear.
+the same vocabulary current_state uses. Each state's dict has:
 
-TRIGGERED's dict has its own status progression for double-trigger crash
-protection: TRIGGERING -> TRIGGERED (or FAILED). "TRIGGERING" is written
-BEFORE the CBOS call, and is the signal a resumed pod uses to run the
-recovery check instead of re-firing. TRIGGERED is shared verbatim by both
-pipelines (see models.SegmentState).
+  {
+    "status": "COMPLETED" | "TRIGGERING" | "TRIGGERED" | "FAILED",
+    "steps": {
+        "<EndpointName>_STATUS": {"last_response": ..., "last_checked_at"/
+                                   "checked_at"/"ready_at"/"confirmed_at": ...},
+        ...
+    },
+  }
 
-Always use set_proc() to reassign the whole dict — SQLAlchemy doesn't
-detect in-place mutations on JSON columns.
+"steps" holds one entry per distinct CBOS call that state makes, keyed by
+a name that identifies exactly which endpoint/operation it recorded — so a
+state that makes more than one kind of call (WAITING_FOR_FILE_UPLOAD does
+PID reservation once, then polls FILEUPLOAD repeatedly) is still fully
+self-describing without needing a second top-level key. Insertion order
+within "steps" reads chronologically. TRIGGERED is the one state that
+stays flat (no "steps" wrapper) — it's already a single atomic action, and
+its dict carries its own crash-safety status progression: TRIGGERING ->
+TRIGGERED (or FAILED). "TRIGGERING" is written BEFORE the CBOS call, and is
+the signal a resumed pod uses to run the recovery check instead of
+re-firing. TRIGGERED is shared verbatim by both pipelines (see
+models.SegmentState).
+
+No poll_count is tracked — last_response + a timestamp is enough to see
+the latest observed CBOS state; how many times it was polled isn't useful
+once the row is inspected after the fact.
+
+Always use set_state()/set_step() to reassign the whole processes_json
+dict — SQLAlchemy doesn't detect in-place mutations on JSON columns.
 """
 
 from __future__ import annotations
@@ -30,97 +42,104 @@ from typing import Any
 
 from ..models import SegmentExecution, SegmentState
 
-# States whose stage completes with a "confirmed_at" timestamp
+# States whose step completes with a "confirmed_at" timestamp
 _CONFIRM_STAGES = {
     SegmentState.WAITING_FOR_BILLPOSTING.value,
     SegmentState.WAITING_FOR_RECON.value,
     SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION.value,
     SegmentState.WAITING_FOR_COMPLETION.value,
 }
-# States whose stage completes with a "ready_at" timestamp
+# States whose step completes with a "ready_at" timestamp
 _READY_STAGES = {SegmentState.WAITING_FOR_FILE_UPLOAD.value, SegmentState.WAITING_FOR_GTG.value}
 # All others (INIT) get "checked_at"
 
 
-def get_proc(row: SegmentExecution, stage_key: str) -> dict:
-    """Return a copy of the stage state dict (empty dict if not yet written)."""
-    return dict(row.processes_json.get(stage_key, {}))
+def get_state(row: SegmentExecution, state_key: str) -> dict:
+    """Return a copy of the state-level dict (empty dict if not yet written)."""
+    return dict(row.processes_json.get(state_key, {}))
 
 
-def set_proc(row: SegmentExecution, stage_key: str, state: dict) -> None:
+def set_state(row: SegmentExecution, state_key: str, state: dict) -> None:
     """
-    Write a stage state dict into processes_json.
+    Write a state-level dict into processes_json.
     Reassigns the entire column dict so SQLAlchemy detects the mutation.
     """
     updated = dict(row.processes_json)
-    updated[stage_key] = state
+    updated[state_key] = state
     row.processes_json = updated
 
 
-def patch_proc(row: SegmentExecution, stage_key: str, **kwargs: Any) -> None:
-    """Merge keyword arguments into an existing stage state dict."""
-    state = get_proc(row, stage_key)
-    state.update(kwargs)
-    set_proc(row, stage_key, state)
+def get_step(row: SegmentExecution, state_key: str, step_key: str) -> dict:
+    """Return a copy of one step dict nested under a state (empty dict if not yet written)."""
+    return dict(row.processes_json.get(state_key, {}).get("steps", {}).get(step_key, {}))
 
 
-def inc_poll(row: SegmentExecution, stage_key: str, last_response: str) -> None:
+def set_step(row: SegmentExecution, state_key: str, step_key: str, step: dict) -> None:
+    """Merge a step dict into processes_json[state_key]["steps"][step_key], preserving the state's other fields (e.g. "status")."""
+    state = get_state(row, state_key)
+    steps = dict(state.get("steps", {}))
+    steps[step_key] = step
+    state["steps"] = steps
+    set_state(row, state_key, state)
+
+
+def record_poll(row: SegmentExecution, state_key: str, step_key: str, last_response: str, now: datetime) -> None:
     """
-    Increment the poll counter for a stage and record the latest CBOS response.
-    Called on every file_process_status call that returns FALSE (still waiting).
-    No "status" write here — current_state (on the row) is what drives
-    control flow; this is purely a poll_count/last_response diagnostic log,
-    left absent (not "POLLING") until the stage actually completes.
+    Record the latest CBOS response for a step that is still pending.
+    Called on every file_process_status call that returns FALSE (still
+    waiting). No "status" write here — current_state (on the row) is what
+    drives control flow; this is purely a last_response/last_checked_at
+    diagnostic log.
     """
-    state = get_proc(row, stage_key)
-    state["poll_count"] = state.get("poll_count", 0) + 1
-    state["last_response"] = last_response
-    set_proc(row, stage_key, state)
+    step = get_step(row, state_key, step_key)
+    step["last_response"] = last_response
+    step["last_checked_at"] = now.isoformat()
+    set_step(row, state_key, step_key, step)
 
 
-def mark_stage_done(
-    row: SegmentExecution,
-    stage_key: str,
-    last_response: str,
-    now: datetime,
-) -> None:
+def mark_step_done(row: SegmentExecution, state_key: str, step_key: str, last_response: str, now: datetime) -> None:
     """
-    Mark a stage as COMPLETED with the appropriate completion timestamp.
-    Called when CBOS returns TRUE (or SKIP for INIT's holiday check).
+    Mark a step as complete (with the appropriate completion timestamp) and
+    set the owning state's overall "status" to COMPLETED. Called when CBOS
+    returns TRUE (or SKIP for INIT's/WAITING_FOR_GTG's holiday check).
     """
-    state = get_proc(row, stage_key)
-    state["status"] = "COMPLETED"
-    state["last_response"] = last_response
+    state = get_state(row, state_key)
+    steps = dict(state.get("steps", {}))
+    step = dict(steps.get(step_key, {}))
+    step["last_response"] = last_response
 
-    if stage_key in _CONFIRM_STAGES:
-        state["confirmed_at"] = now.isoformat()
-    elif stage_key in _READY_STAGES:
-        state["ready_at"] = now.isoformat()
+    if state_key in _CONFIRM_STAGES:
+        step["confirmed_at"] = now.isoformat()
+    elif state_key in _READY_STAGES:
+        step["ready_at"] = now.isoformat()
     else:
-        state["checked_at"] = now.isoformat()
+        step["checked_at"] = now.isoformat()
 
-    # Preserve accumulated poll_count
-    set_proc(row, stage_key, state)
+    steps[step_key] = step
+    state["steps"] = steps
+    state["status"] = "COMPLETED"
+    set_state(row, state_key, state)
 
 
 def record_pid_reservation(
     row: SegmentExecution, process_id: str, source: str, now: datetime,
 ) -> None:
     """
-    Record the PID-reservation outcome as a nested "pid_reservation" field
-    inside WAITING_FOR_FILE_UPLOAD's own dict (its first-entry operation) —
-    not a separate top-level key, so processes_json's top-level keys stay
-    exactly the SegmentState vocabulary. Nesting still keeps insertion
-    order chronological: this field is written before poll_count/
-    last_response ever appear in the same dict (those come from the later
-    FILEUPLOAD-poll entries).
+    Record the PID-reservation outcome as a "reserve_process_id" step
+    nested inside WAITING_FOR_FILE_UPLOAD's own dict (its first-entry
+    operation) — not a separate top-level key, so processes_json's
+    top-level keys stay exactly the SegmentState vocabulary.
     """
-    patch_proc(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, pid_reservation={
-        "status": "PID_RESERVED",
+    set_step(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, "reserve_process_id", {
         "process_id_reserved": process_id,
         "process_id_source": source,
         "reserved_at": now.isoformat(),
     })
+
+
+def get_pid_reservation(row: SegmentExecution) -> dict:
+    """Return the "reserve_process_id" step recorded during WAITING_FOR_FILE_UPLOAD's first entry."""
+    return get_step(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, "reserve_process_id")
 
 
 def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
@@ -129,12 +148,12 @@ def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     state_machine.RealSegmentStateMachine.handle_triggered).
     Durably records intent BEFORE the CBOS call, so a crash before the
     outcome is recorded leaves "TRIGGERING" for the recovery check to see.
-    Carries process_id_source forward from WAITING_FOR_FILE_UPLOAD's nested
-    "pid_reservation" field into TRIGGERED's own dict, so it survives the
+    Carries process_id_source forward from WAITING_FOR_FILE_UPLOAD's
+    "reserve_process_id" step into TRIGGERED's own dict, so it survives the
     eventual TRIGGERED/FAILED write.
     """
-    pid_reservation = get_proc(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value).get("pid_reservation", {})
-    set_proc(row, SegmentState.TRIGGERED.value, {
+    pid_reservation = get_pid_reservation(row)
+    set_state(row, SegmentState.TRIGGERED.value, {
         "status": "TRIGGERING",
         "attempt_started_at": now.isoformat(),
         "process_id_source": pid_reservation.get("process_id_source"),
@@ -148,10 +167,14 @@ def record_trigger(
     now: datetime,
 ) -> None:
     """Record a successful trigger call, preserving process_id_source
-    ("EXISTING"|"RESERVED_NEW") carried forward via record_trigger_attempt()."""
-    existing = get_proc(row, SegmentState.TRIGGERED.value)
-    set_proc(row, SegmentState.TRIGGERED.value, {
+    ("EXISTING"|"RESERVED_NEW") and attempt_started_at, both carried
+    forward from record_trigger_attempt() — otherwise the moment a trigger
+    confirms, the timestamp of when the attempt actually started (and thus
+    how long CBOS took to confirm it) would be silently lost."""
+    existing = get_state(row, SegmentState.TRIGGERED.value)
+    set_state(row, SegmentState.TRIGGERED.value, {
         "status": "TRIGGERED",
+        "attempt_started_at": existing.get("attempt_started_at"),
         "at": now.isoformat(),
         "process_id_used": process_id,
         "process_id_source": existing.get("process_id_source"),
@@ -165,9 +188,10 @@ def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> N
     failures, always paired with AbstractSegmentStateMachine._fail_result().
     Transient failures deliberately skip this, leaving "TRIGGERING" for recovery.
     """
-    existing = get_proc(row, SegmentState.TRIGGERED.value)
-    set_proc(row, SegmentState.TRIGGERED.value, {
+    existing = get_state(row, SegmentState.TRIGGERED.value)
+    set_state(row, SegmentState.TRIGGERED.value, {
         "status": "FAILED",
+        "attempt_started_at": existing.get("attempt_started_at"),
         "at": now.isoformat(),
         "error": error,
         "process_id_source": existing.get("process_id_source"),
@@ -182,25 +206,32 @@ def record_post_trade_trigger_attempt(row: SegmentExecution, now: datetime) -> N
     so a crash mid-call is durably visible; handle_triggered() refuses to
     re-fire when it sees this and requires manual verification instead.
     """
-    set_proc(row, SegmentState.TRIGGERED.value, {
+    set_state(row, SegmentState.TRIGGERED.value, {
         "status": "TRIGGERING",
         "attempt_started_at": now.isoformat(),
     })
 
 
 def record_post_trade_trigger(row: SegmentExecution, message: str, now: datetime) -> None:
-    """Record a successful post-trade trigger call (no process_id involved)."""
-    set_proc(row, SegmentState.TRIGGERED.value, {
+    """Record a successful post-trade trigger call (no process_id involved),
+    preserving attempt_started_at carried forward from
+    record_post_trade_trigger_attempt() — same rationale as record_trigger()."""
+    existing = get_state(row, SegmentState.TRIGGERED.value)
+    set_state(row, SegmentState.TRIGGERED.value, {
         "status": "TRIGGERED",
+        "attempt_started_at": existing.get("attempt_started_at"),
         "at": now.isoformat(),
         "message": message,
     })
 
 
 def record_post_trade_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
-    """Record a failed post-trade trigger attempt."""
-    set_proc(row, SegmentState.TRIGGERED.value, {
+    """Record a failed post-trade trigger attempt, preserving
+    attempt_started_at — same rationale as record_trigger_failed()."""
+    existing = get_state(row, SegmentState.TRIGGERED.value)
+    set_state(row, SegmentState.TRIGGERED.value, {
         "status": "FAILED",
+        "attempt_started_at": existing.get("attempt_started_at"),
         "at": now.isoformat(),
         "error": error,
     })

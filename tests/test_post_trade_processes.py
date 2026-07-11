@@ -21,7 +21,12 @@ from src.agent.edp.utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER, get_s
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
-from .fakes import CountingPostTradeTriggerCbosClient, FailingCbosClient, SkippingCbosClient
+from .fakes import (
+    CountingPostTradeTriggerCbosClient,
+    FailingCbosClient,
+    RecordingFileStatusCbosClient,
+    SkippingCbosClient,
+)
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
@@ -276,6 +281,78 @@ async def test_post_trade_process_in_progress_past_deadline_fails_with_timeout(c
     assert row.current_state == SegmentState.WAITING_FOR_COMPLETION, (
         "FAILED leaves current_state frozen where it broke, for diagnostics"
     )
+
+
+async def test_dmrpt_and_dmstmt_gtg_is_db_dependency_not_cbos_poll(cfg, session_factory, test_date):
+    """
+    DMRPT/DMSTMT have no CBOS GTG/holiday-check endpoint at all — their
+    WAITING_FOR_GTG readiness gate is purely "the previous process in
+    POST_TRADE_ORDER (MTFFT for DMRPT, DMRPT for DMSTMT) reached a
+    terminal DB status", never a file_process_status() poll against their
+    own GTG process name (DailyMarginReporting / DailyMarginStatements).
+    """
+    cbos = RecordingFileStatusCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
+    cbos.mock_set_ready_after(1)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+
+    await helpers.seed_post_trade_day(session_factory, test_date)
+    rows = await helpers.drive_post_trade_until_terminal(orchestrator, session_factory, test_date)
+    by_code = {r.segment_code: r for r in rows}
+
+    for code in POST_TRADE_ORDER:
+        assert by_code[code].segment_status == SegmentStatus.COMPLETED
+
+    # The GTG poll for the other 3 processes calls file_process_status once
+    # per process BEFORE the already-triggered check even runs. DMRPT/DMSTMT
+    # must show no such call — their only file_process_status calls are the
+    # later WAITING_FOR_COMPLETION confirmation poll (name is the same, so
+    # distinguish by count: exactly 1 call each, not 2).
+    dmrpt_status_calls = [c for c in cbos.calls if c[1] == "DailyMarginReporting"]
+    dmstmt_status_calls = [c for c in cbos.calls if c[1] == "DailyMarginStatements"]
+    assert len(dmrpt_status_calls) == 1, (
+        "DMRPT must call file_process_status exactly once (WAITING_FOR_COMPLETION only, "
+        f"no GTG poll), got {len(dmrpt_status_calls)}"
+    )
+    assert len(dmstmt_status_calls) == 1, (
+        "DMSTMT must call file_process_status exactly once (WAITING_FOR_COMPLETION only, "
+        f"no GTG poll), got {len(dmstmt_status_calls)}"
+    )
+
+    dmrpt = by_code["DMRPT"]
+    dmstmt = by_code["DMSTMT"]
+    assert dmrpt.processes_json[SegmentState.WAITING_FOR_GTG.value]["status"] == "COMPLETED"
+    dmrpt_gtg_step = dmrpt.processes_json[SegmentState.WAITING_FOR_GTG.value]["steps"]["PREV_PROCESS_STATUS"]
+    dmstmt_gtg_step = dmstmt.processes_json[SegmentState.WAITING_FOR_GTG.value]["steps"]["PREV_PROCESS_STATUS"]
+    assert dmrpt_gtg_step["last_response"] == "COMPLETED", (
+        "DMRPT's GTG step records MTFFT's terminal DB status, not a CBOS response"
+    )
+    assert dmstmt_gtg_step["last_response"] == "COMPLETED", (
+        "DMSTMT's GTG step records DMRPT's terminal DB status, not a CBOS response"
+    )
+
+
+async def test_dmrpt_proceeds_even_when_mtfft_fails(cfg, session_factory, test_date):
+    """
+    "Terminal" for the DB-dependency GTG gate deliberately includes
+    FAILED/SKIPPED, not just COMPLETED — DMRPT must still get its own
+    chance to run rather than blocking forever if MTFFT fails.
+    """
+    cbos = FailingCbosClient(
+        cfg.cbos_status_url, cfg.cbos_process_url,
+        fail_segment="MTFFT", fail_process="FundTransfer",
+    )
+    cbos.mock_set_ready_after(1)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+
+    await helpers.seed_post_trade_day(session_factory, test_date)
+    rows = await helpers.drive_post_trade_until_terminal(orchestrator, session_factory, test_date)
+    by_code = {r.segment_code: r for r in rows}
+
+    assert by_code["MTFFT"].segment_status == SegmentStatus.FAILED
+    assert by_code["DMRPT"].segment_status == SegmentStatus.COMPLETED, (
+        "DMRPT is independent of MTFFT's outcome once MTFFT reaches a terminal state"
+    )
+    assert by_code["DMSTMT"].segment_status == SegmentStatus.COMPLETED
 
 
 async def _prime_triggering_post_trade_row(session_factory, test_date, fixed_now, *, code: str = "COLVAL") -> None:

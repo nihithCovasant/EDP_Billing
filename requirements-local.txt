@@ -17,7 +17,6 @@ pydantic>=2.0.0
 python-dotenv
 uvicorn[standard]
 sqlalchemy[asyncio]>=2.0.0
-aiosqlite>=0.20.0
 asyncpg>=0.29.0
 alembic>=1.13.0
 psycopg[binary]>=3.1.0

@@ -30,7 +30,7 @@ def parse_window_dt(
 
 
 def ensure_aware(dt: datetime | None, tz: ZoneInfo = IST) -> datetime | None:
-    """SQLite returns naive datetimes — attach tz so comparisons work."""
+    """Defensive: attach tz to a naive datetime so comparisons work."""
     if dt is None:
         return None
     if dt.tzinfo is None:

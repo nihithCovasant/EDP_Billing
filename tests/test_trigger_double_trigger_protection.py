@@ -85,6 +85,10 @@ async def test_recovery_retriggers_when_cbos_never_received_the_call(cfg, sessio
     assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
     assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
     assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert row.processes_json[SegmentState.TRIGGERED.value]["attempt_started_at"] is not None, (
+        "record_trigger() must carry attempt_started_at forward from the pre-commit "
+        "TRIGGERING marker, not drop it once the trigger confirms"
+    )
     assert row.segment_status == SegmentStatus.IN_PROGRESS
 
     rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)

@@ -31,12 +31,16 @@ def _normalize_postgres_url(url: str) -> str:
 
 def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> str:
     """
-    Resolve the EDP database URL. Priority (highest first):
+    Resolve the EDP (PostgreSQL-only) database URL. Priority (highest first):
       1. DATABASE_URL env var (full connection string)
       2. DB_HOST / DB_PORT / DB_NAME / DB_USERNAME / DB_PASSWORD env vars
       3. agent_config.json → secrets.database.postgres.connection_string
       4. agent_config.json → edp.database_url
-      5. SQLite fallback (local dev)
+
+    No local-file fallback if none of these are set — running against a
+    throwaway on-disk database instead of the real Postgres instance is
+    exactly the kind of silent misconfiguration this should never allow;
+    raises immediately instead.
     """
     env_url = os.getenv("DATABASE_URL", "").strip()
     if env_url:
@@ -61,20 +65,28 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
     if db_url:
         return _normalize_postgres_url(db_url)
 
-    return edp_raw.get("database_url", "sqlite+aiosqlite:///./edp_agent.db")
+    db_url = edp_raw.get("database_url")
+    if db_url:
+        return _normalize_postgres_url(db_url)
+
+    raise RuntimeError(
+        "EDP database is not configured — set DATABASE_URL, or DB_HOST "
+        "(+ DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD), or agent_config.json's "
+        "secrets.database.postgres.connection_string / edp.database_url. "
+        "There is no local-file fallback: refusing to start against a "
+        "throwaway database instead of the real PostgreSQL instance."
+    )
 
 
 def to_alembic_url(database_url: str) -> str:
     """
     Convert the app's async SQLAlchemy URL to a sync URL for Alembic migrations.
-    Alembic runs synchronously; the runtime app keeps using asyncpg / aiosqlite.
+    Alembic runs synchronously; the runtime app keeps using asyncpg.
     """
     if database_url.startswith("postgresql+asyncpg://"):
         return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
     if database_url.startswith("postgresql://"):
         return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-    if database_url.startswith("sqlite+aiosqlite:"):
-        return database_url.replace("sqlite+aiosqlite:", "sqlite:", 1)
     return database_url
 
 
@@ -94,8 +106,9 @@ class EdpBootstrapConfig:
     # LOGINID for the 5 T+1 post-trade trigger calls, distinct from cbos_login_id.
     post_trade_login_id: str = "G_LID"
 
-    # Database
-    database_url: str = "sqlite+aiosqlite:///./edp_agent.db"
+    # Database (PostgreSQL only — always resolved explicitly by load_edp_config(),
+    # this default is never actually used at runtime).
+    database_url: str = ""
 
     # Identifies this agent instance in logs
     agent_instance_id: str = "agent-1"
@@ -138,9 +151,11 @@ def load_edp_config() -> EdpBootstrapConfig:
         )
 
     # Env vars take priority over agent_config.json, then hardcoded defaults.
+    # Unlike the settings below, an unresolvable database_url is not a "soft"
+    # default to warn about — _resolve_database_url() raises immediately,
+    # unconditionally, since there is no safe fallback to run against.
     secrets = default_cfg.get("secrets", {})
     db_url = _resolve_database_url(edp_raw, secrets)
-    db_url_defaulted = db_url == "sqlite+aiosqlite:///./edp_agent.db" and not edp_raw.get("database_url")
 
     cbos_status_url = os.getenv(
         "CBOS_STATUS_URL", edp_raw.get("cbos_status_url", "http://localhost:8087")
@@ -161,7 +176,6 @@ def load_edp_config() -> EdpBootstrapConfig:
 
     defaulted_settings = [
         name for name, defaulted in (
-            ("database_url", db_url_defaulted),
             ("cbos_status_url", cbos_status_url_defaulted),
             ("cbos_process_url", cbos_process_url_defaulted),
             ("cbos_use_mock", cbos_use_mock_defaulted),
@@ -171,7 +185,7 @@ def load_edp_config() -> EdpBootstrapConfig:
         logger.warning(
             f"[EDP CONFIG] Settings falling through to hardcoded defaults (no env var, "
             f"no agent_config.json value): {defaulted_settings} — resolved "
-            f"cbos_use_mock={cbos_use_mock} database_url={db_url!r}"
+            f"cbos_use_mock={cbos_use_mock}"
         )
         if _is_truthy_env(os.getenv("EDP_STRICT_CONFIG")):
             raise RuntimeError(

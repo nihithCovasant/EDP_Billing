@@ -51,8 +51,8 @@ async def test_all_segments_complete_successfully(cfg, session_factory, test_dat
             SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
         ):
             assert state.value in row.processes_json, f"{code} missing processes_json[{state.value}]"
-        # PID reservation is nested inside WAITING_FOR_FILE_UPLOAD, not its own top-level key.
-        assert "pid_reservation" in row.processes_json[SegmentState.WAITING_FOR_FILE_UPLOAD.value]
+        # PID reservation is nested as a step inside WAITING_FOR_FILE_UPLOAD, not its own top-level key.
+        assert "reserve_process_id" in row.processes_json[SegmentState.WAITING_FOR_FILE_UPLOAD.value]["steps"]
 
 
 async def test_segments_run_in_fixed_sequence_order(cfg, session_factory, test_date):

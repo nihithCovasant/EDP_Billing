@@ -6,16 +6,29 @@ independent of) the 10 real segments.
 Happy-flow states (no "phases" — see models.SegmentState):
   WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED)
 
-  WAITING_FOR_GTG    -> POST file_process_status(<process-specific
-                         ProcessName>) — poll until ready. This first poll
-                         doubles as the holiday check (post-trade has no
-                         separate INIT state): a SKIP response here means a
-                         market holiday and goes straight to SKIPPED, same
-                         semantics as INIT for real segments. Once ready,
-                         call the process's "already triggered" CBOS check:
-                         if already triggered, take the direct edge straight
-                         to WAITING_FOR_COMPLETION (no new trigger fired);
-                         otherwise move to TRIGGERED.
+  WAITING_FOR_GTG    -> For most processes: POST file_process_status(
+                         <process-specific ProcessName>) — poll until
+                         ready. This first poll doubles as the holiday
+                         check (post-trade has no separate INIT state): a
+                         SKIP response here means a market holiday and
+                         goes straight to SKIPPED, same semantics as INIT
+                         for real segments.
+                         For DMRPT and DMSTMT specifically (see
+                         DEPENDS_ON_PREVIOUS_PROCESS below): there is no
+                         CBOS-side GTG/holiday-check endpoint documented
+                         at all (confirmed against EDP_Trade_Process_API_v3
+                         — steps 35-38 have no preceding GTG step). Their
+                         "readiness" gate is instead purely sequential:
+                         DMRPT waits for MTFFT to reach a terminal DB
+                         status, DMSTMT waits for DMRPT — no CBOS call is
+                         made for this check, and (having no CBOS SKIP
+                         signal) they can never be individually SKIPPED
+                         for a holiday the way the other 3 processes can.
+                         Once ready, call the process's "already
+                         triggered" CBOS check: if already triggered, take
+                         the direct edge straight to WAITING_FOR_COMPLETION
+                         (no new trigger fired); otherwise move to
+                         TRIGGERED.
   TRIGGERED           -> POST <process-specific trigger endpoint> — the one
                          genuinely real crash-safety-critical wait in this
                          pipeline.
@@ -28,7 +41,9 @@ post_trade/ names both on CbosClient; the GTG/confirm poll and state
 machine are otherwise identical for all 5. The GTG/confirm ProcessName is
 ops-configurable (workflow_json["post_trade_processes"][].gtg_process_name),
 resolved once when the process starts by orchestrator.py and read from
-row.current_process thereafter.
+row.current_process thereafter. processes_json's step keys embed that
+resolved ProcessName directly (e.g. "COLVAL_STATUS"), same convention as
+the real-segment state machine's endpoint-named step keys.
 
 Each handler call does exactly one action and returns — AbstractStateMachine
 applies the resulting single state transition; there is no internal loop.
@@ -40,22 +55,25 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import SegmentExecution, SegmentState
-from ..utils.constants import POST_TRADE_GTG_PROCESS_NAME
+from ..models import SegmentExecution, SegmentState, SegmentStatus
+from ..utils.constants import POST_TRADE_GTG_PROCESS_NAME, POST_TRADE_ORDER
 from ..utils.json_helpers import (
-    get_proc,
-    inc_poll,
-    mark_stage_done,
+    get_state,
+    mark_step_done,
+    record_poll,
     record_post_trade_trigger,
     record_post_trade_trigger_attempt,
     record_post_trade_trigger_failed,
 )
 from ..utils.log_fmt import stage_log
+from .. import repository
 from .AbstractStateMachine import AbstractSegmentStateMachine
 from .SegmentHandlerResult import ADVANCE, BLOCKED, SegmentHandlerResult
 from .TradeSegmentTransitionFactory import POST_TRADE_TRANSITION_MAP
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger
+
+_TERMINAL_STATUSES = (SegmentStatus.COMPLETED, SegmentStatus.FAILED, SegmentStatus.SKIPPED)
 
 
 class PostTradeStateMachine(AbstractSegmentStateMachine):
@@ -66,6 +84,10 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
     #     — CbosClient method handle_waiting_for_gtg() dispatches to.
     TRIGGER_METHOD_NAME: str = ""
     CHECK_TRIGGERED_METHOD_NAME: str = ""
+    # True for DMRPT and DMSTMT only — see handle_waiting_for_gtg's
+    # docstring. Their readiness gate is "the previous process in
+    # POST_TRADE_ORDER has reached a terminal DB status", not a CBOS call.
+    DEPENDS_ON_PREVIOUS_PROCESS: bool = False
 
     def __init__(self) -> None:
         super().__init__(POST_TRADE_TRANSITION_MAP)
@@ -91,24 +113,29 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
         already has a run for this date, take the direct edge to
         WAITING_FOR_COMPLETION without firing a new trigger; otherwise
         move to TRIGGERED, which fires the trigger next cycle.
+
+        DMRPT/DMSTMT (DEPENDS_ON_PREVIOUS_PROCESS=True) skip this CBOS
+        poll entirely — see _check_previous_process_terminal().
         """
+        if self.DEPENDS_ON_PREVIOUS_PROCESS:
+            return await self._check_previous_process_terminal(cbos, row, session, login_id, now)
+
         # Resolved and persisted at process start (see
         # orchestrator._resolve_post_trade_process_name()); survives a restart mid-poll.
         process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
-        poll_state = get_proc(row, SegmentState.WAITING_FOR_GTG.value)
-        poll_count = poll_state.get("poll_count", 0) + 1
+        step_key = f"{process_name}_STATUS"
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
         )
-        inc_poll(row, SegmentState.WAITING_FOR_GTG.value, result.response)
+        record_poll(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
         await session.flush()
 
         if result.is_error:
             if result.is_transient:
                 logger.warning(stage_log(
                     row.segment_code, "WAITING_FOR_GTG",
-                    "Transient CBOS error — will retry next cycle", error=result.error, poll=poll_count,
+                    "Transient CBOS error — will retry next cycle", error=result.error,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
@@ -117,11 +144,10 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             return self._fail_result(row, "CBOS_ERROR", f"{process_name} GTG check error: {result.error}", now)
 
         if result.is_pending:
-            if poll_count == 1 or poll_count % 5 == 0:
-                logger.info(stage_log(
-                    row.segment_code, "WAITING_FOR_GTG",
-                    f"{process_name} not yet ready — waiting", response=result.response, poll=poll_count,
-                ))
+            logger.info(stage_log(
+                row.segment_code, "WAITING_FOR_GTG",
+                f"{process_name} not yet ready — waiting", response=result.response,
+            ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
         if result.is_skip:
@@ -133,10 +159,60 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
                 f"Market HOLIDAY — {process_name} will be SKIPPED",
                 response=result.response, at=now.strftime("%H:%M:%S %Z"),
             ))
-            mark_stage_done(row, SegmentState.WAITING_FOR_GTG.value, result.response, now)
+            mark_step_done(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
             return self._skip_result(row, "CBOS_SKIP", f"{process_name} returned SKIP — market holiday", now)
 
-        mark_stage_done(row, SegmentState.WAITING_FOR_GTG.value, result.response, now)
+        mark_step_done(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
+        return await self._decide_direct_or_triggered(cbos, row, login_id, now, process_name)
+
+    async def _check_previous_process_terminal(
+        self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
+    ) -> SegmentHandlerResult:
+        """
+        DMRPT/DMSTMT-only readiness gate: no CBOS GTG/holiday-check
+        endpoint exists for either (confirmed against
+        EDP_Trade_Process_API_v3 — no GTG step precedes steps 35-38), so
+        "ready" here means "the previous process in POST_TRADE_ORDER has
+        reached a terminal DB status (COMPLETED/FAILED/SKIPPED)" —
+        checked entirely from our own DB, no CBOS call made. "Terminal"
+        deliberately includes FAILED/SKIPPED, not just COMPLETED — this
+        process must still get a chance to run even if its predecessor
+        didn't succeed, rather than blocking forever. Since no CBOS call
+        is made, this process can never itself be SKIPPED for a holiday
+        the way the other 3 processes can — it always proceeds straight
+        to the "already triggered" check once its predecessor is done.
+        """
+        idx = POST_TRADE_ORDER.index(row.segment_code)
+        if idx == 0:
+            # Defensive — DEPENDS_ON_PREVIOUS_PROCESS should never be set
+            # on the first process in the order.
+            logger.error(stage_log(
+                row.segment_code, "WAITING_FOR_GTG",
+                "DEPENDS_ON_PREVIOUS_PROCESS set on the first post-trade process — marking FAILED",
+            ))
+            return self._fail_result(row, "SYSTEM_ERROR", "No previous process to depend on", now)
+
+        predecessor_code = POST_TRADE_ORDER[idx - 1]
+        predecessor = await repository.get_one(session, row.trade_date, predecessor_code)
+
+        if predecessor is None or predecessor.segment_status not in _TERMINAL_STATUSES:
+            logger.info(stage_log(
+                row.segment_code, "WAITING_FOR_GTG",
+                f"Waiting for {predecessor_code} to finish before starting",
+                predecessor_status=(predecessor.segment_status.value if predecessor else "NOT_STARTED"),
+            ))
+            return SegmentHandlerResult(outcome=BLOCKED)
+
+        logger.info(stage_log(
+            row.segment_code, "WAITING_FOR_GTG",
+            f"{predecessor_code} finished — proceeding to the already-triggered check",
+            predecessor_status=predecessor.segment_status.value,
+        ))
+        mark_step_done(
+            row, SegmentState.WAITING_FOR_GTG.value, "PREV_PROCESS_STATUS",
+            predecessor.segment_status.value, now,
+        )
+        process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
         return await self._decide_direct_or_triggered(cbos, row, login_id, now, process_name)
 
     async def _decide_direct_or_triggered(
@@ -202,7 +278,7 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             logger.error(stage_log(code, "TRIGGERED", "Unknown post-trade process code — marking FAILED"))
             return self._fail_result(row, "CBOS_ERROR", f"Unknown post-trade process code {code}", now)
 
-        if get_proc(row, SegmentState.TRIGGERED.value).get("status") == "TRIGGERING":
+        if get_state(row, SegmentState.TRIGGERED.value).get("status") == "TRIGGERING":
             logger.error(stage_log(
                 code, "TRIGGERED",
                 "Resuming with an unconfirmed prior trigger attempt — refusing to "
@@ -256,20 +332,19 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
     ) -> SegmentHandlerResult:
         """POST file_process_status(<ProcessName>) again — poll until CBOS confirms completion."""
         process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
-        poll_state = get_proc(row, SegmentState.WAITING_FOR_COMPLETION.value)
-        poll_count = poll_state.get("poll_count", 0) + 1
+        step_key = f"{process_name}_STATUS"
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
         )
-        inc_poll(row, SegmentState.WAITING_FOR_COMPLETION.value, result.response)
+        record_poll(row, SegmentState.WAITING_FOR_COMPLETION.value, step_key, result.response, now)
         await session.flush()
 
         if result.is_error:
             if result.is_transient:
                 logger.warning(stage_log(
                     row.segment_code, "WAITING_FOR_COMPLETION",
-                    "Transient CBOS error — will retry next cycle", error=result.error, poll=poll_count,
+                    "Transient CBOS error — will retry next cycle", error=result.error,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
@@ -278,24 +353,22 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             return self._fail_result(row, "CBOS_ERROR", f"{process_name} confirm check error: {result.error}", now)
 
         if result.is_pending:
-            if poll_count == 1 or poll_count % 5 == 0:
-                logger.info(stage_log(
-                    row.segment_code, "WAITING_FOR_COMPLETION",
-                    f"{process_name} not yet complete — waiting", response=result.response, poll=poll_count,
-                ))
+            logger.info(stage_log(
+                row.segment_code, "WAITING_FOR_COMPLETION",
+                f"{process_name} not yet complete — waiting", response=result.response,
+            ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
         if result.is_skip:
             logger.error(stage_log(
                 row.segment_code, "WAITING_FOR_COMPLETION",
-                f"Unexpected SKIP for {process_name} — marking FAILED",
-                response=result.response, poll=poll_count,
+                f"Unexpected SKIP for {process_name} — marking FAILED", response=result.response,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"Unexpected {process_name} SKIP response", now)
 
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_COMPLETION", f"{process_name} CONFIRMED — post-trade process COMPLETED",
-            response=result.response, total_polls=poll_count, confirmed_at=now.strftime("%H:%M:%S %Z"),
+            response=result.response, confirmed_at=now.strftime("%H:%M:%S %Z"),
         ))
-        mark_stage_done(row, SegmentState.WAITING_FOR_COMPLETION.value, result.response, now)
+        mark_step_done(row, SegmentState.WAITING_FOR_COMPLETION.value, step_key, result.response, now)
         return self._complete_result(row, now)

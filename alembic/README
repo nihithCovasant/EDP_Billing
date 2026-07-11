@@ -22,7 +22,7 @@ Database URL is read from `.env` (`DB_*` or `DATABASE_URL`) — same as the agen
 
 ## Upgrading from pre-Alembic databases
 
-If tables were already created by `create_all` (SQLite file or PostgreSQL), stamp
+If tables were already created by `create_all` against PostgreSQL, stamp
 the current schema without re-running DDL:
 
 ```powershell
