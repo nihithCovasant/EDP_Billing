@@ -73,7 +73,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-ant-not-used-locally}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-not-used-locally}
     volumes:
-      # Mount agent_config.json for the 10 segments / 5 post-trade processes
+      # Mount agent_config.json for the 9 segments / 5 post-trade processes
       # window config (see docker/docker-entrypoint.sh's inject_config()).
       - ./src/config/agent_config.json:/app/config/agent_config.json:ro
     healthcheck:

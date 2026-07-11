@@ -5,8 +5,8 @@ Two separate base URLs:
   STATUS_URL  (port 8087) — Good-to-Go / completion checks via file_process_status
   PROCESS_URL (port 8003) — process management (get-or-reserve PID, trigger)
 
-Segment pipeline — identical for all 10 segments (CASH/EQ, F&O/DR, CD/CUR,
-SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF); none are special-cased, they all
+Segment pipeline — identical for all 9 segments (CASH/EQ, F&O/DR, CD/CUR,
+SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM); none are special-cased, they all
 run through the same 7 steps:
   1. file_process_status(BeginFileUpload)        → holiday check
   2. getdropdown(EXISTINGPROCESSID); if not found,

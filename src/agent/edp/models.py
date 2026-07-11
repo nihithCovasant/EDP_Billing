@@ -57,8 +57,8 @@ class SegmentState(str, enum.Enum):
     takes. Shared by two pipelines, distinguished by segment_code (see
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
-    (1) Real-segment pipeline (10x: EQ/DR/CUR/SLB/NCDEX/NCDEXPHY/MCX/
-        MCXPHY/NSECOM/MF) — happy flow:
+    (1) Real-segment pipeline (9x: EQ/DR/CUR/SLB/NCDEX/NCDEXPHY/MCX/
+        MCXPHY/NSECOM) — happy flow:
       INIT -> WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING
       -> WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
 
@@ -136,7 +136,7 @@ class EdpProperties(Base):
           "window_start": "17:00",
           "window_end": "06:00"
         },
-        ...10 segments: EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF...
+        ...9 segments: EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM...
       ],
       "post_trade_processes": [...5 processes: COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT...]
     }
@@ -219,7 +219,7 @@ class SegmentExecution(Base):
     (not this JSON) is what actually drives control flow. No poll count is
     tracked — only the latest observed response matters.
 
-    processes_json shape, 10 real segments (6 keys — insertion order
+    processes_json shape, 9 real segments (6 keys — insertion order
     matches pipeline order, since each key is only ever created when that
     state is first entered):
     {

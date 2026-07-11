@@ -23,14 +23,13 @@ from .segments.CurSegmentStateMachine import CurSegmentStateMachine
 from .segments.DrSegmentStateMachine import DrSegmentStateMachine
 from .segments.McxPhySegmentStateMachine import McxPhySegmentStateMachine
 from .segments.McxSegmentStateMachine import McxSegmentStateMachine
-from .segments.MfSegmentStateMachine import MfSegmentStateMachine
 from .segments.NcdexPhySegmentStateMachine import NcdexPhySegmentStateMachine
 from .segments.NcdexSegmentStateMachine import NcdexSegmentStateMachine
 from .segments.NseComSegmentStateMachine import NseComSegmentStateMachine
 from .segments.SlbSegmentStateMachine import SlbSegmentStateMachine
 
 _CLASS_BY_CODE: dict[str, type[AbstractSegmentStateMachine]] = {
-    # 10 real segments
+    # 9 real segments
     "EQ": CashSegmentStateMachine,
     "DR": DrSegmentStateMachine,
     "CUR": CurSegmentStateMachine,
@@ -40,7 +39,6 @@ _CLASS_BY_CODE: dict[str, type[AbstractSegmentStateMachine]] = {
     "MCX": McxSegmentStateMachine,
     "MCXPHY": McxPhySegmentStateMachine,
     "NSECOM": NseComSegmentStateMachine,
-    "MF": MfSegmentStateMachine,
     # 5 post-trade processes
     "COLVAL": ColValStateMachine,
     "COLALLOC": ColAllocStateMachine,

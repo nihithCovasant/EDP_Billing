@@ -83,14 +83,14 @@ All EDP-specific settings resolve with **env vars taking priority over
 | `EDP_WAKE_INTERVAL_SECONDS` | Seconds between wake cycles (default 60) |
 | `CBOS_STATUS_URL`, `CBOS_PROCESS_URL` | CBOS base URLs (real system or `mock_cbos`) |
 | `CBOS_USE_MOCK` | `true` = in-process mock responses, `false` = real HTTP calls to the URLs above |
-| `CBOS_LOGIN_ID` | LOGINID used for the 10 real-segment CBOS calls |
+| `CBOS_LOGIN_ID` | LOGINID used for the 9 real-segment CBOS calls |
 | `POST_TRADE_LOGIN_ID` | LOGINID used for the 5 post-trade CBOS calls |
 | `DATABASE_URL` **or** `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USERNAME`/`DB_PASSWORD` | PostgreSQL connection (async `postgresql+asyncpg://`; Alembic migrations auto-convert to sync `postgresql+psycopg://`) |
 | `EMAIL_DRY_RUN` | `true` = log rendered email only, `false` = send via Microsoft Graph |
 | `EMAIL_GRAPH_TENANT_ID`, `EMAIL_GRAPH_CLIENT_ID`, `EMAIL_GRAPH_CLIENT_SECRET`, `EMAIL_GRAPH_SENDER` | Microsoft Graph app-registration credentials for `global_email_service` |
 | `EMAIL_DEFAULT_TO`, `EMAIL_DEFAULT_CC` | Recipients for terminal-status alerts (comma-separated) |
 
-`agent_config.json` still owns the 10 segment / 5 post-trade-process window
+`agent_config.json` still owns the 9 segment / 5 post-trade-process window
 definitions (mounted read-only into the container — see above).
 
 ## Database migrations

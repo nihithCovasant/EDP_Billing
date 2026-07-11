@@ -37,6 +37,7 @@ from .utils.constants import (
     POST_TRADE_GTG_PROCESS_NAME,
     POST_TRADE_FIRST_WINDOW_START,
     POST_TRADE_DEFAULT_WINDOW_END,
+    NEXT_DAY_WINDOW_SEGMENTS,
 )
 from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
 from .utils.log_fmt import edp_log, seg_log
@@ -46,8 +47,8 @@ from cams_otel_lib import Logger as logger, otel_trace
 
 class EdpOrchestrator:
     """
-    Drives the daily EDP billing pipeline across the 10 trade segments
-    (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF),
+    Drives the daily EDP billing pipeline across the 9 trade segments
+    (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM),
     then the 5 T+1 post-trade processes (COLVAL, COLALLOC, MTFFT, DMRPT,
     DMSTMT) —
     both orders fixed code constants; login_id/CBOS ProcessName/window
@@ -476,17 +477,30 @@ def _resolve_window(
 ) -> tuple[Optional[datetime], Optional[datetime]]:
     """Resolve (window_start, window_end) for a segment on demand — a pure
     function of (segment_code, workflow_json, trade_date, tz), so a config
-    re-upload takes effect immediately. Segments run same-day: window_end
-    only rolls onto trade_date+1 when it's chronologically at/before
-    window_start on trade_date (e.g. window_start=17:00, window_end=06:00
-    crosses midnight) — derived from the actual times, never a blanket
-    "always next day" (only the 5 post-trade processes are T+1 by
-    definition; see _resolve_post_trade_window)."""
+    re-upload takes effect immediately.
+
+    Two patterns, chosen by NEXT_DAY_WINDOW_SEGMENTS (a fixed regulatory
+    set, e.g. MCX/MCXPHY/NSECOM run entirely T+1 morning):
+      - Most segments run same-day-evening-into-next-morning: window_end
+        only rolls onto trade_date+1 when it's chronologically at/before
+        window_start on trade_date (e.g. window_start=17:00,
+        window_end=06:00 crosses midnight) — derived from the actual times,
+        never a blanket "always next day".
+      - NEXT_DAY_WINDOW_SEGMENTS members have BOTH window_start and
+        window_end on trade_date+1 — plain HH:MM strings can't otherwise
+        distinguish that from a same-day-morning window (e.g.
+        window_start=04:00 is ambiguous between "today" and "tomorrow"
+        without this explicit signal; nothing here crosses midnight for
+        the same-day/next-day check above to catch).
+
+    Only the 5 post-trade processes are unconditionally T+1 regardless of
+    segment_code; see _resolve_post_trade_window()."""
     seg_cfg = _find_segment_cfg(workflow_json, segment_code)
     if not seg_cfg:
         return None, None
-    window_start = parse_window_dt(trade_date, seg_cfg["window_start"], False, tz)
-    window_end = parse_window_dt(trade_date, seg_cfg["window_end"], False, tz)
+    starts_next_day = segment_code in NEXT_DAY_WINDOW_SEGMENTS
+    window_start = parse_window_dt(trade_date, seg_cfg["window_start"], starts_next_day, tz)
+    window_end = parse_window_dt(trade_date, seg_cfg["window_end"], starts_next_day, tz)
     if window_end <= window_start:
         window_end = parse_window_dt(trade_date, seg_cfg["window_end"], True, tz)
     return window_start, window_end
@@ -557,7 +571,7 @@ def _resolve_post_trade_window_end(
     Without a real deadline here, a post-trade process CBOS never responds
     to would poll (BLOCKED) forever with no FAILED/TIMEOUT outcome and no
     alert ever firing — this closes that gap using the exact same
-    is_my_window_over() check the 10 real segments already get.
+    is_my_window_over() check the 9 real segments already get.
     """
     proc_cfg = _find_post_trade_cfg(workflow_json, segment_code)
     if proc_cfg and proc_cfg.get("window_end"):

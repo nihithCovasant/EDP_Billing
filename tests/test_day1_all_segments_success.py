@@ -1,8 +1,8 @@
 """
 Day 1 — happy path.
 
-All 10 segments (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY,
-NSECOM, MF) complete successfully in sequence order, each driven through
+All 9 segments (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX, NCDEXPHY, MCX, MCXPHY,
+NSECOM) complete successfully in sequence order, each driven through
 the identical generic 6-state pipeline — none are special-cased — via the
 real orchestrator + state machine + CbosClient in-process mock (no network
 calls, fully deterministic).
@@ -30,7 +30,6 @@ async def test_all_segments_complete_successfully(cfg, session_factory, test_dat
     by_code = {r.segment_code: r for r in rows}
 
     assert set(by_code) == set(SEGMENT_ORDER)
-    assert "MF" in by_code, "MF must run as a normal segment, same as every other"
 
     for code in SEGMENT_ORDER:
         row = by_code[code]

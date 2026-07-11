@@ -1,7 +1,7 @@
 """
-Shared base for all 10 real-segment state machines (CASH/EQ, F&O/DR, CD/CUR,
-SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM, MF) — none are special-cased, so
-every one of the 10 files under segments/ is a ~5-line subclass that just
+Shared base for all 9 real-segment state machines (CASH/EQ, F&O/DR, CD/CUR,
+SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM) — none are special-cased, so
+every one of the 9 files under segments/ is a ~5-line subclass that just
 sets SEGMENT_CODE; all step logic lives once, here.
 
 flow states (no "phases" — see models.SegmentState):

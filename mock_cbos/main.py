@@ -5,7 +5,7 @@ Mock CBOS Server
 Standalone FastAPI app that simulates the CBOS endpoints used by the EDP
 Billing segment execution flow (holiday check, get-or-reserve process ID,
 file upload poll, single trigger, bill posting/recon/contract note polls —
-identical for all 10 segments) plus the 5 T+1 post-trade processes (GTG poll
+identical for all 9 segments) plus the 5 T+1 post-trade processes (GTG poll
 -> trigger -> confirm poll), so the EDP agent can be fully tested without
 VPN/VDI access to the real MOFSL CBOS system.
 
@@ -58,8 +58,8 @@ app.add_middleware(
 async def file_process_status(payload: dict):
     """
     Generic GTG / status poll used for every ProcessName in the flow —
-    identical for all 10 segments (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX,
-    NCDEXPHY, MCX, MCXPHY, NSECOM, MF):
+    identical for all 9 segments (CASH/EQ, F&O/DR, CD/CUR, SLB, NCDEX,
+    NCDEXPHY, MCX, MCXPHY, NSECOM):
       BeginFileUpload, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION.
 
     Also reused as-is for the 5 T+1 post-trade processes' GTG/confirm polls

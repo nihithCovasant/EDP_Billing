@@ -31,7 +31,7 @@ class TradeSegmentTransitionFactory:
     def load_segment_transition_map(allowed_segments: tuple[str, ...]) -> SegmentTransitionMap:
         """
         Every real segment (CASH/EQ, DR, CUR, SLB, NCDEX, NCDEXPHY, MCX,
-        MCXPHY, NSECOM, MF) follows the identical happy-flow chain below —
+        MCXPHY, NSECOM) follows the identical happy-flow chain below —
         written out explicitly once, then applied to every segment code so
         the same edges are guaranteed for all of them:
 

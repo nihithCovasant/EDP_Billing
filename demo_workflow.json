@@ -5,61 +5,55 @@
         {
           "segment_code": "EQ",
           "login_id": "CV0001",
-          "window_start": "14:51",
-          "window_end": "06:00"
+          "window_start": "17:00",
+          "window_end": "18:00"
         },
         {
           "segment_code": "DR",
           "login_id": "CV0001",
-          "window_start": "17:15",
-          "window_end": "06:00"
+          "window_start": "18:00",
+          "window_end": "21:00"
         },
         {
           "segment_code": "CUR",
           "login_id": "CV0001",
-          "window_start": "17:30",
-          "window_end": "06:00"
+          "window_start": "18:00",
+          "window_end": "19:00"
         },
         {
           "segment_code": "SLB",
           "login_id": "CV0001",
-          "window_start": "17:45",
-          "window_end": "06:00"
+          "window_start": "18:10",
+          "window_end": "19:00"
         },
         {
           "segment_code": "NCDEX",
           "login_id": "CV0001",
-          "window_start": "18:00",
-          "window_end": "06:00"
+          "window_start": "21:00",
+          "window_end": "02:00"
         },
         {
           "segment_code": "NCDEXPHY",
           "login_id": "CV0001",
-          "window_start": "18:15",
-          "window_end": "06:00"
+          "window_start": "21:00",
+          "window_end": "02:00"
         },
         {
           "segment_code": "MCX",
           "login_id": "CV0001",
-          "window_start": "18:30",
+          "window_start": "04:00",
           "window_end": "06:00"
         },
         {
           "segment_code": "MCXPHY",
           "login_id": "CV0001",
-          "window_start": "18:45",
+          "window_start": "04:00",
           "window_end": "06:00"
         },
         {
           "segment_code": "NSECOM",
           "login_id": "CV0001",
-          "window_start": "19:00",
-          "window_end": "06:00"
-        },
-        {
-          "segment_code": "MF",
-          "login_id": "CV0001",
-          "window_start": "19:15",
+          "window_start": "03:30",
           "window_end": "06:00"
         }
       ],
@@ -68,7 +62,7 @@
           "process_code": "COLVAL",
           "login_id": "G_LID",
           "gtg_process_name": "CollateralValuation",
-          "window_start": "02:00",
+          "window_start": "02:30",
           "window_end": "06:00"
         },
         {

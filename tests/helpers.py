@@ -19,7 +19,7 @@ from src.agent.edp import repository
 from src.agent.edp.config import EdpBootstrapConfig, build_default_workflow_json
 from src.agent.edp.models import EdpProperties, SegmentExecution, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
-from src.agent.edp.utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER
+from src.agent.edp.utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER, NEXT_DAY_WINDOW_SEGMENTS
 
 TERMINAL_STATES = {SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED}
 
@@ -44,15 +44,26 @@ def build_all_day_open_workflow_json() -> dict:
     return build_default_workflow_json(segments)
 
 
-def fixed_now_for(trade_date: date, tz) -> datetime:
-    """A stable "now" anchored to trade_date (noon) instead of real
-    wall-clock time, matching how window boundaries are computed."""
-    return datetime.combine(trade_date, dtime(12, 0), tzinfo=tz)
+def fixed_now_for(trade_date: date, tz, segment_code: str | None = None) -> datetime:
+    """
+    A stable "now" anchored to noon instead of real wall-clock time,
+    matching how window boundaries are computed.
+
+    NEXT_DAY_WINDOW_SEGMENTS members (MCX/MCXPHY/NSECOM) have their entire
+    window forced onto trade_date+1 by _resolve_window() regardless of the
+    HH:MM values in workflow_json — so with the "wide open" 00:00-23:59
+    test window, their window only ever falls on trade_date+1, never
+    trade_date itself. Anchor "now" a day later for them so the "always
+    open" test workflow actually holds; every other segment keeps noon on
+    trade_date, unaffected.
+    """
+    anchor_date = trade_date + timedelta(days=1) if segment_code in NEXT_DAY_WINDOW_SEGMENTS else trade_date
+    return datetime.combine(anchor_date, dtime(12, 0), tzinfo=tz)
 
 
 def fixed_post_trade_now_for(trade_date: date, tz) -> datetime:
     """A stable "now" for the post-trade processes, anchored to trade_date+1
-    03:00 — inside Process 1's (COLVAL) 02:00-06:00 IST window."""
+    03:00 — inside Process 1's (COLVAL) 02:30-06:00 IST window."""
     return datetime.combine(trade_date + timedelta(days=1), dtime(3, 0), tzinfo=tz)
 
 
@@ -115,18 +126,27 @@ async def cleanup_day(session_factory, trade_date: date) -> None:
 
 
 async def run_one_cycle(orchestrator: EdpOrchestrator, session_factory, trade_date: date) -> dict:
-    """One pass over the day's segments — every not-yet-handled row is
-    attempted exactly once, independent of other segments' status."""
+    """
+    One pass over the day's segments — every not-yet-handled row is
+    attempted exactly once, independent of other segments' status.
+
+    "now" is computed per-segment (see fixed_now_for()) rather than once
+    for the whole cycle — harness-only divergence from the real
+    orchestrator (which naturally uses actual wall-clock "now" for every
+    segment in a real wake cycle); needed here only because the "wide
+    open" test workflow's NEXT_DAY_WINDOW_SEGMENTS members fall on a
+    different calendar day than everyone else.
+    """
     rows = await get_rows(session_factory, trade_date)
 
     orchestrator._cycle_active_date = trade_date
-    orchestrator._cycle_now = fixed_now_for(trade_date, orchestrator._tz)
 
     processed = 0
     for row in rows:
         if repository.is_handled(row):
             continue
         processed += 1
+        orchestrator._cycle_now = fixed_now_for(trade_date, orchestrator._tz, row.segment_code)
         await orchestrator._process_one_segment(row.segment_code)
 
     return {"processed": processed}

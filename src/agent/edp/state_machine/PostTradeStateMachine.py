@@ -1,7 +1,7 @@
 """
 Shared base for all 5 post-trade-process state machines (COLVAL, COLALLOC,
 MTFFT, DMRPT, DMSTMT) — run once per trade_date, sequentially, after (but
-independent of) the 10 real segments.
+independent of) the 9 real segments.
 
 Happy-flow states (no "phases" — see models.SegmentState):
   WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED)

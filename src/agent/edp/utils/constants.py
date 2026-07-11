@@ -1,7 +1,7 @@
 """
 Fixed constants for the EDP segment pipeline.
 
-10 segments run independently through the generic 6-state pipeline (INIT's
+9 segments run independently through the generic 6-state pipeline (INIT's
 holiday check -> WAITING_FOR_FILE_UPLOAD's reserve-PID/upload poll ->
 TRIGGERED -> WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION
 polls); none are special-cased. Then 5 T+1 post-trade processes run through
@@ -17,11 +17,12 @@ from datetime import timedelta
 
 # Fixed processing order — a code constant since the regulatory sequence
 # doesn't change day to day; changing it requires a code change. Matches
-# EDP_Trade_Process_API_v3.docx's segment table exactly. NCDEXPHY/MCXPHY
-# are the physical-settlement counterparts of NCDEX/MCX, run immediately
-# after their respective segment.
+# EDP_Trade_Process_API_v3.docx's segment table exactly, minus MF (Mutual
+# Fund), removed for now — see MfSegmentStateMachine git history to restore
+# it. NCDEXPHY/MCXPHY are the physical-settlement counterparts of
+# NCDEX/MCX, run immediately after their respective segment.
 SEGMENT_ORDER: tuple[str, ...] = (
-    "EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM", "MF",
+    "EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM",
 )
 
 # Human display labels.
@@ -35,11 +36,10 @@ SEGMENT_NAMES: dict[str, str] = {
     "MCX": "MCX",
     "MCXPHY": "MCX Phy",
     "NSECOM": "NSE Commodity",
-    "MF": "Mutual Fund",
 }
 
 # Fixed processing order for the 5 T+1 post-trade processes — run once per
-# trade_date, sequentially, AFTER (but not gated on) the 10 real segments.
+# trade_date, sequentially, AFTER (but not gated on) the 9 real segments.
 POST_TRADE_ORDER: tuple[str, ...] = (
     "COLVAL", "COLALLOC", "MTFFT", "DMRPT", "DMSTMT",
 )
@@ -63,17 +63,27 @@ POST_TRADE_GTG_PROCESS_NAME: dict[str, str] = {
     "DMSTMT": "DailyMarginStatements",
 }
 
-# Default opening gate for all 5 post-trade processes ("T+1, 2:00am" per
+# Segments whose entire window (both window_start AND window_end) falls on
+# trade_date+1 rather than the trade_date-evening-into-next-morning rollover
+# pattern most segments follow. A fixed regulatory characteristic (like
+# SEGMENT_ORDER), not something workflow_json can override — plain HH:MM
+# strings can't otherwise distinguish "04:00 next day" from "04:00 same day"
+# the way an evening window_start + earlier window_end can (that case rolls
+# window_end forward automatically once it's chronologically <= window_start
+# on trade_date; see orchestrator._resolve_window()).
+NEXT_DAY_WINDOW_SEGMENTS: frozenset[str] = frozenset({"MCX", "MCXPHY", "NSECOM"})
+
+# Default opening gate for all 5 post-trade processes ("T+1, 2:30am" per
 # spec) — none of them start polling before this time on trade_date+1 unless
 # a process has its own explicit window_start in workflow_json.
-POST_TRADE_FIRST_WINDOW_START = "02:00"
+POST_TRADE_FIRST_WINDOW_START = "02:30"
 
 # Default closing deadline for all 5 post-trade processes ("T+1, 6:00am" per
 # spec) — same trade_date+1 calendar day as the opening gate above, unless a
 # process has its own explicit window_end in workflow_json. Without this, a
 # post-trade process that CBOS never responds to would poll (BLOCKED)
 # forever with no FAILED/TIMEOUT and no alert ever firing — the same
-# window-deadline safety net the 10 real segments already get via
+# window-deadline safety net the 9 real segments already get via
 # orchestrator._resolve_window().
 POST_TRADE_DEFAULT_WINDOW_END = "06:00"
 
@@ -88,7 +98,7 @@ def get_sequence_order(segment_code: str) -> int:
     Resolve a code's processing order from the fixed SEGMENT_ORDER /
     POST_TRADE_ORDER lists.
 
-    Returns 1-10 for the 10 real trade segments, 11-15 for the 5 post-trade
+    Returns 1-9 for the 9 real trade segments, 10-14 for the 5 post-trade
     processes (so they always sort after every real segment on the day's
     status view), or 999 for any unrecognized code (sorts last rather than
     raising, so an unexpected segment_code can't crash the day's ordering).

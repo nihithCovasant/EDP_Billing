@@ -5,7 +5,7 @@ generic WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION pipeline.
 
 Covers: happy path, a mid-chain failure not blocking independent
 processes, the chain running standalone (no segments seeded), and the
-default T+1 02:00 -> 06:00 wall-clock window gate (applies to all 5
+default T+1 02:30 -> 06:00 wall-clock window gate (applies to all 5
 processes).
 """
 
@@ -30,7 +30,7 @@ from .fakes import (
 
 
 async def test_all_post_trade_processes_complete_successfully(cfg, session_factory, test_date):
-    """Deliberately does NOT seed the 10 real segments — the post-trade
+    """Deliberately does NOT seed the 9 real segments — the post-trade
     chain must be fully drivable on its own."""
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     cbos.mock_set_ready_after(1)  # every poll succeeds first try -> fastest happy path
@@ -144,7 +144,7 @@ async def test_post_trade_process_skipped_on_holiday_gtg_check(cfg, session_fact
 
 async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
     """
-    Process 1 (COLVAL) must not start before its 02:00 IST (trade_date+1)
+    Process 1 (COLVAL) must not start before its 02:30 IST (trade_date+1)
     window opens — the orchestrator should report "blocked" and leave the
     row PENDING; once "now" is inside the window, it proceeds normally.
     """
@@ -176,7 +176,7 @@ async def test_all_post_trade_processes_gated_by_default_when_no_window_configur
 ):
     """
     Every one of the 5 post-trade processes — not just COLVAL — must default
-    to the 02:00 IST (T+1) gate when workflow_json doesn't specify its own
+    to the 02:30 IST (T+1) gate when workflow_json doesn't specify its own
     window_start. Regression test for a bug where COLALLOC/MTFFT/DMRPT/
     DMSTMT started (and called CBOS) immediately, same-day, ungated.
     """
@@ -191,7 +191,7 @@ async def test_all_post_trade_processes_gated_by_default_when_no_window_configur
 
     for code in POST_TRADE_ORDER:
         outcome = await orchestrator._process_one_post_trade(code)
-        assert outcome == "blocked", f"{code} must be gated before 02:00 T+1, got {outcome}"
+        assert outcome == "blocked", f"{code} must be gated before 02:30 T+1, got {outcome}"
 
     rows = await helpers.get_post_trade_rows(session_factory, test_date)
     assert all(r.segment_status == SegmentStatus.PENDING for r in rows)
@@ -210,7 +210,7 @@ async def test_post_trade_process_pending_past_deadline_fails_with_timeout(cfg, 
     await helpers.seed_post_trade_day(session_factory, test_date)
 
     orchestrator._cycle_active_date = test_date
-    # Default window is 02:00 -> 06:00 IST on trade_date+1 — well past both.
+    # Default window is 02:30 -> 06:00 IST on trade_date+1 — well past both.
     orchestrator._cycle_now = datetime.combine(
         test_date + timedelta(days=1), dtime(23, 59, 30), tzinfo=orchestrator._tz,
     )
