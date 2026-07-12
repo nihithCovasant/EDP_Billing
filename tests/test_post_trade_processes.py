@@ -58,7 +58,13 @@ async def test_all_post_trade_processes_complete_successfully(cfg, session_facto
         for state in (SegmentState.WAITING_FOR_GTG, SegmentState.TRIGGERED, SegmentState.WAITING_FOR_COMPLETION):
             assert state.value in row.processes_json, f"{code} missing processes_json[{state.value}]"
         assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
-        assert row.processes_json[SegmentState.TRIGGERED.value]["message"] == "Process started successfully"
+        # DMSTMT's trigger is the one exception among the 5 post-trade
+        # processes: per EDP_Trade_Process_API_v3 STEP 38, it goes through
+        # file_process_status (STATUS API, MSG "TRUE"), not the Process API
+        # ("Process started successfully") the other 4 use — see
+        # trigger_daily_margin_statements() in cbos_client.py.
+        expected_trigger_message = "TRUE" if code == "DMSTMT" else "Process started successfully"
+        assert row.processes_json[SegmentState.TRIGGERED.value]["message"] == expected_trigger_message
         assert row.processes_json[SegmentState.WAITING_FOR_COMPLETION.value]["status"] == "COMPLETED"
 
         assert get_sequence_order(code) == len(SEGMENT_ORDER) + 1 + POST_TRADE_ORDER.index(code)

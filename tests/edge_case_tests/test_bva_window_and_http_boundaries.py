@@ -1,42 +1,26 @@
 """
-Boundary Value Analysis (BVA) — classic ISTQB technique: test exact limits
-(n-1, n, n+1) rather than mid-range values, since off-by-one errors live
-exactly at equivalence-class edges, not in their interior.
+Boundary Value Analysis (BVA): test exact limits (n-1, n, n+1) rather than
+mid-range values, since off-by-one errors live at equivalence-class edges.
 
 Two targets:
 
-1. AbstractSegmentStateMachine.is_my_time_window() / is_my_window_over()
-   (src/agent/edp/state_machine/AbstractStateMachine.py). The two methods
-   are DELIBERATELY asymmetric:
+1. AbstractSegmentStateMachine.is_my_time_window() / is_my_window_over().
+   Deliberately asymmetric:
 
-       is_my_time_window(now, window_start) -> window_start is None or now >= window_start   (INCLUSIVE)
-       is_my_window_over(now, window_end)   -> window_end is not None and now > window_end    (EXCLUSIVE)
+       is_my_time_window(now, window_start) -> now >= window_start   (INCLUSIVE)
+       is_my_window_over(now, window_end)   -> now > window_end      (EXCLUSIVE)
 
-   Reading the full file (docstrings on both methods, and execute_handler()'s
-   usage) turns up no comment that explicitly states *why* the opening edge
-   is inclusive and the closing edge is exclusive. The effect, though, is
-   coherent and almost certainly intentional rather than a bug: at the exact
-   instant now == window_start, the window is open (a segment scheduled to
-   start "at 09:00" should be runnable AT 09:00, not only after it) and at
-   the exact instant now == window_end, the window is NOT YET over (a
-   deadline of "17:00" should still allow work being checked exactly AT
-   17:00 — execute_handler()'s own docstring calls window_end "a real
-   deadline ... a stuck poll always eventually fails loudly instead of
-   blocking forever", implying window_end is the last valid instant, not
-   the first invalid one). This gives a single instant, now == window_end,
-   where the window is simultaneously "open" (is_my_time_window, trivially,
-   since window_end >= window_start) and "not yet over" (is_my_window_over)
-   — i.e. a fully-inclusive [window_start, window_end] closed interval when
-   both checks are read together. That is the expected reading of "an
-   inclusive deadline." Tests 4-6 below prove this precisely.
+   Together this makes [window_start, window_end] a fully-inclusive closed
+   interval: at now == window_start the window is open (runnable exactly
+   AT the start time), and at now == window_end it's not yet over (the
+   deadline instant itself is still valid, not the first invalid one).
+   Tests 4-6 below prove this precisely.
 
-2. cbos_client._is_transient_http_status() (src/tools/cbos_client.py).
-   tests/test_cbos_client_parsing.py already covers 429 (transient),
-   500/503 (transient), and 400/404 (permanent) as representative members
-   of each equivalence class. This file adds ONLY the numeric boundaries
-   between adjacent classes that file doesn't touch: 399/400, 428/429/430,
-   499/500, 599/600, and the never-supposed-to-be-called-but-must-not-crash
-   2xx/3xx/negative/huge inputs.
+2. cbos_client._is_transient_http_status(). tests/test_cbos_client_parsing.py
+   already covers 429/500/503 (transient) and 400/404 (permanent). This
+   file adds the numeric boundaries between adjacent classes: 399/400,
+   428/429/430, 499/500, 599/600, and the must-not-crash 2xx/3xx/negative/
+   huge inputs.
 """
 
 from __future__ import annotations

@@ -114,7 +114,14 @@ def get_sequence_order(segment_code: str) -> int:
 
 
 def get_segment_name(segment_code: str) -> str:
-    """Resolve a code's human display label from the fixed name maps."""
+    """Resolve a code's human display label from the fixed name maps.
+    segment_code=None (shouldn't happen via a real row's NOT NULL column,
+    but defensive against a malformed/detached caller) falls through to
+    "UNKNOWN" rather than returning None — the return type is annotated
+    str, and a caller doing .upper()/string formatting on a bare None
+    would otherwise crash downstream instead of at the actual source."""
+    if segment_code is None:
+        return "UNKNOWN"
     if segment_code in SEGMENT_NAMES:
         return SEGMENT_NAMES[segment_code]
     return POST_TRADE_NAMES.get(segment_code, segment_code)

@@ -44,7 +44,9 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
     """
     env_url = os.getenv("DATABASE_URL", "").strip()
     if env_url:
-        return _normalize_postgres_url(env_url)
+        resolved = _normalize_postgres_url(env_url)
+        _validate_database_url(resolved)
+        return resolved
 
     db_host = os.getenv("DB_HOST", "").strip()
     if db_host:
@@ -63,11 +65,15 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
         .get("connection_string")
     )
     if db_url:
-        return _normalize_postgres_url(db_url)
+        resolved = _normalize_postgres_url(db_url)
+        _validate_database_url(resolved)
+        return resolved
 
     db_url = edp_raw.get("database_url")
     if db_url:
-        return _normalize_postgres_url(db_url)
+        resolved = _normalize_postgres_url(db_url)
+        _validate_database_url(resolved)
+        return resolved
 
     raise RuntimeError(
         "EDP database is not configured — set DATABASE_URL, or DB_HOST "
@@ -76,6 +82,58 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
         "There is no local-file fallback: refusing to start against a "
         "throwaway database instead of the real PostgreSQL instance."
     )
+
+
+def _env_nonempty(name: str) -> Optional[str]:
+    """Like os.getenv(name), but treats an explicitly-set-to-empty-string
+    env var (e.g. a copy-paste-gone-wrong deploy leaving CBOS_STATUS_URL=""
+    in place) the same as an unset one, instead of letting "" silently win
+    over the next fallback with zero warning — the "is this var present at
+    all" check elsewhere in this module (e.g. cbos_status_url_defaulted)
+    only catches a fully-absent key, not a present-but-blank one."""
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+_VALID_DATABASE_URL_PREFIXES = ("postgresql://", "postgresql+asyncpg://", "postgresql+psycopg://")
+
+
+def _validate_database_url(url: str) -> None:
+    """Fail fast, at config-load time, on an obviously-wrong DATABASE_URL
+    shape (e.g. a copy-pasted mysql://, sqlite://, or plain hostname) —
+    rather than letting it silently pass through to asyncpg's connection
+    attempt, where the resulting error is several layers removed from the
+    actual misconfiguration."""
+    if not url.startswith(_VALID_DATABASE_URL_PREFIXES):
+        raise RuntimeError(
+            f"EDP database URL does not look like a PostgreSQL connection "
+            f"string (got a URL starting with {url.split('://', 1)[0] if '://' in url else url!r}) — "
+            f"expected one of {_VALID_DATABASE_URL_PREFIXES}. This agent is "
+            f"PostgreSQL-only; check DATABASE_URL / DB_HOST / agent_config.json."
+        )
+
+
+def _validate_process_entries(entries: List[Dict[str, Any]], *, config_key: str, code_field: str) -> None:
+    """Fail fast on a malformed default_segments/default_post_trade_processes
+    entry (e.g. a bare string instead of a {"segment_code": ...} object) —
+    otherwise this only surfaces later, at first-run auto-seed time, as an
+    AttributeError from build_default_workflow_json()'s seg.get(...) call,
+    with a traceback that doesn't point back to agent_config.json at all."""
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"agent_config.json's edp.{config_key}[{idx}] is not an object "
+                f"(got {type(entry).__name__}: {entry!r}) — expected a dict with "
+                f"at least a {code_field!r} key"
+            )
+        if not entry.get(code_field):
+            raise RuntimeError(
+                f"agent_config.json's edp.{config_key}[{idx}] is missing a "
+                f"non-empty {code_field!r} value: {entry!r}"
+            )
 
 
 def to_alembic_url(database_url: str) -> str:
@@ -157,15 +215,19 @@ def load_edp_config() -> EdpBootstrapConfig:
     secrets = default_cfg.get("secrets", {})
     db_url = _resolve_database_url(edp_raw, secrets)
 
-    cbos_status_url = os.getenv(
-        "CBOS_STATUS_URL", edp_raw.get("cbos_status_url", "http://localhost:8087")
+    cbos_status_url = (
+        _env_nonempty("CBOS_STATUS_URL")
+        or edp_raw.get("cbos_status_url")
+        or "http://localhost:8087"
     )
-    cbos_status_url_defaulted = "CBOS_STATUS_URL" not in os.environ and not edp_raw.get("cbos_status_url")
+    cbos_status_url_defaulted = not _env_nonempty("CBOS_STATUS_URL") and not edp_raw.get("cbos_status_url")
 
-    cbos_process_url = os.getenv(
-        "CBOS_PROCESS_URL", edp_raw.get("cbos_process_url", "http://localhost:8003")
+    cbos_process_url = (
+        _env_nonempty("CBOS_PROCESS_URL")
+        or edp_raw.get("cbos_process_url")
+        or "http://localhost:8003"
     )
-    cbos_process_url_defaulted = "CBOS_PROCESS_URL" not in os.environ and not edp_raw.get("cbos_process_url")
+    cbos_process_url_defaulted = not _env_nonempty("CBOS_PROCESS_URL") and not edp_raw.get("cbos_process_url")
 
     cbos_use_mock_raw = os.getenv("CBOS_USE_MOCK")
     cbos_use_mock_defaulted = cbos_use_mock_raw is None and "cbos_use_mock" not in edp_raw
@@ -195,10 +257,33 @@ def load_edp_config() -> EdpBootstrapConfig:
             )
 
     wake_interval_seconds = int(os.getenv("EDP_WAKE_INTERVAL_SECONDS", "60"))
+    if wake_interval_seconds <= 0:
+        raise RuntimeError(
+            f"EDP_WAKE_INTERVAL_SECONDS must be a positive integer, got "
+            f"{wake_interval_seconds} — 0 or negative would busy-loop the wake cycle "
+            f"(asyncio.sleep(<=0) returns immediately) rather than pacing it."
+        )
+
+    active_date_cutoff_hour = int(edp_raw.get("active_date_cutoff_hour", 6))
+    if not (0 <= active_date_cutoff_hour <= 23):
+        raise RuntimeError(
+            f"agent_config.json's edp.active_date_cutoff_hour must be 0-23 (an hour "
+            f"of the day), got {active_date_cutoff_hour}. Note: 0 is a real but easily "
+            f"mistaken value — it does NOT mean 'no rollover happens at midnight', it "
+            f"means the trade-date rollover never happens at all, which can "
+            f"misattribute billing to the wrong trade date."
+        )
+
+    default_segments = edp_raw.get("segments", [])
+    default_post_trade_processes = edp_raw.get("post_trade_processes", [])
+    _validate_process_entries(default_segments, config_key="segments", code_field="segment_code")
+    _validate_process_entries(
+        default_post_trade_processes, config_key="post_trade_processes", code_field="process_code",
+    )
 
     return EdpBootstrapConfig(
         wake_interval_seconds=wake_interval_seconds,
-        active_date_cutoff_hour=int(edp_raw.get("active_date_cutoff_hour", 6)),
+        active_date_cutoff_hour=active_date_cutoff_hour,
         timezone=edp_raw.get("timezone", "Asia/Kolkata"),
         cbos_status_url=cbos_status_url,
         cbos_process_url=cbos_process_url,
@@ -209,8 +294,8 @@ def load_edp_config() -> EdpBootstrapConfig:
         ),
         database_url=db_url,
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),
-        default_segments=edp_raw.get("segments", []),
-        default_post_trade_processes=edp_raw.get("post_trade_processes", []),
+        default_segments=default_segments,
+        default_post_trade_processes=default_post_trade_processes,
     )
 
 

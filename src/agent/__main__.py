@@ -56,6 +56,7 @@ _logging.basicConfig = lambda *a, **k: None  # noqa: E731
 import uvicorn
 from fastapi import Request, Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.apps import A2AFastAPIApplication
@@ -212,6 +213,15 @@ def build_app() -> FastAPI:
     app = a2a_app.build()
 
     app.include_router(edp_router)
+
+    # Optional minimal chat UI (chat_ui/ at repo root — kept fully outside
+    # src/, so it never touches the CAMS agent scaffold). Same-origin static
+    # mount avoids any CORS setup; skipped gracefully if the folder is
+    # absent (e.g. a deployment that strips non-src/ files).
+    _chat_ui_dir = Path(__file__).resolve().parents[2] / "chat_ui"
+    if _chat_ui_dir.is_dir():
+        app.mount("/chat", StaticFiles(directory=str(_chat_ui_dir), html=True), name="chat_ui")
+        logger.info(f"Chat UI mounted at /chat (serving {_chat_ui_dir})")
 
     @asynccontextmanager
     async def _edp_lifespan(app):

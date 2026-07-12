@@ -15,6 +15,7 @@ from datetime import date, datetime
 from typing import List, Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
@@ -90,6 +91,17 @@ async def get_or_create(
     else reconciles config_id_used if it's still PENDING under a stale
     config reference. Called once per segment/process per cycle from the
     orchestrator, right before dispatching to a state handler.
+
+    Concurrency: check-then-act (get_one() then insert), same shape as
+    workflow.upload() — but here the single-instance deployment model
+    means the orchestrator itself never calls this concurrently for the
+    same (trade_date, segment_code). The IntegrityError handling below is
+    purely a defensive backstop against a second caller doing so anyway
+    (e.g. an accidental second agent instance, or a bulk-seeding call
+    racing the orchestrator's lazy seeding) — the uq_segment_execution_per_day
+    unique constraint makes the write atomic at the DB level, and this
+    gracefully returns the winning row instead of propagating a raw
+    IntegrityError to the orchestrator's cycle loop.
     """
     row = await get_one(session, trade_date, segment_code)
     if row:
@@ -110,7 +122,21 @@ async def get_or_create(
         processes_json={},
     )
     session.add(row)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        logger.warning(
+            f"[OPS] segment={segment_code} trade_date={trade_date} | Lost a "
+            f"concurrent row-creation race — another caller created this row "
+            f"first; returning its row instead of creating a duplicate"
+        )
+        winner = await get_one(session, trade_date, segment_code)
+        if winner is None:
+            # Vanishingly unlikely (the winner would have to have been
+            # deleted again in between) — nothing sensible to return.
+            raise
+        return winner
     logger.info(f"[OPS] segment={segment_code} trade_date={trade_date} | Segment row created")
     return row
 

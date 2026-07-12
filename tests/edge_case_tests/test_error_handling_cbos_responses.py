@@ -1,28 +1,16 @@
 """
 Error-handling / crash-hunting tests for cbos_client's response parsers.
 
-Deliberately forces _parse_msg, _parse_new_trade_process,
+Forces _parse_msg, _parse_new_trade_process,
 _parse_already_triggered_sentence, and _parse_post_trade_trigger through a
-battery of malformed CBOS response shapes (equivalence partitioning over
-"malformed response shapes") to confirm each either:
-  (a) degrades gracefully — returns a typed default/error result, or
-  (b) crashes — raises an unhandled exception out of the parser itself.
+battery of malformed CBOS response shapes (empty string/object/array, null
+or wrong-typed MSG, truncated JSON, HTML error pages, a top-level array, a
+very large array) to confirm each either degrades gracefully (typed
+default/error result) or crashes. Where a parser could raise, also traces
+whether the caller (e.g. get_new_trade_process()) absorbs it.
 
-Where a parser raises, we additionally trace the call chain to check
-whether the exception is caught one level up (inside the async client
-methods that call it, e.g. get_new_trade_process()/file_process_status()),
-or whether it would propagate uncaught and crash a whole wake cycle.
-
-Does NOT duplicate tests/test_cbos_client_parsing.py, which already covers:
-  - _parse_already_triggered_sentence's documented/undocumented sentences
-  - _is_transient_http_status classification
-  - _parse_new_trade_process: unparseable-JSON (transient) vs explicit
-    CBOS Status != "Success" rejection (permanent)
-
-This file focuses on the specific malformed *shapes* listed in the task:
-empty string, empty object, empty Data array, empty dict in Data, null
-MSG, non-string MSG (int/list), truncated JSON, HTML error pages, a
-top-level JSON array, and a very large Data array.
+Complements tests/test_cbos_client_parsing.py (documented sentences,
+_is_transient_http_status, transient-vs-permanent classification).
 """
 
 from __future__ import annotations
@@ -78,74 +66,54 @@ def test_parse_msg_empty_string_falls_back_to_false():
 
 
 def test_parse_msg_empty_object_falls_back_to_false():
-    """{} has no "Data" key -> data["Data"] raises KeyError inside the
-    try block, caught by the broad `except Exception`, falling back to a
-    string search of the raw body (no SKIP/TRUE/FALSE substring) -> FALSE."""
+    """{} has no "Data" key -> KeyError caught by the broad except ->
+    string-search fallback finds no SKIP/TRUE/FALSE -> FALSE."""
     assert _parse_msg(EMPTY_OBJECT) == "FALSE"
 
 
 def test_parse_msg_data_empty_array_falls_back_to_false():
-    """Data[0] on an empty list raises IndexError -> caught -> fallback -> FALSE."""
+    """Data[0] on an empty list raises IndexError -> caught -> FALSE."""
     assert _parse_msg(DATA_EMPTY_ARRAY) == "FALSE"
 
 
 def test_parse_msg_data_empty_dict_in_array_falls_back_to_false():
-    """Data[0]["MSG"] raises KeyError when the dict has no MSG key ->
-    caught -> fallback string search -> FALSE (raw body contains none of
-    SKIP/TRUE/FALSE)."""
+    """No MSG key -> KeyError caught -> string-search fallback -> FALSE."""
     assert _parse_msg(DATA_EMPTY_DICT_IN_ARRAY) == "FALSE"
 
 
 def test_parse_msg_msg_null_returns_false_gracefully():
     """MSG present but null: `msg.upper() if msg else "FALSE"` short-circuits
-    on falsy None, returning "FALSE" without ever calling .upper(). Graceful
-    by design, not by accident."""
+    on falsy None before ever calling .upper(). Graceful by design."""
     assert _parse_msg(DATA_MSG_NULL) == "FALSE"
 
 
 def test_parse_msg_msg_number_does_not_crash():
-    """
-    MSG is an int (12345), which is truthy, so the code takes the
-    `msg.upper()` branch. int has no .upper() method, which would raise
-    AttributeError -- but _parse_msg wraps the whole parse in a broad
-    `except Exception`, so this is caught and falls back to a string
-    search of the raw body. The raw body text contains no SKIP/TRUE/FALSE
-    substring, so it defaults to "FALSE". Confirms the AttributeError does
-    NOT propagate out of _parse_msg.
-    """
+    """MSG is a truthy int (12345) -> `.upper()` would raise AttributeError,
+    but the broad except catches it and falls back to string-search -> FALSE."""
     assert _parse_msg(DATA_MSG_NUMBER) == "FALSE"
 
 
 def test_parse_msg_msg_nested_list_does_not_crash():
-    """Same reasoning as the int case: list has no .upper(), AttributeError
-    is caught by the broad except, falls back to string search -> FALSE."""
+    """Same as the int case: list has no .upper(), caught -> FALSE."""
     assert _parse_msg(DATA_MSG_NESTED_LIST) == "FALSE"
 
 
 def test_parse_msg_truncated_json_falls_back_to_string_search():
-    """
-    Truncated JSON fails _json.loads with JSONDecodeError, caught by the
-    broad except. The fallback does a substring search over body.upper()
-    -- and the truncated body '{"Data": [{"MSG": "TRUE"' DOES contain the
-    substring "TRUE", so the fallback actually recovers the right answer
-    here. Documents real (if accidental) resilience to mid-string network
-    truncation for this particular case.
-    """
+    """Truncated JSON fails to parse -> caught -> string-search fallback.
+    The truncated body happens to contain "TRUE" as a substring, so the
+    fallback recovers the right answer here — accidental resilience."""
     assert _parse_msg(TRUNCATED_JSON) == "TRUE"
 
 
 def test_parse_msg_html_error_page_falls_back_to_false():
-    """An HTML 502 page is not JSON -> JSONDecodeError -> caught -> string
-    search finds no SKIP/TRUE/FALSE substring -> FALSE. Graceful: a
-    proxy/load-balancer intercepting the request with an HTML error page
-    does not crash the parser."""
+    """An HTML error page isn't JSON -> caught -> no SKIP/TRUE/FALSE
+    substring found -> FALSE. A proxy error page doesn't crash the parser."""
     assert _parse_msg(HTML_ERROR_PAGE) == "FALSE"
 
 
 def test_parse_msg_top_level_array_falls_back_to_false():
-    """A bare JSON array parses fine via _json.loads but has no .get()
-    method (list has no .get) -> AttributeError -> caught by broad except
-    -> fallback string search -> FALSE."""
+    """A bare JSON array parses fine but has no .get() -> AttributeError
+    caught by the broad except -> fallback -> FALSE."""
     assert _parse_msg(TOP_LEVEL_ARRAY) == "FALSE"
 
 
@@ -174,10 +142,8 @@ def test_parse_new_trade_process_empty_string_is_graceful_transient_failure():
 
 
 def test_parse_new_trade_process_empty_object_is_graceful():
-    """{} -> data.get("Status") is None != "Success" -> explicit
-    NewTradeProcessResult(success=False, error=...) branch, NOT the except
-    branch -- so is_transient defaults to False (permanent), since CBOS
-    Status is treated as "explicitly not Success"."""
+    """{} -> Status is None != "Success" -> explicit success=False branch
+    (not the except branch), so is_transient defaults to False (permanent)."""
     result = _parse_new_trade_process(EMPTY_OBJECT)
     assert result.success is False
     assert result.is_transient is False
@@ -185,18 +151,9 @@ def test_parse_new_trade_process_empty_object_is_graceful():
 
 
 def test_parse_new_trade_process_data_shape_is_irrelevant_here():
-    """
-    _parse_new_trade_process only ever reads "Result" (Table1/Table2), never
-    "Data" -- so a body with a "Data" key (empty array/dict/etc, the shapes
-    this suite targets for the other 3 parsers) is irrelevant to this
-    parser: Status=="Success" passes the only gate it checks, "Result" is
-    simply absent so result.get("Result", {}) defaults to {}, and
-    everything downstream (Table1/Table2/pid) falls back to its own
-    defaults -- same graceful shape as the
-    "Status:Success but no Result key at all" case below. Included to
-    document that this parser is not exposed to the Data[0]/MSG
-    malformations the other 3 parsers are tested against at all.
-    """
+    """This parser only reads "Result" (Table1/Table2), never "Data" — a
+    body with a "Data" key is irrelevant here; Result is simply absent and
+    everything downstream falls back to its own defaults."""
     result = _parse_new_trade_process(DATA_EMPTY_ARRAY)
     assert result.success is True
     assert result.process_id is None
@@ -204,10 +161,8 @@ def test_parse_new_trade_process_data_shape_is_irrelevant_here():
 
 
 def test_parse_new_trade_process_status_success_but_missing_result_is_graceful():
-    """Status:"Success" but no "Result" key at all -> result.get("Result", {})
-    defaults to {}, table1 defaults to [{}], table2 to [] -- pid ends up
-    None, is_runnable/is_auto_upload False, steps=[]. No crash, no exception
-    branch needed; the .get() chain with defaults handles it entirely."""
+    """Status:"Success" but no "Result" key -> the .get() chain's defaults
+    handle it entirely: pid None, is_runnable/is_auto_upload False, steps=[]."""
     result = _parse_new_trade_process('{"Status":"Success"}')
     assert result.success is True
     assert result.process_id is None
@@ -221,19 +176,16 @@ def test_parse_new_trade_process_truncated_json_is_graceful_transient_failure():
 
 
 def test_parse_new_trade_process_html_error_page_is_graceful_transient_failure():
-    """An HTML 502 page fails _json.loads -> caught by the broad except ->
-    classified as a transient (retry-worthy) failure, matching the
-    docstring's stated intent that a garbled/unparseable body is more
-    likely a one-off glitch than a permanent problem."""
+    """An HTML error page fails to parse -> caught by the broad except ->
+    classified as transient (more likely a glitch than a real rejection)."""
     result = _parse_new_trade_process(HTML_ERROR_PAGE)
     assert result.success is False
     assert result.is_transient is True
 
 
 def test_parse_new_trade_process_top_level_array_is_graceful():
-    """A bare JSON array parses via _json.loads but list has no .get() ->
-    AttributeError -> caught by the broad except -> transient failure,
-    not a crash."""
+    """A bare JSON array parses but list has no .get() -> AttributeError
+    caught by the broad except -> transient failure, not a crash."""
     result = _parse_new_trade_process(TOP_LEVEL_ARRAY)
     assert result.success is False
     assert result.is_transient is True
@@ -265,170 +217,135 @@ def test_parse_new_trade_process_huge_table2_completes_quickly():
 # _parse_already_triggered_sentence
 # =============================================================================
 # This function takes a plain `str` (already uppercased by _parse_msg's
-# caller convention), not raw JSON -- so most of the "malformed JSON shape"
-# equivalence classes above don't directly apply. It's a pure string
-# classifier with no dict/list access, so the crash-relevant edge cases are
-# about *type*, not JSON shape: what if the caller ever hands it something
-# that isn't a str at all (e.g. because an upstream parser handed back None
-# or a non-string MSG without going through _parse_msg's normal
-# string-coercion path)?
+# caller convention), not raw JSON, so the malformed-JSON-shape classes
+# above don't apply. Crash-relevant edge cases are about *type*: what if
+# the caller ever hands it something that isn't a str at all?
 
 def test_parse_already_triggered_sentence_empty_string_is_graceful():
-    """Empty string matches none of the recognized patterns -> conservatively
-    classified as already_triggered=True (the documented safe default)."""
+    """Empty string matches no recognized pattern -> conservatively
+    classified as already_triggered=True (documented safe default)."""
     assert _parse_already_triggered_sentence(EMPTY_STRING) is True
 
 
-def test_parse_already_triggered_sentence_none_crashes():
-    """
-    BUG: crashes on non-string input instead of returning a graceful
-    default. If msg is None (e.g. an upstream MSG:null value reached this
-    function directly without going through _parse_msg's `if msg else
-    "FALSE"` guard), `"NOT TRIGGERED" in msg` raises TypeError: argument
-    of type 'NoneType' is not iterable. There is no try/except in this
-    function to catch it.
-
-    Call-chain check: this function is only called from
-    _already_triggered_via_file_status(), as
-    `_parse_already_triggered_sentence(result.response)`, where
-    result.response is a FileStatusResult.response: str field. In the real
-    (non-mock) path, result comes from file_process_status(), which always
-    constructs FileStatusResult with response=<result of _parse_msg(...)>
-    or the literal "FALSE" -- both guaranteed `str`, so msg=None cannot
-    occur via that call path today. The crash is real but currently
-    unreachable through the production call chain; it would only surface
-    if a caller ever passed a non-str response through by hand (as this
-    test does directly), or if FileStatusResult were ever constructed with
-    response=None elsewhere.
-    """
-    with pytest.raises(TypeError):
-        _parse_already_triggered_sentence(None)  # type: ignore[arg-type]
+def test_parse_already_triggered_sentence_none_is_graceful():
+    """An explicit isinstance guard returns True ("already triggered", the
+    safe direction for a double-fire guard) for non-str input like None,
+    instead of raising TypeError from `"NOT TRIGGERED" in msg`."""
+    assert _parse_already_triggered_sentence(None) is True  # type: ignore[arg-type]
 
 
-def test_parse_already_triggered_sentence_non_string_number_crashes():
-    """BUG: crashes on a non-string MSG value (e.g. int) the same way as
-    the None case -- `"NOT TRIGGERED" in msg` raises TypeError since `in`
-    requires an iterable, and ints aren't iterable. Same unreachable-via-
-    production-call-chain caveat as the None case above: file_process_status
-    always hands this function a str."""
-    with pytest.raises(TypeError):
-        _parse_already_triggered_sentence(12345)  # type: ignore[arg-type]
+def test_parse_already_triggered_sentence_non_string_number_is_graceful():
+    """Same isinstance guard covers a non-string MSG (int) too."""
+    assert _parse_already_triggered_sentence(12345) is True  # type: ignore[arg-type]
 
 
 # =============================================================================
 # _parse_post_trade_trigger
 # =============================================================================
-# Broad `except Exception` fallback here treats *any* unparseable-but-200
-# body as success=True with the raw body (truncated) as the message -- per
-# its docstring, some post-trade endpoints have no guaranteed JSON shape at
-# all. So most malformed shapes are handled by design. The interesting
-# question, as with _parse_msg, is whether a wrong-typed (but validly
-# parsed) MSG crashes before reaching that fallback.
+# The broad `except Exception` fallback here treats most unparseable-but-200
+# bodies as success=True with the raw body as the message (some post-trade
+# endpoints have no guaranteed JSON shape). The deliberate exception: a body
+# that looks like an HTML error page is reported as transient failure
+# instead of a false "success" (_looks_like_html_error_page).
 
 def test_parse_post_trade_trigger_empty_string_is_graceful():
-    success, message = _parse_post_trade_trigger(EMPTY_STRING)
+    success, message, is_transient = _parse_post_trade_trigger(EMPTY_STRING)
     assert success is True
     assert message == "Process started successfully"
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_empty_object_is_graceful():
-    """{} -> Status is None (falsy) so the rejection branch is skipped;
-    Data is None (not a list) so `isinstance(items, list) and items` is
-    False; msg falls through to data.get("MSG") or data.get("Message"),
-    both absent -> msg stays None -> returns default success message."""
-    success, message = _parse_post_trade_trigger(EMPTY_OBJECT)
+    """{} -> Status is None (falsy, rejection branch skipped); Data absent
+    -> msg stays None -> default success message."""
+    success, message, is_transient = _parse_post_trade_trigger(EMPTY_OBJECT)
     assert success is True
     assert message == "Process started successfully"
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_data_empty_array_is_graceful():
-    """Data=[] is a list but falsy (`items and items` short-circuits) ->
-    same fallthrough as the empty-object case -> default success message."""
-    success, message = _parse_post_trade_trigger(DATA_EMPTY_ARRAY)
+    """Data=[] is falsy -> same fallthrough as empty-object -> default
+    success message."""
+    success, message, is_transient = _parse_post_trade_trigger(DATA_EMPTY_ARRAY)
     assert success is True
     assert message == "Process started successfully"
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_data_empty_dict_in_array_is_graceful():
-    """items[0].get("MSG") on {} returns None (no KeyError, .get() is
-    safe) -> msg stays None -> falls through -> default success message."""
-    success, message = _parse_post_trade_trigger(DATA_EMPTY_DICT_IN_ARRAY)
+    """items[0].get("MSG") on {} returns None (safe) -> default success message."""
+    success, message, is_transient = _parse_post_trade_trigger(DATA_EMPTY_DICT_IN_ARRAY)
     assert success is True
     assert message == "Process started successfully"
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_msg_null_is_graceful():
-    """MSG explicitly null -> items[0].get("MSG") returns None -> `if not
-    msg` is True -> falls through to the top-level MSG/Message lookup
-    (also absent) -> default success message."""
-    success, message = _parse_post_trade_trigger(DATA_MSG_NULL)
+    """MSG explicitly null -> falls through to the top-level MSG/Message
+    lookup (also absent) -> default success message."""
+    success, message, is_transient = _parse_post_trade_trigger(DATA_MSG_NULL)
     assert success is True
     assert message == "Process started successfully"
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_msg_number_does_not_crash():
-    """
-    MSG is an int (12345), which is truthy -> `msg or "Process started
-    successfully"` returns the int 12345 itself (no string coercion is
-    ever applied to msg in this function -- unlike _parse_msg, there's no
-    `.upper()` call here). No crash, but returns message=12345 (an int),
-    not a str, even though PostTradeTriggerResult.message is typed as
-    `str`. Not a crash, but a latent type-contract violation worth
-    flagging: any caller of PostTradeTriggerResult.message that assumes
-    str (e.g. string formatting, .upper(), logging concatenation without
-    str()) could still blow up downstream.
-    """
-    success, message = _parse_post_trade_trigger(DATA_MSG_NUMBER)
+    """MSG is a truthy int -> returned as-is (no str coercion in this
+    function, unlike _parse_msg's .upper()). No crash, but message ends up
+    an int, not a str, despite PostTradeTriggerResult.message being typed
+    `str` — a latent type-contract violation for any caller assuming str."""
+    success, message, is_transient = _parse_post_trade_trigger(DATA_MSG_NUMBER)
     assert success is True
     assert message == 12345
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_msg_nested_list_does_not_crash():
-    """Same reasoning: MSG=["nested","list"] is truthy -> returned as-is,
-    no crash, but message ends up being a list, not a str."""
-    success, message = _parse_post_trade_trigger(DATA_MSG_NESTED_LIST)
+    """Same reasoning: a truthy list MSG is returned as-is, no crash, but
+    message ends up being a list, not a str."""
+    success, message, is_transient = _parse_post_trade_trigger(DATA_MSG_NESTED_LIST)
     assert success is True
     assert message == ["nested", "list"]
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_truncated_json_is_graceful():
-    """Truncated JSON fails _json.loads -> caught by the broad except ->
-    returns (True, body[:200]) per the documented "no guaranteed JSON
-    shape" fallback."""
-    success, message = _parse_post_trade_trigger(TRUNCATED_JSON)
+    """Truncated JSON fails to parse -> caught -> doesn't look like an
+    HTML error page -> falls back to (True, body[:200], False)."""
+    success, message, is_transient = _parse_post_trade_trigger(TRUNCATED_JSON)
     assert success is True
     assert message == TRUNCATED_JSON[:200]
+    assert is_transient is False
 
 
-def test_parse_post_trade_trigger_html_error_page_is_graceful():
-    """An HTML 502 page is not JSON -> caught by the broad except -> falls
-    back to (True, body[:200]). Note this means an HTML error page
-    intercepted by a proxy is reported as success=True with the HTML
-    itself as the "message" -- not flagged as a failure at all. Not a
-    crash, but arguably a silent-misclassification risk: a real upstream
-    outage could be misreported as "Process started successfully"-shaped
-    success up the call chain (PostTradeTriggerResult.success=True)."""
-    success, message = _parse_post_trade_trigger(HTML_ERROR_PAGE)
-    assert success is True
-    assert message == HTML_ERROR_PAGE[:200]
+def test_parse_post_trade_trigger_html_error_page_is_now_reported_as_failure():
+    """An HTML error page is recognized by _looks_like_html_error_page()
+    and reported as a transient failure rather than a false "success" —
+    a real proxy/LB outage gets retried instead of misreported as done."""
+    success, message, is_transient = _parse_post_trade_trigger(HTML_ERROR_PAGE)
+    assert success is False
+    assert is_transient is True
+    assert message != HTML_ERROR_PAGE[:200]
 
 
 def test_parse_post_trade_trigger_top_level_array_is_graceful():
-    """A bare JSON array parses via _json.loads but list has no .get() ->
-    AttributeError -> caught by the broad except -> falls back to (True,
-    body[:200])."""
-    success, message = _parse_post_trade_trigger(TOP_LEVEL_ARRAY)
+    """A bare JSON array parses but list has no .get() -> caught -> not an
+    HTML error page -> falls back to (True, body[:200], False)."""
+    success, message, is_transient = _parse_post_trade_trigger(TOP_LEVEL_ARRAY)
     assert success is True
     assert message == TOP_LEVEL_ARRAY[:200]
+    assert is_transient is False
 
 
 def test_parse_post_trade_trigger_huge_data_array_completes_quickly():
     body = _huge_data_array_body(100_000)
     t0 = time.monotonic()
-    success, message = _parse_post_trade_trigger(body)
+    success, message, is_transient = _parse_post_trade_trigger(body)
     elapsed = time.monotonic() - t0
     assert success is True
     assert message == "TRUE"
+    assert is_transient is False
     assert elapsed < 2.0
 
 
@@ -438,26 +355,11 @@ def test_parse_post_trade_trigger_huge_data_array_completes_quickly():
 # that would catch it first?
 # =============================================================================
 
-async def test_already_triggered_sentence_crash_is_not_caught_by_its_only_caller():
-    """
-    Traces _parse_already_triggered_sentence's TypeError crash one level up
-    through its sole call site, _already_triggered_via_file_status(). That
-    method has NO try/except of its own around the
-    `_parse_already_triggered_sentence(result.response)` call (see
-    cbos_client.py) -- it only branches on `result.is_error` beforehand,
-    then calls the parser unconditionally. So IF a non-str ever reached
-    that call (which, per the production call chain, requires
-    file_process_status() to return a non-str FileStatusResult.response --
-    not possible today since it's always constructed from _parse_msg's
-    str return or the literal "FALSE"), the TypeError would propagate
-    straight out of _already_triggered_via_file_status() uncaught, and
-    from there out of check_collateral_allocation_triggered() /
-    check_mtf_fund_transfer_triggered() / check_daily_margin_statements_triggered()
-    (none of which wrap the call in try/except either) -- i.e. all the way
-    up to whatever calls the state machine's WAITING_FOR_GTG check, with
-    no @otel_trace-level catch to stop it. This confirms the crash found
-    above is not just a theoretical parser bug: nothing downstream saves it.
-    """
+async def test_already_triggered_sentence_non_string_is_absorbed_by_its_only_caller():
+    """Traces the isinstance guard one level up through its sole caller,
+    _already_triggered_via_file_status(): a non-str FileStatusResult.response
+    is absorbed by the guard, returning already_triggered=True instead of
+    raising TypeError up through the WAITING_FOR_GTG check."""
     cbos = CbosClient("http://status", "http://process", use_mock=False)
 
     class _BadFileStatusResult:
@@ -479,24 +381,15 @@ async def test_already_triggered_sentence_crash_is_not_caught_by_its_only_caller
         cbos,
     )
 
-    with pytest.raises(TypeError):
-        await cbos._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", "G_LID")
+    result = await cbos._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", "G_LID")
+    assert result.already_triggered is True
 
 
 async def test_parse_new_trade_process_crash_class_is_fully_absorbed_by_get_new_trade_process():
-    """
-    Traces the OTHER direction: _parse_new_trade_process itself has its own
-    broad except (confirmed above -- it never raises for any malformed
-    shape tested), and get_new_trade_process() additionally wraps its
-    entire httpx + parse call in a try/except that catches any residual
-    Exception and returns NewTradeProcessResult(success=False,
-    error=str(exc), is_transient=True). So even in the hypothetical case
-    where _parse_new_trade_process's own except didn't exist, its caller
-    would still absorb the failure gracefully -- this is a genuine
-    defense-in-depth case, not a hidden crash. Verified here by monkeypatching
-    the module-level parser to actually raise, and confirming
-    get_new_trade_process still returns a graceful, non-raising result.
-    """
+    """The other direction: get_new_trade_process() wraps its entire httpx +
+    parse call in its own try/except, so even if _parse_new_trade_process
+    raised, its caller absorbs the failure — defense-in-depth. Verified by
+    monkeypatching the module-level parser to actually raise."""
     import httpx
     import src.tools.cbos_client as cbos_client_module
 

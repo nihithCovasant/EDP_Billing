@@ -6,44 +6,29 @@ independent of) the 9 real segments.
 Happy-flow states (no "phases" — see models.SegmentState):
   WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED)
 
-  WAITING_FOR_GTG    -> For most processes: POST file_process_status(
-                         <process-specific ProcessName>) — poll until
-                         ready. This first poll doubles as the holiday
-                         check (post-trade has no separate INIT state): a
-                         SKIP response here means a market holiday and
-                         goes straight to SKIPPED, same semantics as INIT
-                         for real segments.
-                         For DMRPT and DMSTMT specifically (see
-                         DEPENDS_ON_PREVIOUS_PROCESS below): there is no
-                         CBOS-side GTG/holiday-check endpoint documented
-                         at all (confirmed against EDP_Trade_Process_API_v3
-                         — steps 35-38 have no preceding GTG step). Their
-                         "readiness" gate is instead purely sequential:
-                         DMRPT waits for MTFFT to reach a terminal DB
-                         status, DMSTMT waits for DMRPT — no CBOS call is
-                         made for this check, and (having no CBOS SKIP
-                         signal) they can never be individually SKIPPED
-                         for a holiday the way the other 3 processes can.
-                         Once ready, call the process's "already
-                         triggered" CBOS check: if already triggered, take
-                         the direct edge straight to WAITING_FOR_COMPLETION
-                         (no new trigger fired); otherwise move to
-                         TRIGGERED.
-  TRIGGERED           -> POST <process-specific trigger endpoint> — the one
-                         genuinely real crash-safety-critical wait in this
-                         pipeline.
-  WAITING_FOR_COMPLETION -> POST file_process_status(<same ProcessName>) —
-                         poll again until CBOS confirms completion.
+  WAITING_FOR_GTG        -> For most processes: POST file_process_status(
+                             <ProcessName>) — poll until ready. This first
+                             poll doubles as the holiday check (SKIP -> SKIPPED,
+                             same semantics as INIT for real segments).
+                             DMRPT/DMSTMT have no CBOS GTG endpoint at all
+                             (see DEPENDS_ON_PREVIOUS_PROCESS below) — their
+                             readiness gate is purely sequential/DB-based
+                             instead, and they can never be SKIPPED for a
+                             holiday since no CBOS call happens. Once ready,
+                             call the "already triggered" check: if already
+                             triggered, direct edge to WAITING_FOR_COMPLETION;
+                             otherwise move to TRIGGERED.
+  TRIGGERED              -> POST <process-specific trigger endpoint> — the
+                             one genuine crash-safety-critical wait.
+  WAITING_FOR_COMPLETION -> POST file_process_status(<same ProcessName>)
+                             again — poll until CBOS confirms completion.
 
 The 5 processes differ only in which CBOS endpoints TRIGGER_METHOD_NAME /
-CHECK_TRIGGERED_METHOD_NAME dispatch to — each of the 5 files under
-post_trade/ names both on CbosClient; the GTG/confirm poll and state
-machine are otherwise identical for all 5. The GTG/confirm ProcessName is
+CHECK_TRIGGERED_METHOD_NAME dispatch to; the GTG/confirm poll and state
+machine are otherwise identical. The GTG/confirm ProcessName is
 ops-configurable (workflow_json["post_trade_processes"][].gtg_process_name),
-resolved once when the process starts by orchestrator.py and read from
-row.current_process thereafter. processes_json's step keys embed that
-resolved ProcessName directly (e.g. "COLVAL_STATUS"), same convention as
-the real-segment state machine's endpoint-named step keys.
+resolved once at process start and read from row.current_process
+thereafter; processes_json's step keys embed it (e.g. "COLVAL_STATUS").
 
 Each handler call does exactly one action and returns — AbstractStateMachine
 applies the resulting single state transition; there is no internal loop.
@@ -172,15 +157,12 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
         DMRPT/DMSTMT-only readiness gate: no CBOS GTG/holiday-check
         endpoint exists for either (confirmed against
         EDP_Trade_Process_API_v3 — no GTG step precedes steps 35-38), so
-        "ready" here means "the previous process in POST_TRADE_ORDER has
-        reached a terminal DB status (COMPLETED/FAILED/SKIPPED)" —
-        checked entirely from our own DB, no CBOS call made. "Terminal"
-        deliberately includes FAILED/SKIPPED, not just COMPLETED — this
-        process must still get a chance to run even if its predecessor
-        didn't succeed, rather than blocking forever. Since no CBOS call
-        is made, this process can never itself be SKIPPED for a holiday
-        the way the other 3 processes can — it always proceeds straight
-        to the "already triggered" check once its predecessor is done.
+        "ready" here means the previous process in POST_TRADE_ORDER has
+        reached a terminal DB status — checked from our own DB, no CBOS
+        call made. "Terminal" includes FAILED/SKIPPED, not just COMPLETED,
+        so this process still gets a chance to run even if its predecessor
+        didn't succeed. Since no CBOS call is made, this process can never
+        itself be SKIPPED for a holiday.
         """
         idx = POST_TRADE_ORDER.index(row.segment_code)
         if idx == 0:

@@ -12,7 +12,7 @@ from typing import Optional, Union
 from enum import Enum
 from pydantic import SecretStr
 
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, AzureChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -45,6 +45,7 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
+    AZURE = "azure"
 
 
 # Default models for each provider
@@ -52,6 +53,7 @@ DEFAULT_MODELS = {
     LLMProvider.OPENAI: "gpt-4o",
     LLMProvider.ANTHROPIC: "claude-3-5-sonnet-20241022",
     LLMProvider.GOOGLE: "gemini-1.5-pro",
+    LLMProvider.AZURE: "gpt-4o",
 }
 
 
@@ -112,6 +114,8 @@ def get_llm_model(
         return _create_anthropic_llm(model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs)
     elif provider == LLMProvider.GOOGLE:
         return _create_google_llm(model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs)
+    elif provider == LLMProvider.AZURE:
+        return _create_azure_llm(model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -250,6 +254,45 @@ def _create_google_llm(
             **extra,
             **kwargs,
         )
+
+
+@otel_trace
+def _create_azure_llm(
+    model_name: str, temperature: float, streaming: bool, custom_headers: Optional[dict] = None, max_tokens: Optional[int] = None, **kwargs
+) -> AzureChatOpenAI:
+    """
+    Create an Azure OpenAI LLM instance — a direct alternative to the LiteLLM
+    gateway (e.g. for local testing when the gateway's internal hostname isn't
+    reachable). `model_name` here is the Azure *deployment name*, not a
+    generic model string like "gpt-4o" — it must match a deployment that
+    actually exists on the configured Azure resource.
+    """
+    endpoint = settings.azure_openai_endpoint
+    api_key = settings.azure_openai_api_key
+    api_version = settings.azure_openai_api_version or "2023-07-01-preview"
+    deployment = settings.azure_openai_deployment or model_name
+
+    if not endpoint or not api_key:
+        raise ValueError(
+            "AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY are not set. "
+            "Please set them in your .env file."
+        )
+
+    logger.debug(f"Creating Azure OpenAI LLM: deployment={deployment}, endpoint={endpoint}")
+    llm_kwargs = {
+        "azure_endpoint": endpoint,
+        "api_key": SecretStr(api_key),
+        "api_version": api_version,
+        "azure_deployment": deployment,
+        "temperature": temperature,
+        "streaming": streaming,
+    }
+    if max_tokens is not None:
+        llm_kwargs["max_tokens"] = max_tokens
+    if custom_headers:
+        llm_kwargs["default_headers"] = custom_headers
+    llm_kwargs.update(kwargs)
+    return AzureChatOpenAI(**llm_kwargs)
 
 
 @otel_trace

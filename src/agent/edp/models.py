@@ -57,44 +57,28 @@ class SegmentState(str, enum.Enum):
     takes. Shared by two pipelines, distinguished by segment_code (see
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
-    (1) Real-segment pipeline (9x: EQ/DR/CUR/SLB/NCDEX/NCDEXPHY/MCX/
-        MCXPHY/NSECOM) — happy flow:
-      INIT -> WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING
-      -> WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
+    (1) Real-segment pipeline (9x): INIT -> WAITING_FOR_FILE_UPLOAD ->
+    TRIGGERED -> WAITING_FOR_BILLPOSTING -> WAITING_FOR_RECON ->
+    WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED). TRIGGERED is the
+    one genuine crash-safety wait (getNewTradeProcess with the real PID);
+    the rest are pure gate/poll waits — CBOS auto-runs each step, the
+    agent only observes.
 
-      INIT's handler does the holiday-check operation (not a separate
-      state); WAITING_FOR_FILE_UPLOAD's handler does the reserve/confirm-PID
-      operation on its first entry, then polls FILEUPLOAD on later cycles
-      (also not a separate state) — both are pure gate/ops-driven waits with
-      no CBOS trigger involved. TRIGGERED is the one genuine crash-safety
-      wait (getNewTradeProcess with the real PID). WAITING_FOR_BILLPOSTING/
-      _RECON/_CONTRACT_NOTE_GENERATION are pure polls — CBOS auto-runs each
-      step, the agent only observes.
+    (2) Post-trade pipeline (5x: COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT):
+    WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED).
+    WAITING_FOR_GTG polls readiness then checks "already triggered": if so,
+    it takes the direct edge to WAITING_FOR_COMPLETION; otherwise TRIGGERED
+    fires the real call next cycle.
 
-    (2) Post-trade pipeline (5x: COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT) —
-        happy flow:
-      WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED)
+    DMRPT and DMSTMT have no CBOS GTG endpoint — their readiness is
+    DB-only: DMRPT waits for MTFFT to reach a terminal segment_status
+    (FAILED/SKIPPED counts, not just COMPLETED), DMSTMT waits for DMRPT
+    (see PostTradeStateMachine.DEPENDS_ON_PREVIOUS_PROCESS). Neither can be
+    individually SKIPPED for a holiday since no CBOS call happens.
 
-      WAITING_FOR_GTG's handler polls process readiness, then (once ready)
-      calls the process's "already triggered" CBOS check: if already
-      triggered, it takes the direct edge straight to WAITING_FOR_COMPLETION
-      (no new trigger fired); otherwise it moves to TRIGGERED, which fires
-      the real trigger call next cycle.
-
-      DMRPT and DMSTMT have no CBOS GTG/holiday-check endpoint at all —
-      their "readiness" is instead purely sequential and DB-only: DMRPT
-      waits for MTFFT (the previous process in POST_TRADE_ORDER) to reach
-      a terminal segment_status, DMSTMT waits for DMRPT, with no CBOS call
-      made for this check (see PostTradeStateMachine.DEPENDS_ON_PREVIOUS_PROCESS).
-      "Terminal" includes FAILED/SKIPPED, not just COMPLETED, so a
-      predecessor's failure doesn't block them forever; and since no CBOS
-      call happens, neither can be individually SKIPPED for a holiday the
-      way the other 3 can.
-
-    Terminal outcomes (SUCCEEDED/FAILED/SKIPPED) are not values here — they
-    live on segment_status (SegmentStatus); a row's current_state is set to
-    None once segment_status reaches COMPLETED/SKIPPED, or left frozen at
-    the state it was in when FAILED, for diagnostics.
+    Terminal outcomes (SUCCEEDED/FAILED/SKIPPED) live on segment_status,
+    not here; current_state is set to None once COMPLETED/SKIPPED, or left
+    frozen at the state it was in when FAILED, for diagnostics.
     """
     # Real-segment pipeline
     INIT = "INIT"
@@ -143,12 +127,10 @@ class EdpProperties(Base):
 
     Segments run same-day; window_end only rolls onto the next calendar
     day if it's chronologically at/before window_start (e.g. an overnight
-    17:00->06:00 window).     Post-trade processes always gate on T+1
-    regardless of the times configured — both window_start (opening gate,
-    default 02:00) and window_end (closing deadline, default 06:00) are
+    17:00->06:00 window). Post-trade processes always gate on T+1
+    regardless of the times configured — window_start/window_end are
     optional per-process overrides in "post_trade_processes", always
-    resolved against trade_date+1. Both T+1 rules live in orchestrator.py,
-    not fields a config uploader needs to state.
+    resolved against trade_date+1. Both T+1 rules live in orchestrator.py.
 
     sequence_order and segment_name are fixed code constants (see
     utils/constants.py), not stored.
@@ -206,18 +188,14 @@ class SegmentExecution(Base):
     machinery, differing only in processes_json shape and current_state.
 
     Every top-level processes_json key is exactly a SegmentState.value
-    string — the same vocabulary current_state uses — so there is exactly
-    one name for "the RECON step" (see utils/json_helpers.py's module
-    docstring for the full rationale). Every state's dict (other than
-    TRIGGERED) holds a "steps" sub-dict, one entry per distinct CBOS call
-    that state makes, keyed by a name identifying exactly which
-    endpoint/operation it recorded (e.g. "BILLPOSTING_STATUS"). A step has
-    no "status" field while still pending — only last_response/
-    last_checked_at accumulate; once CBOS returns TRUE/SKIP the step gets
-    a completion timestamp (checked_at/ready_at/confirmed_at) and the
-    *state's* own "status" becomes "COMPLETED". current_state on the row
-    (not this JSON) is what actually drives control flow. No poll count is
-    tracked — only the latest observed response matters.
+    string (see utils/json_helpers.py for the rationale). Every state's
+    dict (other than TRIGGERED) holds a "steps" sub-dict, one entry per
+    distinct CBOS call, keyed by endpoint/operation name (e.g.
+    "BILLPOSTING_STATUS"). A step has no "status" while pending — only
+    last_response/last_checked_at accumulate; once CBOS returns TRUE/SKIP
+    it gets a completion timestamp and the state's own "status" becomes
+    "COMPLETED". current_state on the row (not this JSON) drives control
+    flow; no poll count is tracked, only the latest response.
 
     processes_json shape, 9 real segments (6 keys — insertion order
     matches pipeline order, since each key is only ever created when that
@@ -231,22 +209,19 @@ class SegmentExecution(Base):
       "WAITING_FOR_CONTRACT_NOTE_GENERATION":   {"status"?: "COMPLETED", "steps": {"CONTRACTNOTEGENERATION_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
     }
     "reserve_process_id" is written once, on WAITING_FOR_FILE_UPLOAD's
-    first entry (before FILEUPLOAD_STATUS even exists) — nested as a step
-    rather than another top-level key so processes_json's top-level keys
-    stay exactly the SegmentState vocabulary; "TRIGGERED" copies
-    process_id_source forward from it once TRIGGERED genuinely fires.
-    TRIGGERED itself has no "steps" wrapper — it's a single atomic action
-    already fully described by its own flat status/process_id/is_runnable
-    fields. CBOS ProcessName -> state key: BeginFileUpload->INIT,
+    first entry, nested as a step (keeps top-level keys exactly the
+    SegmentState vocabulary); "TRIGGERED" copies process_id_source forward
+    from it once it genuinely fires. TRIGGERED has no "steps" wrapper —
+    it's a single atomic action described by its own flat fields. CBOS
+    ProcessName -> state key: BeginFileUpload->INIT,
     FILEUPLOAD->WAITING_FOR_FILE_UPLOAD, BILLPOSTING->WAITING_FOR_BILLPOSTING,
     RECON->WAITING_FOR_RECON, CONTRACTNOTEGENERATION->WAITING_FOR_CONTRACT_NOTE_GENERATION.
 
     processes_json shape, 5 post-trade processes (3 keys). The step key
-    embeds the resolved ProcessName (ops-configurable, e.g. "COLVAL"),
-    same convention as the real-segment endpoint-named step keys. For
-    DMRPT/DMSTMT specifically, WAITING_FOR_GTG's step key is instead the
-    fixed "PREV_PROCESS_STATUS" — its last_response is the predecessor's
-    terminal segment_status (e.g. "COMPLETED"/"FAILED"), not a CBOS reply:
+    embeds the resolved ProcessName (e.g. "COLVAL"). For DMRPT/DMSTMT,
+    WAITING_FOR_GTG's step key is instead the fixed "PREV_PROCESS_STATUS"
+    — last_response is the predecessor's terminal segment_status, not a
+    CBOS reply:
     {
       "WAITING_FOR_GTG":        {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
       "TRIGGERED":               {"status": ..., "at": ..., "message": ...},

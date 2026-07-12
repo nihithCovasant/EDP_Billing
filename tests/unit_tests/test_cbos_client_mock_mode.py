@@ -259,11 +259,36 @@ async def test_trigger_daily_margin_reporting_mock_succeeds():
 
 
 async def test_trigger_daily_margin_statements_mock_succeeds():
+    """
+    Unlike the other 4 post-trade triggers (which go through
+    _trigger_post_trade_job()'s mock, always success=True on the first
+    call), DMSTMT's trigger reuses file_process_status() — see
+    trigger_daily_margin_statements()'s docstring for why — whose mock
+    simulates "not ready yet" (MSG "FALSE") for the first
+    (mock_ready_after - 1) calls before returning "TRUE". mock_set_ready_after(1)
+    here makes it succeed on the first call, matching the other 4 triggers'
+    test shape; test_trigger_daily_margin_statements_mock_not_yet_ready
+    below covers the FALSE-on-first-call case explicitly.
+    """
     cbos = CbosClient("http://status", "http://process", use_mock=True)
+    cbos.mock_set_ready_after(1)
     result = await cbos.trigger_daily_margin_statements("CV0001", date(2026, 6, 29))
     assert isinstance(result, PostTradeTriggerResult)
     assert result.success is True
-    assert result.message == "Process started successfully"
+    assert result.message == "TRUE"
+
+
+async def test_trigger_daily_margin_statements_mock_not_yet_ready():
+    """With the mock's default mock_ready_after=2, the first call to the
+    reused file_process_status() mock returns MSG "FALSE" — trigger_daily_margin_statements()
+    must surface that as success=False (retryable next cycle), not raise or
+    misreport it as an error."""
+    cbos = CbosClient("http://status", "http://process", use_mock=True)
+    result = await cbos.trigger_daily_margin_statements("CV0001", date(2026, 6, 29))
+    assert isinstance(result, PostTradeTriggerResult)
+    assert result.success is False
+    assert result.message == "FALSE"
+    assert result.error is None
 
 
 # =============================================================================

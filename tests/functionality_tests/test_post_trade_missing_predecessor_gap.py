@@ -1,26 +1,20 @@
 """
-Bug hunt: PostTradeStateMachine._check_previous_process_terminal() (see
-src/agent/edp/state_machine/PostTradeStateMachine.py) is the DB-based
-readiness gate for DMRPT (waits for MTFFT) and DMSTMT (waits for DMRPT).
+Bug hunt: PostTradeStateMachine._check_previous_process_terminal() is the
+DB-based readiness gate for DMRPT (waits for MTFFT) and DMSTMT (waits for
+DMRPT).
 
-Suspected gap: if the predecessor row for a trade_date was never seeded at
-all (e.g. MTFFT's row doesn't exist for that day), DMRPT's gate returns
-BLOCKED every cycle forever — and unlike the PENDING-only window-deadline
-FAILED/TIMEOUT safety net in orchestrator._process_one_post_trade()
-(see lines ~399-419), this safety net can never fire here because DMRPT is
-moved PENDING -> IN_PROGRESS in the very same cycle it's first seeded
-(before _check_previous_process_terminal ever runs), so every subsequent
-cycle sees segment_status == IN_PROGRESS and the
-`row.segment_status == SegmentStatus.PENDING` guard on the deadline check
-is never true again. There is no other timeout/deadline logic anywhere in
-WAITING_FOR_GTG / _check_previous_process_terminal itself.
+Suspected gap: if the predecessor row was never seeded at all (e.g.
+MTFFT's row doesn't exist for that trade_date), DMRPT's gate returns
+BLOCKED every cycle forever. The PENDING-only window-deadline FAILED/
+TIMEOUT safety net in orchestrator._process_one_post_trade() can't catch
+this: DMRPT moves PENDING -> IN_PROGRESS in the very cycle it's seeded
+(before the gate ever runs), so the PENDING-only deadline guard never
+fires again, and there's no other timeout logic in this gate.
 
-This test deliberately seeds ONLY DMRPT and DMSTMT's rows for a trade_date
-and DELETES MTFFT's row (so it never existed for that day), then drives
-many wake-cycle-equivalent passes -- including passes with `now` far past
-the post-trade window's default deadline (06:00 IST on trade_date+1, see
-POST_TRADE_DEFAULT_WINDOW_END) -- and asserts on DMRPT's final
-segment_status.
+This test seeds only DMRPT and DMSTMT for a trade_date, deletes MTFFT's
+row entirely, then drives many wake-cycle-equivalent passes — including
+passes well past the post-trade window's default deadline — and asserts
+on DMRPT's final segment_status.
 """
 
 from __future__ import annotations

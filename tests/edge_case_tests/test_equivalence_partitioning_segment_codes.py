@@ -107,16 +107,9 @@ def test_post_trade_code_recognized_by_transition_map_and_factory():
 # ---------------------------------------------------------------------------
 # Class 3: Case variation of a valid code ("eq" / "Eq" for "EQ").
 #
-# GENUINE BUG HUNT: segment_code lookups are dict/tuple membership checks
-# throughout — none of the four target functions normalizes case. A
-# lowercase or mixed-case code is silently treated as *unrecognized* by
-# every function, consistently (no function secretly uppercases while
-# another doesn't) — so there's no cross-function inconsistency, but the
-# lack of any normalization is itself a latent risk if a case-insensitive
-# upstream source (or a careless config upload) ever supplies "eq" instead
-# of "EQ": it would NOT raise anywhere in this call chain, it would just
-# silently misbehave (order 999, name echoed back unchanged, not
-# recognized as post-trade, ValueError from the transition map / factory).
+# No function normalizes case (all are exact dict/tuple membership checks),
+# so a lowercase/mixed-case code is consistently unrecognized everywhere —
+# no crash, but a latent risk if an upstream source ever supplies "eq".
 # ---------------------------------------------------------------------------
 
 
@@ -194,33 +187,11 @@ def test_empty_string_is_unrecognized_not_a_crash():
 
 # ---------------------------------------------------------------------------
 # Class 5: None (not a string at all — type hints aren't enforced at
-# runtime).
-#
-# ACTUAL BEHAVIOR, verified below:
-# - get_sequence_order(None): tuple.index(None) raises ValueError
-#   internally, caught by the function's own except clause -> returns 999.
-#   No crash. Reasonable (the function's docstring explicitly promises 999
-#   for "any unrecognized code", and None never raises out).
-# - get_segment_name(None): `None in SEGMENT_NAMES` is a normal, legal dict
-#   membership check (False), then `POST_TRADE_NAMES.get(None, None)` ->
-#   returns None (the fallback default *is* None, i.e. its own input).
-#   No crash, but the return type silently becomes NoneType instead of the
-#   annotated `str` -- a genuine (minor) type-contract violation a caller
-#   that does `.upper()` on the result would blow up on.
-# - is_post_trade_process(None): `None in POST_TRADE_ORDER` is a normal
-#   tuple membership check -> False. No crash.
-# - REAL_SEGMENT_TRANSITION_MAP.check_valid_segment(None): `None not in
-#   self.allowed_segments` -> True -> raises ValueError with None
-#   interpolated into the message via f-string ("Invalid segment: None. ...").
-#   No crash, consistent with the string classes above.
-# - SegmentFactory.get_segment_state_machine(None): dict.get(None) -> None
-#   (no KeyError since .get default is used) -> raises the same documented
-#   ValueError as any other unknown code, with None repr'd in the message.
-#   No crash.
-# Conclusion: None is handled gracefully (no TypeError anywhere), which is
-# somewhat surprising given the `str` type hints, but not a bug -- except
-# for get_segment_name's silent `str -> None` return type violation, which
-# is worth flagging as a minor latent bug for any caller that assumes str.
+# runtime). All four functions handle it gracefully (no TypeError anywhere),
+# somewhat surprising given the `str` type hints. get_segment_name(None) is
+# the one exception worth calling out: it has an explicit None guard
+# returning "UNKNOWN" so it honors its `-> str` annotation instead of
+# silently returning None.
 # ---------------------------------------------------------------------------
 
 
@@ -228,11 +199,12 @@ def test_none_sequence_order_falls_back_to_999_no_crash():
     assert get_sequence_order(None) == 999  # type: ignore[arg-type]
 
 
-def test_none_segment_name_returns_none_not_a_string():
-    """Flagging: violates the `-> str` return annotation. Not a crash, but
-    a real type-contract gap if a caller does result.upper() etc."""
+def test_none_segment_name_returns_unknown_string_not_none():
+    """get_segment_name() has an explicit None guard returning "UNKNOWN",
+    honoring its `-> str` annotation instead of silently returning None."""
     result = get_segment_name(None)  # type: ignore[arg-type]
-    assert result is None
+    assert result == "UNKNOWN"
+    assert isinstance(result, str)
 
 
 def test_none_is_post_trade_process_returns_false_no_crash():

@@ -1,33 +1,19 @@
 """
 Two-pod double-trigger race on RealSegmentStateMachine.handle_triggered().
 
-repository/segment.py's own module docstring says it plainly: "No
-pod-to-pod locking (single-instance deployment)... The TRIGGERING
-pre-commit marker still protects the CBOS trigger call itself from
-double-firing." That protection is entirely in-process: handle_triggered()
-does a plain unlocked SELECT (repository.get_one(), no SELECT ... FOR
-UPDATE), checks processes_json["TRIGGERED"]["status"] == "TRIGGERING" in
-Python, and only THEN writes "TRIGGERING" and commits (RealSegmentStateMachine.py
-lines ~309-319). Between two independent DB sessions (two pods), there is
-a real window where both can load the row before either commits
-"TRIGGERING", both pass the guard, and both fire cbos.get_new_trade_process
-for real.
+Since there's no pod-to-pod locking (single-instance deployment), the
+TRIGGERING pre-commit marker is the only protection: handle_triggered()
+does a plain unlocked SELECT, checks
+processes_json["TRIGGERED"]["status"] == "TRIGGERING" in Python, then
+writes "TRIGGERING" and commits. Between two independent DB sessions
+(two pods), there's a window where both can load the row before either
+commits "TRIGGERING", both pass the guard, and both fire the CBOS trigger.
 
-This test forces that window open deterministically, the same way
-test_workflow_upload_race.py forces the edpb_properties race open: real
-DB, two independent orchestrator instances each driving their own
-_process_one_segment() call (which itself opens its own session via the
-module-level get_session(), simulating two independent pods' connections),
-and an asyncio.Event pair patched into repository.get_one() that holds the
-FIRST pod's SELECT result until the SECOND pod's SELECT of the very same
-pre-TRIGGERING row has also completed — i.e. both pods' independent reads
-are guaranteed to land before either pod's guard-check-then-commit, which
-is the exact race window under suspicion. (A first attempt using only
-asyncio.gather() with no such synchronization did NOT reproduce the race —
-one pod's whole single-state-transition call ran start-to-finish, commit
-included, before the other pod's SELECT was even issued; seeing that
-"clean" result first is what showed the synchronization needed to be
-tightened at the SELECT itself, not just at the CBOS call.)
+This test forces that window open deterministically (same technique as
+test_workflow_upload_race.py): two independent orchestrator instances each
+in their own session, with an asyncio.Event pair patched into
+repository.get_one() holding the first pod's SELECT until the second
+pod's SELECT of the same pre-TRIGGERING row also completes.
 """
 
 from __future__ import annotations
