@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from .colors import RowStyle, resolve_row_style
 from .templating import render_html_template, render_text_template
+
+# This service's only current caller (EDP Billing) runs exclusively in IST —
+# see from_name="EDP Billing Alerts" in config.py — so the footer timestamp
+# is pinned here explicitly rather than left to datetime.astimezone()'s
+# implicit OS-timezone behavior, matching the explicit IST conversion the
+# EDP caller already applies to its own row-level started_at/completed_at.
+_IST = ZoneInfo("Asia/Kolkata")
 
 # Never shown in the email table (internal styling / pipeline ordering).
 _LOW_SIGNAL_KEYS = frozenset({"color", "row_color", "sequence_order", "skip_category"})
@@ -286,7 +294,10 @@ def render_text_table(
 
 
 def _now_str() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(sep=" ", timespec="seconds")
+    """Short IST form ('YYYY-MM-DD HH:MM:SS IST') — no microseconds, no
+    numeric offset, matching the row-level timestamp style rather than
+    the previous raw datetime.isoformat() (e.g. '...+05:30')."""
+    return datetime.now(timezone.utc).astimezone(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 def render_email_body(

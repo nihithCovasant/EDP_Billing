@@ -25,6 +25,7 @@ from global_email_service.colors import resolve_row_style
 from global_email_service.service import parse_payload
 from global_email_service.table_renderer import (
     DEFAULT_SEGMENT_COLUMNS,
+    _now_str,
     derive_columns,
     render_email_body,
     resolve_severity,
@@ -261,6 +262,17 @@ def test_render_email_body_includes_severity_banner():
     html_body, text_body = render_email_body([MCX_RECON_ROW])
     assert "ACTION REQUIRED" in html_body
     assert "ACTION REQUIRED" in text_body
+
+
+def test_now_str_is_short_ist_form_not_raw_isoformat():
+    """Footer 'Generated ...' timestamp must match the row-level style
+    ('YYYY-MM-DD HH:MM:SS IST') — not the previous raw datetime.isoformat()
+    with microseconds + numeric UTC offset (e.g. '...112136+05:30')."""
+    import re
+    result = _now_str()
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} IST", result), result
+    assert "+" not in result
+    assert "." not in result
 
 
 def test_example_payload_files_parse_and_render():
