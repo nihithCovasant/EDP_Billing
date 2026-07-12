@@ -261,9 +261,9 @@ async def _send_terminal_alert(row: SegmentExecution) -> None:
     """Best-effort email alert — failures are logged, never raised."""
     try:
         from global_email_service import send_segment_alert
-        from ..utils.serializers import serialize_segment
+        from ..utils.serializers import serialize_segment_alert
 
-        payload = serialize_segment(row)
+        payload = serialize_segment_alert(row)
         await asyncio.to_thread(send_segment_alert, payload)
         logger.info(
             f"[ALERT] segment={row.segment_code} | Alert email sent for "
