@@ -14,7 +14,13 @@ from fastapi import APIRouter, HTTPException
 
 from ..config import load_edp_config
 from ..database import get_session
-from ..repository import upload, get_active, get_workflow_history, has_processing_started
+from ..repository import (
+    upload,
+    get_active,
+    get_latest_effective,
+    get_workflow_history,
+    has_processing_started,
+)
 from ..utils.constants import POST_TRADE_ORDER
 from ..utils.datetime_utils import now_ist, resolve_active_date
 from .schemas import WorkflowUploadRequest, WorkflowUploadResponse, WorkflowDetailResponse
@@ -163,10 +169,22 @@ async def upload_workflow(body: WorkflowUploadRequest):
 
 @router.get("/workflow/{trade_date}", response_model=WorkflowDetailResponse)
 @otel_trace
-async def get_workflow(trade_date: date):
-    """Get the currently active workflow config for a given trading date."""
+async def get_workflow(trade_date: date, effective: bool = True):
+    """
+    Get the workflow config that governs a given trading date.
+
+    By default (`effective=true`, matches what the orchestrator actually
+    runs — see orchestrator._process_one_segment()'s own get_active() then
+    get_latest_effective() fallback): if nothing was ever explicitly
+    uploaded for `trade_date`, falls back to the most recently uploaded
+    config on or before it (config "carries forward" day to day until
+    superseded by a new upload). Pass `effective=false` for the strict,
+    exact-date-only lookup (404s if `trade_date` has no upload of its own).
+    """
     async with get_session() as session:
         row = await get_active(session, trade_date)
+        if not row and effective:
+            row = await get_latest_effective(session, trade_date)
     if not row:
         raise HTTPException(
             status_code=404,
@@ -185,6 +203,8 @@ async def get_workflow(trade_date: date):
             else None
         ),
         "workflow_json": row.workflow_json,
+        "requested_trade_date": trade_date,
+        "carried_forward": row.trade_date != trade_date,
     }
 
 

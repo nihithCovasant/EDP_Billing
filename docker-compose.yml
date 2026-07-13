@@ -56,10 +56,9 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
 
       # --- Terminal-status email alerts (global_email_service) ---
-      # This env var takes priority over global_email_service/.env's own
-      # value (load_dotenv() never overrides an already-set var) — single
-      # source of truth for the running agent. true = log only, false =
-      # actually send via Microsoft Graph.
+      # global_email_service/.env is never loaded in this container (no cwd
+      # there) — these container env vars are the only source. true = log
+      # only, false = actually send via Microsoft Graph.
       EMAIL_DRY_RUN: ${EMAIL_DRY_RUN:-true}
       EMAIL_GRAPH_TENANT_ID: ${EMAIL_GRAPH_TENANT_ID:-}
       EMAIL_GRAPH_CLIENT_ID: ${EMAIL_GRAPH_CLIENT_ID:-}

@@ -48,6 +48,12 @@ class WorkflowUploadResponse(WorkflowResponse):
 
 class WorkflowDetailResponse(WorkflowResponse):
     workflow_json: Dict[str, Any]
+    # The date actually requested by the caller — differs from `trade_date`
+    # (the row's own date) only when no config was ever uploaded for the
+    # requested date and the last-uploaded-before-it config was carried
+    # forward instead (see repository.get_latest_effective()).
+    requested_trade_date: Optional[date] = None
+    carried_forward: bool = False
 
 
 # =============================================================================
