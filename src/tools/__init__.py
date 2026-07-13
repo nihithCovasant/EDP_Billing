@@ -8,8 +8,14 @@ import os
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-# Load .env before anything else so OTEL_ENABLED, OTEL_CONFIG_UUID, etc. are
-# visible to os.getenv() when we call initialize_otel_client() below.
+# Bridge agent_config.json's `env` block into os.environ first (single source
+# of truth), then load .env as a fallback. Order matters: setdefault means the
+# config values win, and any .env only fills what config didn't set. Both make
+# OTEL_ENABLED, OTEL_CONFIG_UUID, AGENT_NAME, etc. visible to os.getenv() before
+# initialize_otel_client() runs below.
+from src.config.settings import apply_config_env
+apply_config_env()
+
 from dotenv import load_dotenv
 load_dotenv()
 

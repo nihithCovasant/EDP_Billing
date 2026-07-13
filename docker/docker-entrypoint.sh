@@ -51,29 +51,34 @@ show_config() {
     echo ""
     echo "Configuration Summary:"
     echo "---------------------"
-    echo "Agent Name: ${AGENT_NAME:-agent}"
-    echo "Host: ${HOST:-0.0.0.0}"
-    echo "Port: ${PORT:-9999}"
-    echo "Log Level: ${LOG_LEVEL:-INFO}"
-    echo "Streaming: ${STREAMING_ENABLED:-true}"
-    echo "Multi-Tenant: ${MULTI_TENANT_ENABLED:-true}"
-    echo "Langfuse: ${LANGFUSE_ENABLED:-false}"
-    echo "LiteLLM Gateway: ${USE_LITELLM_GATEWAY:-false}"
-    
+    # Runtime settings (agent name, host, port, log level, OTEL, EDP, email,
+    # ...) are loaded inside Python from agent_config.json's `env` block by
+    # apply_config_env() — they are NOT shell env vars here, so we don't echo
+    # misleading defaults. agent_config.json is the single source of truth.
     if [ ! -z "$APP_CONFIG_PATH" ]; then
         echo "Config Path: $APP_CONFIG_PATH (external)"
     else
         echo "Config Path: /app/src/config/agent_config.json (internal)"
     fi
-    
+    echo "Runtime settings: loaded from agent_config.json -> agent_config.env"
+
+    # Show any explicit env-var overrides that are actually set (these win over
+    # the config file via os.environ.setdefault()).
+    for v in AGENT_NAME HOST PORT LOG_LEVEL EMAIL_DRY_RUN; do
+        eval "val=\${$v:-}"
+        if [ ! -z "$val" ]; then
+            echo "Override: $v=$val"
+        fi
+    done
+
     if [ ! -z "$ENV_ID" ]; then
         echo "Environment ID: $ENV_ID"
     fi
-    
+
     if [ ! -z "$TENANT_IDS" ]; then
         echo "Tenant IDs: $TENANT_IDS"
     fi
-    
+
     echo "---------------------"
     echo ""
 }

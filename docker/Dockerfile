@@ -61,15 +61,21 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
 # Create directories for configs and secrets
 RUN mkdir -p /app/config /app/secrets
 
-# Environment variables with defaults (can be overridden)
-ENV HOST=0.0.0.0
-ENV PORT=8005
-ENV LOG_LEVEL=INFO
-
+# NOTE: Runtime configuration (HOST, PORT, LOG_LEVEL, AGENT_NAME, OTEL_*, EDP_*,
+# EMAIL_*, ...) is NOT set here as env vars. It lives in agent_config.json's
+# `agent_config.env` block and is bridged into the environment at startup by
+# apply_config_env() (src/config/settings.py) — agent_config.json is the
+# single source of truth. Because that bridge uses os.environ.setdefault(), any
+# env var set here would OVERRIDE the config, so we deliberately set none.
+# Override per-deployment only by passing an explicit env var or mounting an
+# alternate config via APP_CONFIG_PATH.
+#
+# The port literal below (8005) is a build-time contract for EXPOSE/HEALTHCHECK
+# and MUST match agent_config.json -> agent_config.env.PORT.
 EXPOSE 8005
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health/live')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8005/health/live')" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "src.agent"]

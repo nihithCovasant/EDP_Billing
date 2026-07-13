@@ -28,53 +28,45 @@
 
 ### Step 1: Setup Configuration
 
-**Two types of configuration:**
+**`src/config/agent_config.json` is the single source of truth — no `.env` file is required.**
 
-1. **API Keys** (in `.env` file) - From your secret manager
-2. **All Other Secrets** (in `agent_config.json`) - Langfuse, Sentry, Database, LiteLLM, etc.
+At startup, `apply_config_env()` (`src/config/settings.py`) bridges the
+`agent_config.env` block into the process environment, so every setting —
+server, runtime flags, OTEL, EDP wake loop, email alerts — is read from that one
+file. Secrets live alongside it under `agent_config.secrets`.
 
-```bash
-# 1. Copy environment template for API keys
-cp .env.example .env
+Edit `src/config/agent_config.json`:
 
-# 2. Add your LLM API keys to .env
-nano .env
-```
-
-**Minimum required in `.env`:**
-```bash
-# LLM API Keys (from secret manager)
-OPENAI_API_KEY=sk-your-key-here
-# OR
-ANTHROPIC_API_KEY=sk-ant-your-key-here
-# OR
-GOOGLE_API_KEY=your-google-key-here
-```
-
-**Configure other secrets in `src/config/agent_config.json`:**
 ```json
 {
   "agent_config": {
+    "llm_provider": "openai",
+    "env": {
+      "HOST": "0.0.0.0",
+      "PORT": "8005",
+      "LOG_LEVEL": "INFO",
+      "AGENT_NAME": "EDP Billing Agent"
+    },
     "secrets": {
-      "langfuse": {
-        "enabled": true,
-        "public_key": "pk-lf-your-key",
-        "secret_key": "sk-lf-your-key",
-        "host": "https://cloud.langfuse.com"
-      },
-      "sentry": {
-        "enabled": true,
-        "dsn": "https://your-sentry-dsn",
-        "environment": "production"
-      },
       "litellm": {
         "enabled": true,
-        "base_url": "https://your-litellm-gateway/v1"
+        "base_url": "https://your-litellm-gateway/v2",
+        "api_key": "sk-..."
+      },
+      "database": {
+        "postgres": {
+          "connection_string": "postgresql+asyncpg://user:pass@db-host:5432/EDPB"
+        }
       }
     }
   }
 }
 ```
+
+LLM traffic goes through the **LiteLLM gateway** configured under
+`secrets.litellm`, so no `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`
+is needed. If you ever need to override a single value for one run, set it as a
+real environment variable — explicit env vars win over the config file.
 
 ### Step 2: Install Dependencies
 
@@ -89,14 +81,14 @@ pip install -r requirements.txt
 python -m src.agent
 
 # Expected output:
-# ✓ Agent server running on http://0.0.0.0:9999
+# ✓ Agent server running on http://0.0.0.0:8005
 ```
 
 ### Step 4: Test It Works
 
 ```bash
 # In another terminal
-curl http://localhost:9999/health
+curl http://localhost:8005/health
 
 # Should return: {"status": "healthy"}
 ```

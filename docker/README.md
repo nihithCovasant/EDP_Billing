@@ -40,15 +40,21 @@ docker build -f docker/Dockerfile \
 ### Quick local stack (docker-compose)
 
 ```bash
-cp .env.example .env   # fill in DB_PASSWORD, CBOS_*, EMAIL_* as needed
 docker compose up --build
 ```
 
-This starts `postgres` (with a persisted volume) and `agent` (built from
-`docker/Dockerfile`), wired together via `docker-compose.yml`. Required env
-vars (`DB_PASSWORD`, `CBOS_STATUS_URL`, `CBOS_PROCESS_URL`) will fail the
-compose run with a clear error if left unset — see that file for the full
-list and defaults.
+No `.env` file and no environment variables are required. `docker-compose.yml`
+builds `agent` from `docker/Dockerfile` and mounts `agent_config.json` read-only
+— **all** configuration (server, LLM via the LiteLLM gateway, CBOS, EDP wake
+loop, email alerts, and the database connection string) is read from that one
+file. The stack starts **no** local postgres container: the agent connects to
+whatever `agent_config.json → secrets.database.postgres.connection_string`
+points at, so that database host must be reachable from the container.
+
+To change any setting, edit `src/config/agent_config.json` (its
+`agent_config.env` / `.secrets` / `.edp` blocks) — see the repo-level config
+docs. To override a single value for one run, pass an explicit `-e VAR=...`
+(explicit env vars still win over the config file).
 
 ### Standalone `docker run`
 
@@ -56,42 +62,39 @@ list and defaults.
 docker run -d \
   -p 8005:8005 \
   -v "$(pwd)/src/config/agent_config.json:/app/config/agent_config.json:ro" \
-  -e DATABASE_URL="postgresql+asyncpg://user:pass@db-host:5432/EDP_Billing" \
-  -e CBOS_STATUS_URL="https://cbos-host:8087" \
-  -e CBOS_PROCESS_URL="https://cbos-host:8003" \
-  -e CBOS_USE_MOCK=false \
-  -e EMAIL_DRY_RUN=false \
-  -e EMAIL_GRAPH_TENANT_ID="..." \
-  -e EMAIL_GRAPH_CLIENT_ID="..." \
-  -e EMAIL_GRAPH_CLIENT_SECRET="..." \
-  -e EMAIL_DEFAULT_TO="mofsl-ops@example.com" \
   edp-billing-agent:latest
 ```
 
-`agent_config.json` can instead be supplied via the `CONFIG_JSON` env var
-(whole file as a JSON string) or `APP_CONFIG_PATH` — see
-`docker/docker-entrypoint.sh`'s `inject_config()` for the priority order.
+That's it — every setting comes from the mounted `agent_config.json`. The
+entrypoint copies it to the internal path at startup; alternatively supply it
+via `APP_CONFIG_PATH` (path to a mounted file) or `CONFIG_JSON` (whole file as a
+JSON string) — see `docker/docker-entrypoint.sh`'s `inject_config()` for the
+priority order.
 
-## Environment variables
+## Configuration
 
-All EDP-specific settings resolve with **env vars taking priority over
-`agent_config.json`**, then hardcoded defaults (see
-`src/agent/edp/config.py::load_edp_config()`). Full reference: `.env.example`.
+`agent_config.json` is the **single source of truth**. At startup
+`apply_config_env()` (`src/config/settings.py`) bridges its
+`agent_config.env` block into the process environment, so every existing
+env-reading code path (pydantic `Settings`, `src/agent/edp/config.py`,
+`cams_otel_lib`, `global_email_service`, ...) is fed from the file — no `.env`
+and no `-e` flags required.
 
-| Variable | Purpose |
+Edit these blocks in `src/config/agent_config.json`:
+
+| Block | Owns |
 |---|---|
-| `EDP_WAKE_INTERVAL_SECONDS` | Seconds between wake cycles (default 60) |
-| `CBOS_STATUS_URL`, `CBOS_PROCESS_URL` | CBOS base URLs (real system or `mock_cbos`) |
-| `CBOS_USE_MOCK` | `true` = in-process mock responses, `false` = real HTTP calls to the URLs above |
-| `CBOS_LOGIN_ID` | LOGINID used for the 9 real-segment CBOS calls |
-| `POST_TRADE_LOGIN_ID` | LOGINID used for the 5 post-trade CBOS calls |
-| `DATABASE_URL` **or** `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USERNAME`/`DB_PASSWORD` | PostgreSQL connection (async `postgresql+asyncpg://`; Alembic migrations auto-convert to sync `postgresql+psycopg://`) |
-| `EMAIL_DRY_RUN` | `true` = log rendered email only, `false` = send via Microsoft Graph |
-| `EMAIL_GRAPH_TENANT_ID`, `EMAIL_GRAPH_CLIENT_ID`, `EMAIL_GRAPH_CLIENT_SECRET`, `EMAIL_GRAPH_SENDER` | Microsoft Graph app-registration credentials for `global_email_service` |
-| `EMAIL_DEFAULT_TO`, `EMAIL_DEFAULT_CC` | Recipients for terminal-status alerts (comma-separated) |
+| `agent_config.env` | Server (`HOST`/`PORT`/`LOG_LEVEL`), `AGENT_NAME`, OTEL flags, `EDP_WAKE_INTERVAL_SECONDS`, `EDP_LOOP_ENABLED`, all `EMAIL_*` (dry-run, Graph credentials, recipients), `CBOS_*` overrides |
+| `agent_config.secrets` | LiteLLM gateway (`base_url`/`api_key`), `database.postgres.connection_string`, Pinecone, `edpb_download` |
+| `agent_config.edp` | CBOS URLs / mock flag / login IDs, and the 9 segment / 5 post-trade-process window definitions |
 
-`agent_config.json` still owns the 9 segment / 5 post-trade-process window
-definitions (mounted read-only into the container — see above).
+Because the bridge uses `os.environ.setdefault()`, an explicit env var
+(e.g. `-e PORT=9000`) still **overrides** the file for that run — use that for
+one-off per-deployment tweaks, secret injection from a secret manager, etc.
+
+The database is whatever `secrets.database.postgres.connection_string` resolves
+to — Alembic migrations run automatically at startup (async
+`postgresql+asyncpg://` is auto-converted to sync `postgresql+psycopg://`).
 
 ## Database migrations
 

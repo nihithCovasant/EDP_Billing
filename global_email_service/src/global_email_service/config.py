@@ -1,5 +1,10 @@
-"""Service settings loaded from environment variables (optionally via a
-`.env` file — see below).
+"""Service settings.
+
+Configuration comes from the host project's agent_config.json (its
+`agent_config.env` block), bridged into os.environ at import by
+_apply_agent_config_env() below — so no .env file is required, matching the
+rest of the project. Real process environment variables still override, and a
+legacy .env is honored as a last-resort fallback if one happens to exist.
 
 Email is delivered via Microsoft Graph `sendMail` (OAuth2 client-credentials),
 not SMTP — see graph_client.py.
@@ -7,22 +12,62 @@ not SMTP — see graph_client.py.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-from dotenv import load_dotenv
 
-# Deliberately *not* a package-relative path — this is a library, and a
-# `.env` file shipped inside the installed package would be both wrong (it's
-# a deployment concern, not code) and impossible to override per-consumer.
-# `load_dotenv()` with no args searches the current working directory and
-# its parents, so running `python -m global_email_service.main` from this
-# project's own root (which has its own `.env` — see .env.example) still
-# works for local dev, while a real deployment's actual process env vars
-# always take precedence (load_dotenv never overrides already-set vars).
-load_dotenv()
+def _apply_agent_config_env() -> None:
+    """Bridge the host project's agent_config.json `agent_config.env` block into
+    os.environ so this service is configured from that single source — no .env
+    file required, matching the rest of the project.
+
+    When this service runs *embedded* in the EDP agent, the agent has already
+    applied that block, so these values are present and this is a cheap no-op.
+    When run *standalone* (`python -m global_email_service.main`), this locates
+    agent_config.json itself. Uses setdefault(), so a real, explicitly-set
+    environment variable still overrides the config value. Best-effort: any
+    failure leaves os.environ untouched.
+    """
+    try:
+        candidates: List[Path] = []
+        ext = os.getenv("APP_CONFIG_PATH")
+        if ext:
+            candidates.append(Path(ext))
+        # Walk up from this file and from the cwd looking for src/config/agent_config.json,
+        # so the bridge works regardless of where the process was launched from.
+        for base in (Path(__file__).resolve(), Path.cwd().resolve()):
+            for parent in [base, *base.parents]:
+                candidates.append(parent / "src" / "config" / "agent_config.json")
+        seen = set()
+        for cfg_path in candidates:
+            if cfg_path in seen:
+                continue
+            seen.add(cfg_path)
+            if cfg_path.exists():
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                env_block = data.get("agent_config", {}).get("env", {})
+                if isinstance(env_block, dict):
+                    for key, value in env_block.items():
+                        if value is not None:
+                            os.environ.setdefault(str(key), str(value))
+                return
+    except Exception:
+        pass
+
+
+# Configure from agent_config.json first (single source of truth), then fall
+# back to load_dotenv() for any legacy .env — a no-op when no .env is present.
+# Both use setdefault semantics, so a real process env var always wins.
+_apply_agent_config_env()
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 def _split_addresses(raw: str) -> List[str]:
@@ -98,9 +143,13 @@ def load_email_config() -> EmailServiceConfig:
 
 
 def load_server_settings() -> tuple[str, int, str]:
-    """(host, port, log_level) for main.py — CAMS-style HOST/PORT/LOG_LEVEL env vars,
-    falling back to this module's own EMAIL_SERVICE_* names for backward compatibility."""
-    host = _env_first("HOST", "EMAIL_SERVICE_HOST", default="0.0.0.0")
-    port = int(_env_first("PORT", "EMAIL_SERVICE_PORT", default="9200"))
+    """(host, port, log_level) for main.py's standalone server.
+
+    Port prefers this service's dedicated EMAIL_SERVICE_PORT over the generic
+    PORT: the project's single agent_config.json sets PORT for the *main* EDP
+    agent (8005), so the email server must have its own port to avoid a
+    collision. Host/log_level are safely shared (0.0.0.0 / INFO)."""
+    host = _env_first("EMAIL_SERVICE_HOST", "HOST", default="0.0.0.0")
+    port = int(_env_first("EMAIL_SERVICE_PORT", "PORT", default="9200"))
     log_level = _env_first("LOG_LEVEL", default="INFO")
     return host, port, log_level

@@ -103,7 +103,29 @@ class HealthChecker:
         try:
             from src.config.settings import settings
 
-            # Check which providers are configured
+            # Primary path: the LiteLLM gateway. When enabled, all LLM traffic
+            # is routed through it (see llm_provider.py) and NO direct provider
+            # API key is required — so the old "no API keys" check is wrong for
+            # this deployment. Treat a configured gateway as healthy.
+            try:
+                from src.config.agent_config import get_secrets, load_agent_config
+
+                litellm_cfg = get_secrets("default", load_agent_config()).get("litellm", {})
+            except Exception:
+                litellm_cfg = {}
+
+            if litellm_cfg.get("enabled") and litellm_cfg.get("base_url"):
+                return ComponentHealth(
+                    name="llm",
+                    status=HealthStatus.HEALTHY,
+                    message="LLM configured via LiteLLM gateway",
+                    details={
+                        "configured_providers": ["litellm_gateway"],
+                        "base_url": litellm_cfg.get("base_url"),
+                    },
+                )
+
+            # Fallback path: direct provider API keys (gateway disabled).
             available_providers = []
 
             if settings.openai_api_key:
@@ -119,7 +141,7 @@ class HealthChecker:
                 return ComponentHealth(
                     name="llm",
                     status=HealthStatus.UNHEALTHY,
-                    message="No LLM API keys configured",
+                    message="No LLM configured (LiteLLM gateway disabled and no provider API keys set)",
                     details={"configured_providers": []},
                 )
 
@@ -166,25 +188,52 @@ class HealthChecker:
             ComponentHealth with database status
         """
         try:
-            from src.config.settings import settings
+            # The PostgreSQL connection string now lives in agent_config.json
+            # (secrets.database.postgres.connection_string) — resolved the same
+            # way the EDP agent resolves it — not on the Settings object.
+            try:
+                from src.config.agent_config import get_secrets, load_agent_config
 
-            if not settings.postgres_connection_string:
+                conn_string = (
+                    get_secrets("default", load_agent_config())
+                    .get("database", {})
+                    .get("postgres", {})
+                    .get("connection_string", "")
+                    or ""
+                ).strip()
+            except Exception:
+                conn_string = ""
+
+            if not conn_string:
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.HEALTHY,
-                    message="Database not configured (using in-memory storage)",
-                    details={"type": "in-memory"},
+                    message="Database not configured",
+                    details={"type": "none"},
                 )
 
-            # Test PostgreSQL connection using psycopg (v3) — the driver
-            # installed by the postgresql feature (psycopg[binary]>=3.1.0).
+            # psycopg (v3) wants a plain libpq URL — strip the SQLAlchemy driver
+            # suffix (+asyncpg / +psycopg) the app uses in its connection string.
+            pg_url = (
+                conn_string
+                .replace("postgresql+asyncpg://", "postgresql://")
+                .replace("postgresql+psycopg://", "postgresql://")
+            )
+
+            # Test PostgreSQL connection using psycopg (v3). Use a SYNCHRONOUS
+            # connection run off the event loop via asyncio.to_thread rather
+            # than psycopg's async mode — the latter refuses to run on Windows'
+            # default ProactorEventLoop, which would make this check fail on
+            # Windows even when the database is perfectly reachable.
             try:
                 import psycopg
 
-                async with await psycopg.AsyncConnection.connect(
-                    settings.postgres_connection_string
-                ) as conn:
-                    await conn.execute("SELECT 1")
+                def _probe() -> None:
+                    with psycopg.connect(pg_url, connect_timeout=5) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT 1")
+
+                await asyncio.to_thread(_probe)
 
                 return ComponentHealth(
                     name="database",
@@ -197,8 +246,8 @@ class HealthChecker:
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.HEALTHY,
-                    message="PostgreSQL driver not installed (feature not selected)",
-                    details={"type": "in-memory"},
+                    message="PostgreSQL driver (psycopg) not installed — skipping connectivity test",
+                    details={"type": "postgresql", "driver": "missing"},
                 )
             except Exception as e:
                 logger.error(f"Database health check failed: {e}")
@@ -311,7 +360,18 @@ class HealthChecker:
                     details={"enabled": False},
                 )
 
-            from src.utils.metrics import get_metrics_collector
+            # The metrics collector is an optional feature (FEATURE:prometheus).
+            # If the module isn't part of this build, that's not a failure —
+            # report it as a skipped optional feature, like observability.
+            try:
+                from src.utils.metrics import get_metrics_collector
+            except ImportError:
+                return ComponentHealth(
+                    name="metrics",
+                    status=HealthStatus.HEALTHY,
+                    message="Metrics not installed (optional feature)",
+                    details={"enabled": False},
+                )
 
             metrics = get_metrics_collector()
 
@@ -349,7 +409,17 @@ class HealthChecker:
                     details={"enabled": False},
                 )
 
-            from src.middleware.rate_limiting import get_rate_limiter
+            # Rate limiting is an optional feature. If the middleware isn't part
+            # of this build, report it as skipped rather than failing the probe.
+            try:
+                from src.middleware.rate_limiting import get_rate_limiter
+            except ImportError:
+                return ComponentHealth(
+                    name="rate_limiter",
+                    status=HealthStatus.HEALTHY,
+                    message="Rate limiting not installed (optional feature)",
+                    details={"enabled": False},
+                )
 
             rate_limiter = get_rate_limiter()
             all_stats = rate_limiter.get_all_stats()

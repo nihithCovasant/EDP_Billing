@@ -38,13 +38,43 @@
     "agent_id": "60cd1418-b130-4e9a-b2ac-badfc05c096d",
     "agent_name": "EDP_Billing",
     "app_name_adk": "edp-billing",
+    "env": {
+      "HOST": "0.0.0.0",
+      "PORT": "8005",
+      "LOG_LEVEL": "INFO",
+      "AGENT_NAME": "EDP Billing Agent",
+      "AGENT_DESCRIPTION": "EDP Trade Process billing agent",
+      "STREAMING_ENABLED": "true",
+      "ENVIRONMENT": "dev",
+      "EDP_WAKE_INTERVAL_SECONDS": "5",
+      "EDP_LOOP_ENABLED": "true",
+      "EMAIL_DRY_RUN": "false",
+      "OTEL_ENABLED": "false",
+      "OTEL_CONSOLE_LOGGING": "true",
+      "OTEL_LOGGING_ENABLED": "false",
+      "OTEL_TRACING_ENABLED": "false",
+      "OTEL_CONSOLE_TRACING": "false",
+      "OTEL_CONFIG_UUID": "local-dev-fixed-uuid",
+      "EMAIL_GRAPH_TENANT_ID": "f95e6085-bcb8-4822-9ac0-20279ac8544b",
+      "EMAIL_GRAPH_CLIENT_ID": "509a2b5c-65a1-45e0-944d-75c80c54cbb9",
+      "EMAIL_GRAPH_CLIENT_SECRET": "92i8Q~tWxt4QkY-2r9fkswdNBwwikpvEW68efaE_",
+      "EMAIL_GRAPH_SENDER": "rms@covasant.com",
+      "EMAIL_GRAPH_TIMEOUT_SECONDS": "15",
+      "EMAIL_FROM_NAME": "EDP Billing Alerts",
+      "EMAIL_DEFAULT_TO": "nihith.yelchuri@covasant.com",
+      "EMAIL_DEFAULT_CC": "nihith.yelchuri@covasant.com",
+      "EMAIL_MAX_RETRIES": "2",
+      "EMAIL_RETRY_BACKOFF_SECONDS": "2",
+      "EMAIL_SERVICE_HOST": "0.0.0.0",
+      "EMAIL_SERVICE_PORT": "9200"
+    },
     "instructions": "You are a knowledgeable AI assistant with access to various tools and knowledge sources.\n\nYour role is to:\n- Provide accurate, well-researched answers using retrieved information\n- Cite sources when relevant information is found\n- Clearly state when information is not available\n- Ask clarifying questions when queries are ambiguous\n- Maintain accuracy over completeness\n\nAlways prioritize factual accuracy and cite your sources when possible.",
     "llm_config": {
-      "model": "gpt-4.1",
+      "model": "gemini/gemini-2.5-flash",
       "temperature": 0.3,
       "max_tokens": "4096"
     },
-    "llm_provider": "azure",
+    "llm_provider": "openai",
     "max_steps": 10,
     "max_iterations": 5,
     "datastores": [],
@@ -58,9 +88,9 @@
       "examples": []
     },
     "prompts": {
-      "system": "You are a knowledgeable AI assistant.",
-      "retrieval": "",
-      "response": ""
+      "system": "You are the EDP Billing Agent for MOFSL — a knowledgeable assistant for EDP trade-process billing. You can check segment and post-trade process statuses, trigger processing, retrieve billing details, and download EDPB files. Use the available tools whenever a request needs live data or an action rather than guessing. Be accurate and concise, cite retrieved information (segment codes, process codes, statuses, amounts) when relevant, ask for clarification when a request is ambiguous, and clearly state when information is unavailable. Prioritize factual accuracy over completeness.",
+      "retrieval": "You are the EDP Billing Agent. Analyze the user's question together with the recent conversation to extract the most relevant, focused search terms for retrieving billing and EDP process information.\n\nConversation:\n{conversation}\n\nQuestion: {question}\n\nReturn 2-5 concise, specific search terms (no explanation):",
+      "response": "You are the EDP Billing Agent for MOFSL. Answer the user's question using the retrieved information and conversation history below. Prefer the retrieved context over prior knowledge, cite specifics (segment codes, process codes, statuses, amounts) when present, and clearly state when the information is not available.\n\nRETRIEVED INFORMATION:\n{context}\n\nCONVERSATION HISTORY:\n{conversation}\n\nUSER QUESTION: {question}\n\nProvide a helpful, accurate response:"
     },
     "secrets": {
       "litellm": {
@@ -70,6 +100,11 @@
       },
       "pinecone": {
         "environment": ""
+      },
+      "database": {
+        "postgres": {
+          "connection_string": "postgresql+asyncpg://postgres:postgres_pass@mofsl-dev.chqacuc8miip.ap-south-1.rds.amazonaws.com:5432/EDPB"
+        }
       },
       "edpb_download": {
         "api_url": "http://localhost:9300/api/edpb/download",
@@ -83,9 +118,9 @@
     "edp": {
       "active_date_cutoff_hour": 6,
       "timezone": "Asia/Kolkata",
-      "cbos_status_url": "http://10.167.202.234:8087",
-      "cbos_process_url": "http://10.167.202.164:8003",
-      "cbos_use_mock": true,
+      "cbos_status_url": "http://localhost:9100",
+      "cbos_process_url": "http://localhost:9100",
+      "cbos_use_mock": false,
       "cbos_login_id": "CV0001",
       "post_trade_login_id": "G_LID",
       "agent_instance_id": "edp-agent-1",

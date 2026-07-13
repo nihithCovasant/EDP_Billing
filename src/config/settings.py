@@ -1,10 +1,60 @@
 """
-Application settings from environment variables.
-Customize this file to add your own configuration options.
+Application settings.
+
+Configuration comes from agent_config.json — its `agent_config.env` block is
+bridged into os.environ by apply_config_env() below, before Settings() reads it,
+so the whole app is config-driven and needs no .env file.
 """
 
+import json
+import os
+from pathlib import Path
 from typing import Optional
+
 from pydantic_settings import BaseSettings
+
+_env_applied = False
+
+
+def apply_config_env() -> None:
+    """Bridge agent_config.json's `agent_config.env` block into os.environ so
+    every env-reading consumer (this Settings object, the EDP config loader,
+    cams_otel_lib, global_email_service, ...) is fed from that single file — no
+    .env required.
+
+    Defined here rather than in a dedicated module because Settings() must call
+    it before reading the environment, and settings.py imports nothing else from
+    `src` — so keeping it here avoids the circular import a separate config
+    module would cause. Uses os.environ.setdefault(), so an explicitly-set real
+    environment variable still overrides the config value. Idempotent; never
+    raises (a missing/malformed config just leaves os.environ as-is).
+
+    APP_CONFIG_PATH (if set and existing) takes priority for locating the file.
+    """
+    global _env_applied
+    if _env_applied:
+        return
+    _env_applied = True
+    try:
+        ext = os.getenv("APP_CONFIG_PATH")
+        cfg_path = (
+            Path(ext)
+            if ext and Path(ext).exists()
+            else Path(__file__).parent / "agent_config.json"
+        )
+        with open(cfg_path) as f:
+            data = json.load(f)
+        env_block = data.get("agent_config", {}).get("env", {})
+        if isinstance(env_block, dict):
+            for key, value in env_block.items():
+                if value is not None:
+                    os.environ.setdefault(str(key), str(value))
+    except Exception:
+        pass
+
+
+# Populate os.environ from agent_config.json before Settings() reads it.
+apply_config_env()
 
 
 class Settings(BaseSettings):
@@ -32,12 +82,6 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
-
-    # Azure OpenAI (temporary/local testing alternative to the LiteLLM gateway)
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_api_version: Optional[str] = None
-    azure_openai_deployment: Optional[str] = None
 
     # Tool API keys - add more as needed (these come from secret manager)
     tavily_api_key: Optional[str] = None
