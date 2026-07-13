@@ -33,12 +33,6 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
 
-    # Azure OpenAI (temporary/local testing alternative to the LiteLLM gateway)
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_api_version: Optional[str] = None
-    azure_openai_deployment: Optional[str] = None
-
     # Tool API keys - add more as needed (these come from secret manager)
     tavily_api_key: Optional[str] = None
     serp_api_key: Optional[str] = None

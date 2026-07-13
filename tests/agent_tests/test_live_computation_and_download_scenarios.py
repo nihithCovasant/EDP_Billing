@@ -48,23 +48,12 @@ from fastapi.testclient import TestClient
 from src.agent.__main__ import build_app
 
 # NOTE on which real LLM this hits: the checked-in src/config/agent_config.json
-# sets "llm_provider": "azure" and also has secrets.litellm.enabled = true
-# with a gateway base_url that requires the CAMS VPN. In this environment:
-#   - The plain OPENAI_API_KEY in .env is a placeholder
-#     ("sk-not-used-locally"), not a real credential.
-#   - The LiteLLM gateway (cams-litellm.dev.cams.covasant.io) is NOT
-#     reachable here — confirmed by an actual attempt, which surfaced a
-#     real (environment-specific) failure: "No generations found in
-#     stream." This is a genuine connectivity gap, not a bug in this test
-#     file or in src/, so it is not papered over.
-#   - AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_API_KEY / AZURE_OPENAI_API_VERSION
-#     / AZURE_OPENAI_DEPLOYMENT are set in .env (previously commented out,
-#     now enabled for these live tests) and route directly to a real Azure
-#     OpenAI resource via `_create_azure_llm` (src/utils/llm_provider.py),
-#     bypassing the unreachable gateway entirely. This is a real, live LLM
-#     call against a real provider (Azure OpenAI) — nothing about the
-#     response is faked, scripted, or mocked. No file under src/ is
-#     modified to achieve this; only .env (outside src/) was edited.
+# sets "llm_provider": "google" with secrets.litellm.enabled = true and a
+# gateway base_url (cams-litellm.dev.cams.covasant.io) — reaching it requires
+# the CAMS VPN/internal network. The plain OPENAI_API_KEY/GOOGLE_API_KEY in
+# .env are placeholders, not real credentials; the LiteLLM gateway's own
+# api_key (agent_config.json -> secrets.litellm.api_key) is what actually
+# authenticates. Run these from a network that can reach the gateway.
 
 
 @pytest.fixture()
