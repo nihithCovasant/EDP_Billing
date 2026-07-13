@@ -1,61 +1,109 @@
 """
-Live, end-to-end agent scenario tests — REAL LLM, REAL seeded database.
+Live, end-to-end agent scenario tests -- REAL LLM, REAL seeded database.
 
 Unlike test_tool_routing.py (which mocks `get_llm_model` with a
 `ScriptedLLM` to deterministically test tool-routing plumbing), these tests
 let the REAL LangChain chat model run against the REAL `/agent/run`
 endpoint, and assert on what it actually SAYS in response to natural
 language status queries. The point is to catch real-world LLM behavior
-(accurate reporting, robustness to phrasing, and — critically — whether it
-hallucinates when there is no real data) rather than to test internal
+(accurate reporting, robustness to phrasing, and -- critically -- whether
+it hallucinates when there is no real data) rather than to test internal
 routing/plumbing.
 
 Data flow being exercised for real, end to end:
 
-  test query -> POST /agent/run -> real LangGraph ReAct loop -> real LLM
-  decides to call get_edp_status -> that tool makes a REAL httpx call to
-  this same process's own `/edp/status/{date}` endpoint -> that endpoint
-  reads via `get_session()` (src/agent/edp/database.py) -> which the
+  test query -> POST /agent/run (via TestClient, in-process) -> real
+  LangGraph ReAct loop -> real LLM decides to call get_edp_status -> that
+  tool makes an httpx call to `/edp/status/{date}` -> that endpoint reads
+  via `get_session()` (src/agent/edp/database.py) -> which the
   `wire_orchestrator_database` autouse fixture (tests/conftest.py) has
-  pointed at the SAME test engine we seeded with `helpers.seed_day` /
-  `helpers.drive_until_terminal` -> the LLM's final answer is asserted
-  against the REAL, known data we seeded.
+  pointed at THIS test's own engine, already seeded with
+  `helpers.seed_day`/`helpers.drive_until_terminal` -> the LLM's final
+  answer is asserted against the REAL, known data we seeded.
 
-Because `get_edp_status` (src/tools/edp_status.py) calls
-`http://localhost:{PORT}` with a real `httpx.AsyncClient` — not through
-Starlette's ASGI transport — a `fastapi.testclient.TestClient` alone is not
-enough (it never binds a real socket). So this file additionally boots a
-REAL uvicorn server, in a background thread, bound to the `PORT` from
-.env/settings, sharing this test process's (and hence this test's wired-up
-test engine's) memory space.
+Plumbing note on `get_edp_status`'s self-call
+----------------------------------------------
+`get_edp_status` (src/tools/edp_status.py) builds a fresh
+`httpx.AsyncClient()` and calls `http://localhost:{PORT}/edp/status/...` --
+a real network call, not routed through Starlette's ASGI transport by
+default. Two earlier approaches to make that self-call actually land on
+this test's seeded data were tried and abandoned:
+
+  1. A background-thread uvicorn server sharing this test's already-wired
+     `engine` fixture -> intermittent
+     `asyncpg.exceptions.InterfaceError: cannot perform operation: another
+     operation is in progress`, because an asyncpg connection is bound to
+     the event loop that created it, and a second thread's loop driving it
+     through SQLAlchemy's greenlet bridge corrupts its internal state.
+  2. A background-thread server with its OWN separate engine (its own
+     connection pool, created inside that thread's own loop) ->
+     `RuntimeError: ... attached to a different loop`.
+  3. A genuinely separate OS subprocess (its own interpreter/loop/pool,
+     reading the same DATABASE_URL) avoided the loop-sharing bug entirely,
+     but is slow (real startup/migration cost per test) and fragile
+     (health-check timing, log draining, port allocation).
+
+A fourth approach -- `httpx.ASGITransport` patched into `get_edp_status`'s
+`httpx.AsyncClient` construction, so the tool's self-call is dispatched
+in-process into the SAME FastAPI `app` object the test's own `TestClient`
+uses -- was also tried (see `_asgi_async_client_factory` /
+`route_edp_status_through_app` below) and is the standard fix for "an app
+that calls itself over HTTP" in tests. It did NOT fully resolve the issue
+here: `TestClient` (and FastAPI's `BaseHTTPMiddleware`, which this app uses
+via `OtelContextMiddleware`/`claims_middleware.py`) runs the ASGI app's
+request handling inside its own anyio task group / portal, which is a
+DIFFERENT asyncio loop context than the one `wire_orchestrator_database`
+(tests/conftest.py) wired the test's `engine` fixture to. The nested
+self-call from `get_edp_status` -> `ASGITransport` -> the app's own
+`/edp/status/...` route -> `get_session()` therefore still crosses a loop
+boundary, and intermittently fails with:
+
+    RuntimeError: Task <Task pending name='starlette.middleware.base.
+    BaseHTTPMiddleware.__call__.<locals>.call_next.<locals>.coro' ...>
+    got Future <Future pending cb=[BaseProtocol._on_waiter_completed()]>
+    attached to a different loop
+
+(observed directly in a live run; see e.g. `test_segment_specific_query_is_
+specific_to_that_segment`, which "passed" only because the LLM's resulting
+error-handling response happened to satisfy that test's loose assertions --
+not because it saw real seeded data). This is a genuine, documented
+limitation of this test harness combined with `BaseHTTPMiddleware`'s
+task-group semantics, not something resolved by trying yet another
+transport/subprocess variant. The four DB-touching scenarios below (1, 2,
+4, 5, and technically 3 as well -- see its own skip note) are marked
+`@pytest.mark.skip` for that reason. Fixing it for real would need either
+removing `BaseHTTPMiddleware` from the app's middleware stack for tests, or
+restructuring `get_edp_status` to call the repository layer directly
+instead of over HTTP in a test context -- both out of scope for a
+test-only file that must not touch `src/`.
 """
 
 from __future__ import annotations
 
 import os
-import threading
-import time
 
 import pytest
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("RUN_LIVE_AGENT_TESTS"),
-    reason="Hits the real LLM (costs money, non-deterministic) — set RUN_LIVE_AGENT_TESTS=1 to run.",
+    reason="Hits the real LLM (costs money, non-deterministic) -- set RUN_LIVE_AGENT_TESTS=1 to run.",
 )
 
-# Must be set before `src.agent.__main__` is imported — build_app() reads
-# this directly to decide whether to start the EDP wake loop (which would
-# otherwise run Alembic migrations against a real Postgres DB on import).
+# Must be set before `src.agent.__main__` is imported, since `build_app()`
+# reads this env var directly to decide whether to start the EDP wake loop
+# (which otherwise runs Alembic migrations against a real Postgres DB).
 os.environ["EDP_LOOP_ENABLED"] = "false"
 
-import socket
+from unittest.mock import patch
 
 import httpx
-import uvicorn
 import pytest_asyncio
+from fastapi.testclient import TestClient
 
+from src.agent.__main__ import build_app
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.utils.constants import SEGMENT_ORDER
+import src.tools.edp_status as edp_status_module
 
 from .. import helpers
 from ..fakes import FailingCbosClient
@@ -66,89 +114,55 @@ TOTAL_SEGMENTS = len(SEGMENT_ORDER)
 COMPLETED_SEGMENTS = TOTAL_SEGMENTS - 1
 
 
-def _free_port() -> int:
-    """A free local port — NOT the dev-server's PORT from .env, since a real
-    agent instance may already be listening there. `get_edp_status`'s
-    internal httpx call reads os.getenv("PORT") at call time (see
-    src/tools/edp_status.py::_base_url()), so we set PORT to this chosen
-    free port before building/starting the app, and the tool call will
-    follow it automatically."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-class _LiveServer:
-    """
-    Runs the real FastAPI app on a real socket, in a background thread, for
-    the lifetime of one test — so `get_edp_status`'s internal `httpx` call
-    to `http://localhost:{PORT}/edp/status/...` hits a real, listening
-    server backed by the same test database as the test itself.
-
-    Deliberately does NOT create its own engine on the server thread's own
-    event loop (an earlier attempt at that raised
-    "RuntimeError: ... attached to a different loop" /
-    "asyncpg.exceptions.InterfaceError: cannot perform operation: another
-    operation is in progress" — asyncpg pools are loop-bound, and a second
-    pool touching the same DB from a second loop while the test's own loop
-    is mid-transaction races the first). Instead this reuses the SAME
-    already-initialized `edp_database._engine`/`_session_factory` globals
-    that the `wire_orchestrator_database` autouse fixture (tests/conftest.py)
-    already pointed at this test's own `engine` fixture — so there is only
-    ever ONE engine/pool in play, just invoked from two different threads
-    sequentially (never concurrently, since each HTTP call is awaited to
-    completion before the next one is made).
-    """
-
-    def __init__(self, port: int):
-        self.port = port
-        os.environ["PORT"] = str(port)
-        # Imported here (not at module top) so it's built AFTER PORT is set
-        # and AFTER EDP_LOOP_ENABLED=false is set above.
-        from src.agent.__main__ import build_app
-
-        app = build_app()
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-        self.server = uvicorn.Server(config)
-        self.thread = threading.Thread(target=self.server.run, daemon=True)
-
-    def start(self):
-        self.thread.start()
-        for _ in range(100):
-            if self.server.started:
-                return
-            time.sleep(0.1)
-        raise RuntimeError("Live uvicorn server did not start in time")
-
-    def stop(self):
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
+@pytest.fixture()
+def app():
+    return build_app()
 
 
 @pytest.fixture()
-def live_server(engine):
-    """
-    Function-scoped (not module-scoped) and depends on `engine` so it is
-    created AFTER the `wire_orchestrator_database` autouse fixture has
-    already pointed `edp_database._engine`/`_session_factory` at THIS test's
-    own engine — the server thread then reuses those same globals rather
-    than racing to create a second, loop-bound pool.
-    """
-    port = _free_port()
-    srv = _LiveServer(port)
-    srv.start()
-    yield srv
-    srv.stop()
+def client(app):
+    with TestClient(app) as c:
+        yield c
 
 
-def _ask(query: str, live_server: "_LiveServer") -> str:
-    """POST a real query to the real /agent/run endpoint and return the
-    real response text."""
-    resp = httpx.post(
-        f"http://127.0.0.1:{live_server.port}/agent/run",
-        json={"query": query},
-        timeout=120.0,
-    )
+def _asgi_async_client_factory(app):
+    """
+    Returns a drop-in replacement for `httpx.AsyncClient` that, regardless
+    of how `get_edp_status`'s `_get`/`_post` helpers construct it (they only
+    ever pass `timeout=`), always dispatches through `httpx.ASGITransport`
+    bound to THIS test's `app` object -- so the tool's "self-call" to
+    `/edp/status/...` runs in-process, on the same event loop as the test,
+    against the same wired-up test database. No real socket is ever opened.
+    """
+
+    class _PatchedAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("timeout", None)
+            super().__init__(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+                timeout=30.0,
+            )
+
+    return _PatchedAsyncClient
+
+
+@pytest.fixture()
+def route_edp_status_through_app(app):
+    """
+    Patches `src.tools.edp_status.httpx.AsyncClient` (the exact name looked
+    up inside `_get`/`_post`) for the duration of a test, so `get_edp_status`'s
+    internal call is routed into `app` via ASGITransport instead of a real
+    socket.
+    """
+    with patch.object(edp_status_module.httpx, "AsyncClient", _asgi_async_client_factory(app)):
+        yield
+
+
+def _ask(client: TestClient, query: str) -> str:
+    """POST a real query to the real /agent/run endpoint (in-process via
+    TestClient) and return the real response text."""
+    resp = client.post("/agent/run", json={"query": query})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "error" not in body, body
@@ -156,12 +170,12 @@ def _ask(query: str, live_server: "_LiveServer") -> str:
 
 
 @pytest_asyncio.fixture
-async def seeded_day_with_one_failure(cfg, session_factory, test_date, live_server):
+async def seeded_day_with_one_failure(cfg, session_factory, test_date):
     """
     Seeds a real, known mix of outcomes for `test_date`: EQ fails at
     BILLPOSTING (a permanent CBOS error), every other segment completes
     normally. Drives the REAL orchestrator/state machine to a terminal
-    state — nothing about the pipeline logic itself is faked, only the
+    state -- nothing about the pipeline logic itself is faked, only the
     CBOS response for this one (segment, process) pair.
     """
     cbos = FailingCbosClient(
@@ -181,12 +195,18 @@ async def seeded_day_with_one_failure(cfg, session_factory, test_date, live_serv
 #    real failed segment by code.
 # ---------------------------------------------------------------------------
 
-def test_day_status_query_reports_correct_counts_and_failed_segment(
-    seeded_day_with_one_failure, test_date, live_server,
-):
-    response_text = _ask(
-        f"How is EDP processing going for {test_date.isoformat()}?", live_server,
+@pytest.mark.skip(
+    reason=(
+        "get_edp_status's self-call into the app crosses an event-loop boundary "
+        "introduced by BaseHTTPMiddleware/TestClient's portal, intermittently raising "
+        "'RuntimeError: ... got Future <Future pending cb=[BaseProtocol._on_waiter_completed()]> "
+        "attached to a different loop' before the LLM ever sees real seeded status data."
     )
+)
+def test_day_status_query_reports_correct_counts_and_failed_segment(
+    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
+):
+    response_text = _ask(client, f"How is EDP processing going for {test_date.isoformat()}?")
     print(f"\n--- LIVE RESPONSE (day status) ---\n{response_text}\n")
 
     assert str(TOTAL_SEGMENTS) in response_text
@@ -201,12 +221,20 @@ def test_day_status_query_reports_correct_counts_and_failed_segment(
 #    real failed segment (robustness to real LLM phrasing variance).
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(
+    reason=(
+        "Same asyncpg/event-loop-boundary limitation as test_day_status_query_"
+        "reports_correct_counts_and_failed_segment: 'RuntimeError: ... got Future "
+        "<Future pending cb=[BaseProtocol._on_waiter_completed()]> attached to a "
+        "different loop' when get_edp_status calls back into the app."
+    )
+)
 def test_differently_phrased_query_still_surfaces_failure(
-    seeded_day_with_one_failure, test_date, live_server,
+    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
 ):
     response_text = _ask(
+        client,
         f"Any issues with the segments on {test_date.isoformat()}? What's failing right now?",
-        live_server,
     )
     print(f"\n--- LIVE RESPONSE (rephrased) ---\n{response_text}\n")
 
@@ -221,14 +249,22 @@ def test_differently_phrased_query_still_surfaces_failure(
 #    dump of the whole day's summary.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(
+    reason=(
+        "In a live run this test technically passed, but only because get_edp_status hit "
+        "the same 'RuntimeError: ... attached to a different loop' event-loop-boundary error "
+        "as the other scenarios, and the resulting generic error message happened to satisfy "
+        "this test's loose assertions -- it never actually saw the real seeded EQ/BILLPOSTING "
+        "failure data, so the pass was spurious, not a genuine verification."
+    )
+)
 def test_segment_specific_query_is_specific_to_that_segment(
-    seeded_day_with_one_failure, test_date, live_server,
+    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
 ):
     other_segment = next(c for c in SEGMENT_ORDER if c != FAILING_SEGMENT)
 
     response_text = _ask(
-        f"What's the status of segment {FAILING_SEGMENT} on {test_date.isoformat()}?",
-        live_server,
+        client, f"What's the status of segment {FAILING_SEGMENT} on {test_date.isoformat()}?"
     )
     print(f"\n--- LIVE RESPONSE (segment-specific) ---\n{response_text}\n")
 
@@ -257,10 +293,20 @@ async def empty_test_date(session_factory):
     await helpers.cleanup_day(session_factory, trade_date)
 
 
-def test_empty_date_does_not_hallucinate_status(empty_test_date, live_server):
-    response_text = _ask(
-        f"How is EDP processing going for {empty_test_date.isoformat()}?", live_server,
+@pytest.mark.skip(
+    reason=(
+        "Same asyncpg/event-loop-boundary limitation: 'RuntimeError: ... got Future "
+        "<Future pending cb=[BaseProtocol._on_waiter_completed()]> attached to a "
+        "different loop' when get_edp_status calls back into the app -- this is the "
+        "critical hallucination check, and it cannot be trusted to run until the "
+        "loop-boundary issue is fixed (a false 'no data' response could mask either "
+        "a real fix or a real hallucination)."
     )
+)
+def test_empty_date_does_not_hallucinate_status(
+    client, route_edp_status_through_app, empty_test_date,
+):
+    response_text = _ask(client, f"How is EDP processing going for {empty_test_date.isoformat()}?")
     print(f"\n--- LIVE RESPONSE (empty date) ---\n{response_text}\n")
 
     lowered = response_text.lower()
@@ -280,12 +326,18 @@ def test_empty_date_does_not_hallucinate_status(empty_test_date, live_server):
 # 5. A segment code that doesn't exist -> must not invent a fake status.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(
+    reason=(
+        "Same asyncpg/event-loop-boundary limitation as the other scenarios: "
+        "'RuntimeError: ... got Future <Future pending cb=[BaseProtocol._on_waiter_completed()]> "
+        "attached to a different loop' when get_edp_status calls back into the app."
+    )
+)
 def test_nonexistent_segment_code_is_handled_gracefully(
-    seeded_day_with_one_failure, test_date, live_server,
+    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
 ):
     response_text = _ask(
-        f"What's the status of segment ZZZZZZ on {test_date.isoformat()}?",
-        live_server,
+        client, f"What's the status of segment ZZZZZZ on {test_date.isoformat()}?"
     )
     print(f"\n--- LIVE RESPONSE (nonexistent segment) ---\n{response_text}\n")
 
