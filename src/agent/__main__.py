@@ -247,9 +247,20 @@ def build_app() -> FastAPI:
 
     FastAPIInstrumentor().instrument_app(app)
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
+    # CORS origins are config-driven: agent_config.json -> env.CORS_ALLOW_ORIGINS
+    # (comma-separated), bridged into the environment at startup. Falls back to
+    # the built-in dev origins if unset. Set it to "*" to allow any origin —
+    # which forces allow_credentials=False, since browsers reject the
+    # wildcard-origin + credentials combination.
+    _cors_raw = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+    if _cors_raw == "*":
+        _cors_origins = ["*"]
+        _cors_allow_credentials = False
+    elif _cors_raw:
+        _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+        _cors_allow_credentials = True
+    else:
+        _cors_origins = [
             "https://aifabric-frontend.dev.cams.covasant.io",
             "http://localhost:3000",
             "http://localhost:3001",
@@ -259,8 +270,14 @@ def build_app() -> FastAPI:
             "http://127.0.0.1:3001",
             "http://127.0.0.1:8000",
             "http://127.0.0.1:5173",
-        ],
-        allow_credentials=True,
+        ]
+        _cors_allow_credentials = True
+
+    logger.info(f"CORS allow_origins={_cors_origins} allow_credentials={_cors_allow_credentials}")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=_cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

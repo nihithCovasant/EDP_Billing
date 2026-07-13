@@ -66,7 +66,8 @@
       "EMAIL_MAX_RETRIES": "2",
       "EMAIL_RETRY_BACKOFF_SECONDS": "2",
       "EMAIL_SERVICE_HOST": "0.0.0.0",
-      "EMAIL_SERVICE_PORT": "9200"
+      "EMAIL_SERVICE_PORT": "9200",
+      "CORS_ALLOW_ORIGINS": "https://aifabric-frontend.dev.cams.covasant.io,http://localhost:3000,http://localhost:3001,http://localhost:8000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:8000,http://127.0.0.1:5173"
     },
     "instructions": "You are a knowledgeable AI assistant with access to various tools and knowledge sources.\n\nYour role is to:\n- Provide accurate, well-researched answers using retrieved information\n- Cite sources when relevant information is found\n- Clearly state when information is not available\n- Ask clarifying questions when queries are ambiguous\n- Maintain accuracy over completeness\n\nAlways prioritize factual accuracy and cite your sources when possible.",
     "llm_config": {
