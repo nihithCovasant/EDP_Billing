@@ -188,21 +188,31 @@ class HealthChecker:
             ComponentHealth with database status
         """
         try:
-            # The PostgreSQL connection string now lives in agent_config.json
-            # (secrets.database.postgres.connection_string) — resolved the same
-            # way the EDP agent resolves it — not on the Settings object.
+            # Resolve the SAME database URL the agent actually uses — env vars
+            # (DATABASE_URL / DB_HOST / DB_NAME / ...) override
+            # agent_config.json, see src/agent/edp/config.py. Reporting this
+            # (rather than only the config file) tells you exactly which DB the
+            # running agent — and its Alembic migrations — is pointed at.
+            conn_string = ""
             try:
-                from src.config.agent_config import get_secrets, load_agent_config
+                from src.agent.edp.config import load_edp_config
 
-                conn_string = (
-                    get_secrets("default", load_agent_config())
-                    .get("database", {})
-                    .get("postgres", {})
-                    .get("connection_string", "")
-                    or ""
-                ).strip()
+                conn_string = (load_edp_config().database_url or "").strip()
             except Exception:
-                conn_string = ""
+                # Fall back to the raw config secret if the EDP config can't be
+                # resolved (e.g. nothing configured at all).
+                try:
+                    from src.config.agent_config import get_secrets, load_agent_config
+
+                    conn_string = (
+                        get_secrets("default", load_agent_config())
+                        .get("database", {})
+                        .get("postgres", {})
+                        .get("connection_string", "")
+                        or ""
+                    ).strip()
+                except Exception:
+                    conn_string = ""
 
             if not conn_string:
                 return ComponentHealth(
@@ -211,6 +221,25 @@ class HealthChecker:
                     message="Database not configured",
                     details={"type": "none"},
                 )
+
+            # Parse host/port/database/user for reporting — NEVER expose the
+            # password. `target` is the human-readable "which DB am I on" string.
+            from urllib.parse import urlparse
+
+            parsed = urlparse(conn_string)
+            db_host = parsed.hostname or "?"
+            db_port = parsed.port or 5432
+            db_name = (parsed.path or "").lstrip("/") or "?"
+            db_user = parsed.username or "?"
+            target = f"{db_host}:{db_port}/{db_name}"
+            details = {
+                "type": "postgresql",
+                "host": db_host,
+                "port": db_port,
+                "database": db_name,
+                "user": db_user,
+                "target": target,
+            }
 
             # psycopg (v3) wants a plain libpq URL — strip the SQLAlchemy driver
             # suffix (+asyncpg / +psycopg) the app uses in its connection string.
@@ -238,24 +267,24 @@ class HealthChecker:
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.HEALTHY,
-                    message="Database connection successful",
-                    details={"type": "postgresql"},
+                    message=f"Connected to {target}",
+                    details=details,
                 )
 
             except ImportError:
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.HEALTHY,
-                    message="PostgreSQL driver (psycopg) not installed — skipping connectivity test",
-                    details={"type": "postgresql", "driver": "missing"},
+                    message=f"psycopg not installed — skipping probe (target {target})",
+                    details={**details, "driver": "missing"},
                 )
             except Exception as e:
-                logger.error(f"Database health check failed: {e}")
+                logger.error(f"Database health check failed (target={target}): {e}")
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.UNHEALTHY,
-                    message=f"Database connection failed: {str(e)}",
-                    details={"type": "postgresql"},
+                    message=f"Connection to {target} failed: {str(e)}",
+                    details=details,
                 )
 
         except Exception as e:
