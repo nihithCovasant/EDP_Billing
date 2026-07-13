@@ -85,7 +85,7 @@ async def wire_orchestrator_database(engine):
 def no_real_emails(monkeypatch):
     """
     Prevent tests from ever sending real alert emails, regardless of what's
-    configured in global_email_service/.env on the developer's machine.
+    configured in the developer's .env (EMAIL_DRY_RUN/EMAIL_GRAPH_*).
     """
     import global_email_service
 

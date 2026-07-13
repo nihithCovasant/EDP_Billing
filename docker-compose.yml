@@ -9,19 +9,47 @@ services:
     container_name: edp-billing-agent
     ports:
       - "8005:8005"
-    # All runtime configuration — server (host/port/log level), LLM via the
-    # LiteLLM gateway, CBOS connection, EDP wake loop, email alerts, and the
-    # PostgreSQL connection string — comes from the mounted agent_config.json
-    # (its agent_config.env / .secrets / .edp blocks). It is the single source
-    # of truth, so NO environment variables are injected here (the config->env
-    # bridge uses setdefault(), meaning any env var set here would override the
-    # file). Override per-deployment only via an explicit env var or by mounting
-    # an alternate config with APP_CONFIG_PATH.
-    #
-    # The database is whatever agent_config.json ->
-    # secrets.database.postgres.connection_string points at (currently the MOFSL
-    # RDS instance), so this stack starts no local postgres container — the
-    # container must be able to reach that database host.
+    environment:
+      # --- Agent server ---
+      AGENT_NAME: ${AGENT_NAME:-EDP Billing Agent}
+      HOST: 0.0.0.0
+      PORT: 8005
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # --- EDP wake loop (see src/agent/edp/config.py) ---
+      EDP_WAKE_INTERVAL_SECONDS: ${EDP_WAKE_INTERVAL_SECONDS:-60}
+
+      # --- CBOS connection (see src/tools/cbos_client.py) ---
+      # Point at the real MOFSL CBOS system, or at a standalone mock_cbos
+      # server (docker run/compose it separately — see mock_cbos/README.md).
+      CBOS_STATUS_URL: ${CBOS_STATUS_URL:?CBOS_STATUS_URL must be set}
+      CBOS_PROCESS_URL: ${CBOS_PROCESS_URL:?CBOS_PROCESS_URL must be set}
+      CBOS_USE_MOCK: ${CBOS_USE_MOCK:-false}
+      CBOS_LOGIN_ID: ${CBOS_LOGIN_ID:-CV0001}
+
+      # --- PostgreSQL (edpb_* tables — see docs/edp_billing.dbml) ---
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-EDP_Billing}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+
+      # --- Terminal-status email alerts (global_email_service) ---
+      # global_email_service/.env is never loaded in this container (no cwd
+      # there) — these container env vars are the only source. true = log
+      # only, false = actually send via Microsoft Graph.
+      EMAIL_DRY_RUN: ${EMAIL_DRY_RUN:-true}
+      EMAIL_GRAPH_TENANT_ID: ${EMAIL_GRAPH_TENANT_ID:-}
+      EMAIL_GRAPH_CLIENT_ID: ${EMAIL_GRAPH_CLIENT_ID:-}
+      EMAIL_GRAPH_CLIENT_SECRET: ${EMAIL_GRAPH_CLIENT_SECRET:-}
+      EMAIL_GRAPH_SENDER: ${EMAIL_GRAPH_SENDER:-rms@covasant.com}
+      EMAIL_DEFAULT_TO: ${EMAIL_DEFAULT_TO:-}
+      EMAIL_DEFAULT_CC: ${EMAIL_DEFAULT_CC:-}
+
+      # --- LLM API keys (agent template scaffolding — unused by EDP flows) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-not-used-locally}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-sk-ant-not-used-locally}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-not-used-locally}
     volumes:
       # Mounted to /app/config; docker-entrypoint.sh copies it to the internal
       # path (/app/src/config/agent_config.json) at startup — see inject_config().

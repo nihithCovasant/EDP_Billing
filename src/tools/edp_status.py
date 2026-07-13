@@ -33,6 +33,48 @@ _STATUS_EMOJI = {
     "FAILED": "❌",
 }
 
+# Small local copy of segment/process code <-> common-name aliases, so users
+# can say "CASH" or "Collateral Valuation" instead of the raw code. Kept
+# local (not imported from src/agent/edp/utils/constants) for the same
+# decoupling reason as the rest of this file — these rarely change, and
+# duplicating a handful of names is cheaper than coupling to EDP internals.
+_CODE_ALIASES: Dict[str, str] = {
+    "EQ": "EQ", "CASH": "EQ", "EQUITY": "EQ",
+    "DR": "DR", "F&O": "DR", "FO": "DR", "FNO": "DR", "DERIVATIVES": "DR",
+    "CUR": "CUR", "CD": "CUR", "CURRENCY": "CUR",
+    "SLB": "SLB",
+    "NCDEX": "NCDEX",
+    "NCDEXPHY": "NCDEXPHY", "NCDEX PHY": "NCDEXPHY", "NCDEX PHYSICAL": "NCDEXPHY",
+    "MCX": "MCX",
+    "MCXPHY": "MCXPHY", "MCX PHY": "MCXPHY", "MCX PHYSICAL": "MCXPHY",
+    "NSECOM": "NSECOM", "NSE COMMODITY": "NSECOM", "COMMODITY": "NSECOM",
+    "COLVAL": "COLVAL", "COLLATERAL VALUATION": "COLVAL",
+    "COLALLOC": "COLALLOC", "COLLATERAL ALLOCATION": "COLALLOC",
+    "MTFFT": "MTFFT", "MTF FUND TRANSFER": "MTFFT", "MTF": "MTFFT",
+    "DMRPT": "DMRPT", "DAILY MARGIN REPORTING": "DMRPT",
+    "DMSTMT": "DMSTMT", "DAILY MARGIN STATEMENTS": "DMSTMT",
+}
+
+_TIME_FORMATS = ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H.%M")
+
+
+def _resolve_code(identifier: str) -> Optional[str]:
+    return _CODE_ALIASES.get(identifier.strip().upper())
+
+
+def _normalize_time(raw: str) -> str:
+    """Best-effort "HH:MM" (24h) normalizer, so the tool still works if the
+    LLM passes "5 PM" instead of converting it itself. Falls back to the
+    raw string unchanged if none of the known formats match (upload
+    validation will surface anything genuinely malformed)."""
+    raw = raw.strip()
+    for fmt in _TIME_FORMATS:
+        try:
+            return datetime.strptime(raw.upper(), fmt).strftime("%H:%M")
+        except ValueError:
+            continue
+    return raw
+
 
 def _base_url() -> str:
     """This same agent's own base URL — reachable at localhost regardless
@@ -98,6 +140,101 @@ async def upload_edp_workflow_config(workflow_json: dict, uploaded_by: Optional[
         f"- **Uploaded by:** {data.get('uploaded_by')}\n"
         f"- **Config ID:** {data.get('id')}"
         f"{deferred_note}"
+    )
+
+
+@tool
+async def update_edp_segment_window(
+    identifier: str,
+    window_start: Optional[str] = None,
+    window_end: Optional[str] = None,
+    trade_date: Optional[str] = None,
+) -> str:
+    """
+    Change a single segment's or post-trade process's start and/or end time,
+    without needing the user to paste the full workflow config JSON.
+
+    Use this whenever the user asks to update/change/move a segment's or
+    process's start time, end time, or window — e.g. "update the CASH
+    segment start time to 5pm", "push COLVAL's window to start at 3am",
+    "move DR's end time to 9:30pm". This tool fetches today's (or the given
+    date's) active config itself, patches only the matching segment/process,
+    and re-uploads the result — never ask the user for the raw JSON to do
+    this.
+
+    `identifier` is the segment/process code (EQ, DR, CUR, SLB, NCDEX,
+    NCDEXPHY, MCX, MCXPHY, NSECOM, COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT)
+    or a common name (Cash, F&O, CD, Collateral Valuation, ...).
+    `window_start`/`window_end` are times like "17:00" or "5 PM" — at least
+    one is required. `trade_date` is optional (YYYY-MM-DD), defaults to
+    today (IST).
+    """
+    if not window_start and not window_end:
+        return 'Please tell me the new start time and/or end time (e.g. "5 PM" or "17:00").'
+
+    code = _resolve_code(identifier)
+    if not code:
+        return (
+            f'I don\'t recognize "{identifier}" as a segment or post-trade process. Try a code '
+            f"like EQ, DR, CUR, SLB, NCDEX, MCX, NSECOM, COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT, "
+            f"or a common name like Cash, F&O, CD, Collateral Valuation."
+        )
+
+    resolved_date = trade_date or _today_ist()
+    status_code, data = await _get(f"/edp/workflow/{resolved_date}")
+    if status_code == 404:
+        return (
+            f"No workflow config found for **{resolved_date}** (nor any earlier date to carry "
+            f"forward) — nothing to update."
+        )
+    if status_code >= 400:
+        return f"❌ Could not fetch the current config (HTTP {status_code}): {data.get('detail', data)}"
+
+    carried_from_note = (
+        f" (carried forward from **{data.get('trade_date')}**, last uploaded — no config had "
+        f"been re-uploaded specifically for {resolved_date} yet)"
+        if data.get("carried_forward")
+        else ""
+    )
+    workflow_json = data.get("workflow_json") or {}
+    target = next(
+        (s for s in workflow_json.get("segments", []) if s.get("segment_code") == code), None
+    )
+    if target is None:
+        target = next(
+            (p for p in workflow_json.get("post_trade_processes", []) if p.get("process_code") == code),
+            None,
+        )
+    if target is None:
+        return f"**{code}** isn't present in today's ({resolved_date}) active workflow config."
+
+    changes = []
+    if window_start:
+        new_start = _normalize_time(window_start)
+        target["window_start"] = new_start
+        changes.append(f"window_start → {new_start}")
+    if window_end:
+        new_end = _normalize_time(window_end)
+        target["window_end"] = new_end
+        changes.append(f"window_end → {new_end}")
+
+    logger.info(f"[EDP_CHAT] updating {code} on {resolved_date}: {', '.join(changes)}")
+    upload_status, upload_data = await _post(
+        "/edp/workflow/upload",
+        {"workflow_json": workflow_json, "uploaded_by": "chat-user"},
+    )
+    if upload_status >= 400:
+        return f"❌ Update failed (HTTP {upload_status}): {upload_data.get('detail', upload_data)}"
+
+    deferred_note = (
+        f"\n⚠️ Note: today's processing already started, so this was applied to "
+        f"**{upload_data.get('trade_date')}** instead."
+        if upload_data.get("deferred")
+        else ""
+    )
+    return (
+        f"✅ Updated **{code}** ({', '.join(changes)}) and re-uploaded the config for "
+        f"**{upload_data.get('trade_date')}**{carried_from_note}.{deferred_note}"
     )
 
 

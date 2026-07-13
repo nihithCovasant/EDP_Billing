@@ -66,6 +66,16 @@ env vars always win over whatever is in this `.env` file. Note the `.env`
 file is a local-dev convenience only — it is **not** bundled into the
 wheel (see "Building as a library" below).
 
+**When used as a library from the parent EDP agent** (the normal case —
+this package installed as a dependency, imported from `src/agent/edp/`),
+this `.env` file is never read at all: `load_dotenv()` only walks *upward*
+from the process's cwd looking for a file literally named `.env`, and the
+agent's cwd is the repo root, not this subdirectory. All `EMAIL_*`
+variables for the running agent live in the repo root's own `.env`
+instead — see that file's "Terminal-status email alerts" section. This
+folder's `.env` only matters if you run this service completely
+standalone (cwd set to `global_email_service/`).
+
 ```env
 # Azure AD app registration with application permission Mail.Send
 # (admin-consented), scoped to the sender mailbox below.
