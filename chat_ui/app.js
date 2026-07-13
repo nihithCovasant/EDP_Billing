@@ -4,15 +4,74 @@
 const API_URL = "/agent/run";
 const STORAGE_KEY = "edpb_chat_conversation_id";
 
-const SUGGESTED_QUESTIONS = [
+const DEFAULT_SUGGESTIONS = [
   "How is today's EDP processing going?",
   "Download the script with script name VN_09072026.txt",
-  "Calculate 15% GST on 24500",
   "What can you help me with?",
+];
+
+// Simple keyword-driven follow-up suggestions — re-evaluated after every
+// exchange so the chips stay relevant to what the user is actually doing,
+// instead of always showing the same generic starter questions.
+const FOLLOWUP_RULES = [
+  {
+    test: /status|segment|processing|trade|workflow|upload|failed|pending|completed/i,
+    suggestions: [
+      "Show me the status for segment EQ",
+      "Which segments failed today and why?",
+      "Upload a new workflow config",
+    ],
+  },
+  {
+    test: /download|file|script/i,
+    suggestions: [
+      "Download another file",
+      "How is today's EDP processing going?",
+      "What can you help me with?",
+    ],
+  },
+];
+
+const BOT_AVATAR_SVG = `
+  <svg viewBox="0 0 24 24" fill="none">
+    <rect x="3" y="7" width="18" height="13" rx="4" stroke="currentColor" stroke-width="1.6"/>
+    <path d="M12 7V4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="12" cy="3" r="1.2" fill="currentColor"/>
+    <circle cx="8.5" cy="13.5" r="1.3" fill="currentColor"/>
+    <circle cx="15.5" cy="13.5" r="1.3" fill="currentColor"/>
+    <path d="M9 17.5h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </svg>`;
+
+// Big clickable cards shown on the empty/welcome screen only. Clicking one
+// sends that query immediately (see initSuggestionCards below).
+const SUGGESTION_CARDS = [
+  {
+    icon: "icon-status",
+    glyph: "●",
+    title: "Today's status",
+    desc: "See every segment and post-trade process at a glance",
+    query: "How is today's EDP processing going?",
+    featured: true,
+  },
+  {
+    icon: "icon-download",
+    glyph: "↓",
+    title: "Download a script",
+    desc: 'e.g. "get VN_09072026.txt"',
+    query: "Download the script with script name VN_09072026.txt",
+  },
+  {
+    icon: "icon-help",
+    glyph: "?",
+    title: "What can you do?",
+    desc: "Tools, commands, and what to ask me",
+    query: "What can you help me with?",
+  },
 ];
 
 const messagesEl = document.getElementById("messages");
 const suggestionsEl = document.getElementById("suggestions");
+const dayStatusBarEl = document.getElementById("dayStatusBar");
 const formEl = document.getElementById("chatForm");
 const inputEl = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
@@ -20,24 +79,101 @@ const newChatBtn = document.getElementById("newChatBtn");
 
 let conversationId = sessionStorage.getItem(STORAGE_KEY) || null;
 let isSending = false;
+let currentSuggestions = DEFAULT_SUGGESTIONS;
 
 const WELCOME_HTML = `
   <div class="welcome">
-    <div class="welcome-icon">
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
-        <path d="M12 3C7.03 3 3 6.58 3 11c0 2.39 1.19 4.53 3.08 6.02L5 21l4.29-1.53C10.14 19.82 11.05 20 12 20c4.97 0 9-3.58 9-9s-4.03-8-9-8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-        <circle cx="8.5" cy="11" r="1.1" fill="currentColor"/>
-        <circle cx="12" cy="11" r="1.1" fill="currentColor"/>
-        <circle cx="15.5" cy="11" r="1.1" fill="currentColor"/>
-      </svg>
-    </div>
-    <h2>How can I help you today?</h2>
-    <p>Ask me to download a file, check EDP segment status, upload a workflow config, run a calculation, or answer a question — I'll pick the right tool automatically.</p>
+    <span class="welcome-eyebrow">Assistant</span>
+    <h2>What do you need from today's run?</h2>
+    <p>Ask about segment status, retry a failed step, upload a workflow config, or download a script — I'll route it to the right tool and confirm what happened.</p>
+    <div class="suggestion-cards" id="suggestionCards"></div>
   </div>`;
+
+function initSuggestionCards() {
+  const container = document.getElementById("suggestionCards");
+  if (!container) return;
+  container.innerHTML = "";
+  SUGGESTION_CARDS.forEach((card) => {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = `suggestion-card${card.featured ? " featured" : ""}`;
+    el.innerHTML = `
+      <span class="suggestion-card-icon ${card.icon}">${card.glyph}</span>
+      <span class="suggestion-card-title">${card.title}</span>
+      <span class="suggestion-card-desc">${card.desc}</span>
+    `;
+    el.addEventListener("click", () => sendMessage(card.query));
+    container.appendChild(el);
+  });
+}
+
+function showWelcome() {
+  messagesEl.innerHTML = WELCOME_HTML;
+  initSuggestionCards();
+}
+
+// ---------- Live day-status strip (fetched directly from this agent's own
+// EDP API — same-origin, see src/agent/edp/api/status.py) ----------
+
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+function formatDayLabel(isoDate) {
+  const [, month, day] = isoDate.split("-").map(Number);
+  return `${day} ${MONTHS[month - 1]}`;
+}
+
+function todayIso() {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).formatToParts(new Date());
+  const get = (type) => parts.find((p) => p.type === type).value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function buildDayPill(className, count, label, suffix) {
+  if (!count) return "";
+  const suffixHtml = suffix ? ` · ${escapeHtml(suffix)}` : "";
+  return `<span class="day-pill ${className}"><span class="dot"></span><span class="count">${count}</span> ${label}${suffixHtml}</span>`;
+}
+
+async function refreshDayStatus() {
+  const dateIso = todayIso();
+  try {
+    const resp = await fetch(`/edp/status/${dateIso}`);
+    if (!resp.ok) {
+      dayStatusBarEl.classList.add("is-empty");
+      return;
+    }
+    const data = await resp.json();
+    const segments = data.segments || [];
+    if (!segments.length) {
+      dayStatusBarEl.classList.add("is-empty");
+      return;
+    }
+
+    const failedSegs = segments.filter((s) => s.segment_status === "FAILED");
+    const skippedSegs = segments.filter((s) => s.segment_status === "SKIPPED");
+
+    const failedSuffix = failedSegs.length === 1 ? failedSegs[0].segment_code : null;
+    const skippedSuffix =
+      skippedSegs.length === 1 ? (skippedSegs[0].skip_category || skippedSegs[0].skip_reason || "").toLowerCase() : null;
+
+    const html =
+      `<div class="day-date"><span class="day-label">Today</span><span class="day-value">${formatDayLabel(dateIso)}</span></div>` +
+      buildDayPill("completed", data.completed, "Completed") +
+      buildDayPill("in-progress", data.in_progress, "In progress") +
+      buildDayPill("blocked", data.pending, "Pending") +
+      buildDayPill("failed", data.failed, "Failed", failedSuffix) +
+      buildDayPill("skipped", data.skipped, "Skipped", skippedSuffix);
+
+    dayStatusBarEl.innerHTML = html;
+    dayStatusBarEl.classList.remove("is-empty");
+  } catch (err) {
+    dayStatusBarEl.classList.add("is-empty");
+  }
+}
 
 function renderSuggestions() {
   suggestionsEl.innerHTML = "";
-  SUGGESTED_QUESTIONS.forEach((question) => {
+  currentSuggestions.forEach((question) => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = "suggestion-chip";
@@ -49,6 +185,17 @@ function renderSuggestions() {
     });
     suggestionsEl.appendChild(chip);
   });
+}
+
+function updateSuggestions(lastQuery, lastResponse) {
+  const combined = `${lastQuery} ${lastResponse}`;
+  const match = FOLLOWUP_RULES.find((rule) => rule.test.test(combined));
+  currentSuggestions = match ? match.suggestions : DEFAULT_SUGGESTIONS;
+  renderSuggestions();
+}
+
+function formatTime(date) {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function clearWelcome() {
@@ -155,7 +302,11 @@ function appendMessage(role, text, { markdown = false } = {}) {
 
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.textContent = role === "user" ? "You" : "AI";
+  if (role === "user") {
+    avatar.innerHTML = '<span class="avatar-initials">You</span>';
+  } else {
+    avatar.innerHTML = BOT_AVATAR_SVG;
+  }
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -165,12 +316,21 @@ function appendMessage(role, text, { markdown = false } = {}) {
     bubble.textContent = text;
   }
 
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(new Date());
+
+  const col = document.createElement("div");
+  col.className = "bubble-col";
+  col.appendChild(bubble);
+  col.appendChild(time);
+
   if (role === "user") {
-    row.appendChild(bubble);
+    row.appendChild(col);
     row.appendChild(avatar);
   } else {
     row.appendChild(avatar);
-    row.appendChild(bubble);
+    row.appendChild(col);
   }
 
   messagesEl.appendChild(row);
@@ -186,7 +346,7 @@ function appendTypingIndicator() {
 
   const avatar = document.createElement("div");
   avatar.className = "avatar";
-  avatar.textContent = "AI";
+  avatar.innerHTML = BOT_AVATAR_SVG;
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -239,7 +399,10 @@ async function sendMessage(query) {
       sessionStorage.setItem(STORAGE_KEY, conversationId);
     }
 
-    appendMessage("bot", data.response || "No response generated.", { markdown: true });
+    const responseText = data.response || "No response generated.";
+    appendMessage("bot", responseText, { markdown: true });
+    updateSuggestions(query, responseText);
+    refreshDayStatus();
   } catch (err) {
     removeTypingIndicator();
     appendMessage(
@@ -272,7 +435,12 @@ inputEl.addEventListener("keydown", (event) => {
 newChatBtn.addEventListener("click", () => {
   conversationId = null;
   sessionStorage.removeItem(STORAGE_KEY);
-  messagesEl.innerHTML = WELCOME_HTML;
+  showWelcome();
+  currentSuggestions = DEFAULT_SUGGESTIONS;
+  renderSuggestions();
+  refreshDayStatus();
 });
 
+initSuggestionCards();
 renderSuggestions();
+refreshDayStatus();

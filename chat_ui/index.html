@@ -9,31 +9,27 @@
 <body>
   <div class="app">
     <header class="topbar">
-      <div class="topbar-inner content-col">
-        <div class="brand">
-          <img src="assets/motilal_oswal_logo.png" alt="Motilal Oswal" class="brand-logo" />
-          <div class="title-block">
-            <h1><span class="status-dot" title="Agent online"></span> EDP Billing Assistant</h1>
-            <p>Ask questions, run tools, and check on trade-day processing</p>
-          </div>
+      <div class="topbar-inner">
+        <img src="assets/motilal_oswal_logo.png" alt="Motilal Oswal" class="brand-logo" />
+        <div class="title-block">
+          <h1>EDP Billing Assistant</h1>
+          <p>Trade-day processing · Motilal Oswal</p>
         </div>
         <button id="newChatBtn" class="new-chat-btn" title="Start a new conversation">+ New chat</button>
       </div>
     </header>
 
+    <div class="day-status-wrap">
+      <div id="dayStatusBar" class="day-status-bar content-col"></div>
+    </div>
+
     <main class="chat-area">
       <div id="messages" class="messages content-col">
         <div class="welcome">
-          <div class="welcome-icon">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none">
-              <path d="M12 3C7.03 3 3 6.58 3 11c0 2.39 1.19 4.53 3.08 6.02L5 21l4.29-1.53C10.14 19.82 11.05 20 12 20c4.97 0 9-3.58 9-9s-4.03-8-9-8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-              <circle cx="8.5" cy="11" r="1.1" fill="currentColor"/>
-              <circle cx="12" cy="11" r="1.1" fill="currentColor"/>
-              <circle cx="15.5" cy="11" r="1.1" fill="currentColor"/>
-            </svg>
-          </div>
-          <h2>How can I help you today?</h2>
-          <p>Ask me to download a file, check EDP segment status, upload a workflow config, run a calculation, or answer a question — I'll pick the right tool automatically.</p>
+          <span class="welcome-eyebrow">Assistant</span>
+          <h2>What do you need from today's run?</h2>
+          <p>Ask about segment status, retry a failed step, upload a workflow config, or download a script — I'll route it to the right tool and confirm what happened.</p>
+          <div class="suggestion-cards" id="suggestionCards"></div>
         </div>
       </div>
 
@@ -43,7 +39,7 @@
         <textarea
           id="chatInput"
           class="composer-input"
-          placeholder="Message EDP Billing Assistant…"
+          placeholder="Ask EDP Billing Assistant…"
           rows="1"
           required
         ></textarea>
