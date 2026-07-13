@@ -45,8 +45,11 @@ ENV LOG_LEVEL=INFO
 
 EXPOSE 9200
 
+# Probe the port the server actually binds: EMAIL_SERVICE_PORT first, then PORT,
+# then the 9200 default (mirrors load_server_settings()), so the healthcheck
+# follows any runtime port override instead of failing on a hardcoded value.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9200/health/live')" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:%s/health/live' % (os.getenv('EMAIL_SERVICE_PORT') or os.getenv('PORT') or '9200'))" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "global_email_service.main"]

@@ -70,12 +70,22 @@ RUN mkdir -p /app/config /app/secrets
 # Override per-deployment only by passing an explicit env var or mounting an
 # alternate config via APP_CONFIG_PATH.
 #
-# The port literal below (8005) is a build-time contract for EXPOSE/HEALTHCHECK
-# and MUST match agent_config.json -> agent_config.env.PORT.
+# Bind all interfaces on port 8005 by default so the container is reachable
+# from outside. These are runtime DEFAULTS: a host may still override PORT (the
+# app and the healthcheck below both honor it), but with no override the server
+# always comes up on 0.0.0.0:8005. Run/publish it with `-p 8005:8005`.
+# agent_config.json remains the single source for everything else.
+ENV HOST=0.0.0.0
+ENV PORT=8005
+
+# EXPOSE documents the default port. The healthcheck reads PORT at runtime
+# (defaulting to 8005) so it always probes the port the server actually bound —
+# hardcoding it would fail the probe whenever a host overrides PORT and make the
+# container look unreachable even though it's serving.
 EXPOSE 8005
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8005/health/live')" || exit 1
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:%s/health/live' % os.getenv('PORT','8005'))" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "src.agent"]

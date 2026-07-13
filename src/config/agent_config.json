@@ -107,11 +107,11 @@
         }
       },
       "edpb_download": {
-        "api_url": "http://localhost:9300/api/edpb/download",
+        "api_url": "http://10.10.13.154:7000/portal/download",
         "portal": "bse_edpb",
         "member_code": "0446",
         "user_id": "0446",
-        "password": "Mosl@6666",
+        "password": "Mosl@7777",
         "edpb_action": "vn"
       }
     },
