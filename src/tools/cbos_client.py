@@ -213,12 +213,59 @@ def to_ddmmmyyyy(d: date) -> str:
 # Client
 # =============================================================================
 
+@dataclass
+class _HttpResponse:
+    """Outcome of one CBOS HTTP POST, decoupled from how it was sent.
+
+    ``error`` is None on any request that completed (even a non-200); it is
+    set only when the request itself raised (network/timeout), mirroring the
+    old per-method ``except Exception`` path. ``status`` is 0 in that case.
+    """
+
+    status: int
+    body: str
+    elapsed_ms: int
+    error: Optional[str] = None
+
+    @property
+    def raised(self) -> bool:
+        return self.error is not None
+
+
+class _HttpTransport:
+    """The single place CBOS HTTP requests leave the process.
+
+    Injectable at the CbosClient seam: a test can pass a fake transport to
+    drive the client's real parsing and status-branching without a socket
+    and without monkeypatching individual CbosClient methods.
+    """
+
+    def __init__(self, timeout_seconds: float):
+        self.timeout = timeout_seconds
+
+    async def post(self, url: str, payload: dict) -> _HttpResponse:
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload)
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            return _HttpResponse(status=resp.status_code, body=resp.text, elapsed_ms=elapsed_ms)
+        except Exception as exc:
+            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+            return _HttpResponse(status=0, body="", elapsed_ms=elapsed_ms, error=str(exc))
+
+
 class CbosClient:
     """
     Async HTTP client for all CBOS API calls.
 
     use_mock=True  → returns deterministic local responses, no network required.
     use_mock=False → hits the real CBOS endpoints (requires VPN / corporate network).
+
+    All real-mode requests go through a single injectable ``_HttpTransport``
+    seam (``transport`` arg), so the request skeleton (timing, status
+    handling, exception capture) lives in one place instead of being
+    copy-pasted into every method.
     """
 
     def __init__(
@@ -227,11 +274,13 @@ class CbosClient:
         process_url: str,
         use_mock: bool = True,
         timeout_seconds: float = 30.0,
+        transport: Optional["_HttpTransport"] = None,
     ):
         self.status_url = status_url.rstrip("/")    # http://10.167.202.234:8087
         self.process_url = process_url.rstrip("/")  # http://10.167.202.164:8003
         self.use_mock = use_mock
         self.timeout = timeout_seconds
+        self._transport = transport or _HttpTransport(timeout_seconds)
 
         # Mock state — controls when polls "become ready"
         self._mock_ready_after: int = 2
@@ -279,47 +328,50 @@ class CbosClient:
             f"| POST {url}"
         )
 
-        t0 = _time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
-                elapsed_ms = int((_time.monotonic() - t0) * 1000)
-                body = resp.text[:2000]
-                if resp.status_code != 200:
-                    logger.error(
-                        f"[CBOS] segment={segment} api=file_process_status process={process_name} "
-                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
-                    )
-                    return FileStatusResult(
-                        response="FALSE",
-                        raw_body=body,
-                        http_status=resp.status_code,
-                        error=f"HTTP {resp.status_code}",
-                        is_transient=_is_transient_http_status(resp.status_code),
-                    )
-                msg = _parse_msg(body)
-                if msg.startswith("ERROR:"):
-                    logger.error(
-                        f"[CBOS] segment={segment} api=file_process_status process={process_name} "
-                        f"| CBOS rejected request status={msg} elapsed_ms={elapsed_ms}"
-                    )
-                    return FileStatusResult(
-                        response="FALSE",
-                        raw_body=body,
-                        http_status=200,
-                        error=msg,
-                        is_transient=False,
-                    )
-                logger.info(
-                    f"[CBOS] segment={segment} api=file_process_status process={process_name} "
-                    f"| response={msg} elapsed_ms={elapsed_ms}"
-                )
-                return FileStatusResult(response=msg, raw_body=body, http_status=200)
-        except Exception as exc:
-            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        resp = await self._transport.post(url, payload)
+        if resp.raised:
             logger.error(
                 f"[CBOS] segment={segment} api=file_process_status process={process_name} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={resp.error}"
+            )
+            return FileStatusResult(response="FALSE", error=resp.error, is_transient=True)
+
+        body = resp.body[:2000]
+        if resp.status != 200:
+            logger.error(
+                f"[CBOS] segment={segment} api=file_process_status process={process_name} "
+                f"| HTTP {resp.status} elapsed_ms={resp.elapsed_ms}"
+            )
+            return FileStatusResult(
+                response="FALSE",
+                raw_body=body,
+                http_status=resp.status,
+                error=f"HTTP {resp.status}",
+                is_transient=_is_transient_http_status(resp.status),
+            )
+        try:
+            msg = _parse_msg(body)
+            if msg.startswith("ERROR:"):
+                logger.error(
+                    f"[CBOS] segment={segment} api=file_process_status process={process_name} "
+                    f"| CBOS rejected request status={msg} elapsed_ms={resp.elapsed_ms}"
+                )
+                return FileStatusResult(
+                    response="FALSE",
+                    raw_body=body,
+                    http_status=200,
+                    error=msg,
+                    is_transient=False,
+                )
+            logger.info(
+                f"[CBOS] segment={segment} api=file_process_status process={process_name} "
+                f"| response={msg} elapsed_ms={resp.elapsed_ms}"
+            )
+            return FileStatusResult(response=msg, raw_body=body, http_status=200)
+        except Exception as exc:
+            logger.error(
+                f"[CBOS] segment={segment} api=file_process_status process={process_name} "
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={exc}"
             )
             return FileStatusResult(response="FALSE", error=str(exc), is_transient=True)
 
@@ -364,36 +416,39 @@ class CbosClient:
             f"| POST {url}"
         )
 
-        t0 = _time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
-                elapsed_ms = int((_time.monotonic() - t0) * 1000)
-                body = resp.text[:5000]
-                if resp.status_code != 200:
-                    logger.error(
-                        f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
-                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
-                    )
-                    return NewTradeProcessResult(
-                        success=False,
-                        raw_body=body,
-                        http_status=resp.status_code,
-                        error=f"HTTP {resp.status_code}",
-                        is_transient=_is_transient_http_status(resp.status_code),
-                    )
-                result = _parse_new_trade_process(body)
-                logger.info(
-                    f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
-                    f"| pid={result.process_id} success={result.success} "
-                    f"steps={len(result.steps)} elapsed_ms={elapsed_ms}"
-                )
-                return result
-        except Exception as exc:
-            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        resp = await self._transport.post(url, payload)
+        if resp.raised:
             logger.error(
                 f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={resp.error}"
+            )
+            return NewTradeProcessResult(success=False, error=resp.error, is_transient=True)
+
+        body = resp.body[:5000]
+        if resp.status != 200:
+            logger.error(
+                f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
+                f"| HTTP {resp.status} elapsed_ms={resp.elapsed_ms}"
+            )
+            return NewTradeProcessResult(
+                success=False,
+                raw_body=body,
+                http_status=resp.status,
+                error=f"HTTP {resp.status}",
+                is_transient=_is_transient_http_status(resp.status),
+            )
+        try:
+            result = _parse_new_trade_process(body)
+            logger.info(
+                f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
+                f"| pid={result.process_id} success={result.success} "
+                f"steps={len(result.steps)} elapsed_ms={resp.elapsed_ms}"
+            )
+            return result
+        except Exception as exc:
+            logger.error(
+                f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={exc}"
             )
             return NewTradeProcessResult(success=False, error=str(exc), is_transient=True)
 
@@ -439,49 +494,52 @@ class CbosClient:
             f"date={trade_date} | POST {url}"
         )
 
-        t0 = _time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
-                elapsed_ms = int((_time.monotonic() - t0) * 1000)
-                body = resp.text[:2000]
-                if resp.status_code != 200:
-                    logger.error(
-                        f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
-                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
-                    )
-                    return ExistingProcessResult(
-                        found=False, raw_body=body,
-                        error=f"HTTP {resp.status_code}",
-                        is_transient=_is_transient_http_status(resp.status_code),
-                    )
-                data = _json.loads(body)
-                items = data.get("Result", [])
-                if not items:
-                    logger.info(
-                        f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
-                        f"| found=False (no results) elapsed_ms={elapsed_ms}"
-                    )
-                    return ExistingProcessResult(found=False, raw_body=body)
-                last = items[-1]
-                pid = str(last.get("_KEY", ""))
-                if not pid:
-                    return ExistingProcessResult(found=False, raw_body=body)
-                logger.info(
-                    f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
-                    f"| found=True pid={pid} elapsed_ms={elapsed_ms}"
-                )
-                return ExistingProcessResult(
-                    found=True,
-                    process_id=pid,
-                    description=last.get("_DESC", ""),
-                    raw_body=body,
-                )
-        except Exception as exc:
-            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        resp = await self._transport.post(url, payload)
+        if resp.raised:
             logger.error(
                 f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={resp.error}"
+            )
+            return ExistingProcessResult(found=False, error=resp.error, is_transient=True)
+
+        body = resp.body[:2000]
+        if resp.status != 200:
+            logger.error(
+                f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
+                f"| HTTP {resp.status} elapsed_ms={resp.elapsed_ms}"
+            )
+            return ExistingProcessResult(
+                found=False, raw_body=body,
+                error=f"HTTP {resp.status}",
+                is_transient=_is_transient_http_status(resp.status),
+            )
+        try:
+            data = _json.loads(body)
+            items = data.get("Result", [])
+            if not items:
+                logger.info(
+                    f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
+                    f"| found=False (no results) elapsed_ms={resp.elapsed_ms}"
+                )
+                return ExistingProcessResult(found=False, raw_body=body)
+            last = items[-1]
+            pid = str(last.get("_KEY", ""))
+            if not pid:
+                return ExistingProcessResult(found=False, raw_body=body)
+            logger.info(
+                f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
+                f"| found=True pid={pid} elapsed_ms={resp.elapsed_ms}"
+            )
+            return ExistingProcessResult(
+                found=True,
+                process_id=pid,
+                description=last.get("_DESC", ""),
+                raw_body=body,
+            )
+        except Exception as exc:
+            logger.error(
+                f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={exc}"
             )
             return ExistingProcessResult(found=False, error=str(exc), is_transient=True)
 
@@ -672,39 +730,42 @@ class CbosClient:
         url = f"{self.process_url}/v1/api/process/{endpoint_name}"
         logger.info(f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) | POST {url}")
 
-        t0 = _time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
-                elapsed_ms = int((_time.monotonic() - t0) * 1000)
-                body = resp.text[:5000]
-                if resp.status_code != 200:
-                    logger.error(
-                        f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
-                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
-                    )
-                    return AlreadyTriggeredResult(
-                        already_triggered=False, raw_body=body,
-                        error=f"HTTP {resp.status_code}", is_transient=_is_transient_http_status(resp.status_code),
-                    )
-                data = _json.loads(body)
-                if data.get("Status") != "Success":
-                    return AlreadyTriggeredResult(
-                        already_triggered=False, raw_body=body,
-                        error=f"CBOS Status={data.get('Status')}",
-                    )
-                table1 = data.get("Result", {}).get("Table1", [])
-                already_triggered = bool(table1)
-                logger.info(
-                    f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
-                    f"| already_triggered={already_triggered} elapsed_ms={elapsed_ms}"
-                )
-                return AlreadyTriggeredResult(already_triggered=already_triggered, raw_body=body)
-        except Exception as exc:
-            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        resp = await self._transport.post(url, payload)
+        if resp.raised:
             logger.error(
                 f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={resp.error}"
+            )
+            return AlreadyTriggeredResult(already_triggered=False, error=resp.error, is_transient=True)
+
+        body = resp.body[:5000]
+        if resp.status != 200:
+            logger.error(
+                f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
+                f"| HTTP {resp.status} elapsed_ms={resp.elapsed_ms}"
+            )
+            return AlreadyTriggeredResult(
+                already_triggered=False, raw_body=body,
+                error=f"HTTP {resp.status}", is_transient=_is_transient_http_status(resp.status),
+            )
+        try:
+            data = _json.loads(body)
+            if data.get("Status") != "Success":
+                return AlreadyTriggeredResult(
+                    already_triggered=False, raw_body=body,
+                    error=f"CBOS Status={data.get('Status')}",
+                )
+            table1 = data.get("Result", {}).get("Table1", [])
+            already_triggered = bool(table1)
+            logger.info(
+                f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
+                f"| already_triggered={already_triggered} elapsed_ms={resp.elapsed_ms}"
+            )
+            return AlreadyTriggeredResult(already_triggered=already_triggered, raw_body=body)
+        except Exception as exc:
+            logger.error(
+                f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={exc}"
             )
             return AlreadyTriggeredResult(already_triggered=False, error=str(exc), is_transient=True)
 
@@ -729,45 +790,48 @@ class CbosClient:
         url = f"{self.process_url}/v1/api/process/{endpoint_name}"
         logger.info(f"[CBOS] segment={segment} api={endpoint_name} | POST {url}")
 
-        t0 = _time.monotonic()
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, json=payload)
-                elapsed_ms = int((_time.monotonic() - t0) * 1000)
-                body = resp.text[:2000]
-                if resp.status_code != 200:
-                    logger.error(
-                        f"[CBOS] segment={segment} api={endpoint_name} "
-                        f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
-                    )
-                    return PostTradeTriggerResult(
-                        success=False,
-                        raw_body=body,
-                        http_status=resp.status_code,
-                        error=f"HTTP {resp.status_code}",
-                        is_transient=_is_transient_http_status(resp.status_code),
-                    )
-                success, message, is_transient = _parse_post_trade_trigger(body)
-                if not success:
-                    logger.error(
-                        f"[CBOS] segment={segment} api={endpoint_name} "
-                        f"| CBOS rejected request message={message} elapsed_ms={elapsed_ms} "
-                        f"is_transient={is_transient}"
-                    )
-                    return PostTradeTriggerResult(
-                        success=False, message=message, raw_body=body, error=message,
-                        is_transient=is_transient,
-                    )
-                logger.info(
-                    f"[CBOS] segment={segment} api={endpoint_name} "
-                    f"| message={message} elapsed_ms={elapsed_ms}"
-                )
-                return PostTradeTriggerResult(success=True, message=message, raw_body=body)
-        except Exception as exc:
-            elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        resp = await self._transport.post(url, payload)
+        if resp.raised:
             logger.error(
                 f"[CBOS] segment={segment} api={endpoint_name} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={resp.error}"
+            )
+            return PostTradeTriggerResult(success=False, error=resp.error, is_transient=True)
+
+        body = resp.body[:2000]
+        if resp.status != 200:
+            logger.error(
+                f"[CBOS] segment={segment} api={endpoint_name} "
+                f"| HTTP {resp.status} elapsed_ms={resp.elapsed_ms}"
+            )
+            return PostTradeTriggerResult(
+                success=False,
+                raw_body=body,
+                http_status=resp.status,
+                error=f"HTTP {resp.status}",
+                is_transient=_is_transient_http_status(resp.status),
+            )
+        try:
+            success, message, is_transient = _parse_post_trade_trigger(body)
+            if not success:
+                logger.error(
+                    f"[CBOS] segment={segment} api={endpoint_name} "
+                    f"| CBOS rejected request message={message} elapsed_ms={resp.elapsed_ms} "
+                    f"is_transient={is_transient}"
+                )
+                return PostTradeTriggerResult(
+                    success=False, message=message, raw_body=body, error=message,
+                    is_transient=is_transient,
+                )
+            logger.info(
+                f"[CBOS] segment={segment} api={endpoint_name} "
+                f"| message={message} elapsed_ms={resp.elapsed_ms}"
+            )
+            return PostTradeTriggerResult(success=True, message=message, raw_body=body)
+        except Exception as exc:
+            logger.error(
+                f"[CBOS] segment={segment} api={endpoint_name} "
+                f"| EXCEPTION elapsed_ms={resp.elapsed_ms} error={exc}"
             )
             return PostTradeTriggerResult(success=False, error=str(exc), is_transient=True)
 
