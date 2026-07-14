@@ -134,6 +134,12 @@ class EdpProperties(Base):
 
     sequence_order and segment_name are fixed code constants (see
     utils/constants.py), not stored.
+
+    version_name is an optional, independently-managed label: a config can
+    also be "checked out" by name regardless of trade_date (e.g. re-apply
+    the same holiday-season config every year). See repository.workflow's
+    get_by_version_name()/move_version_name() and api/workflow.py's
+    /workflow/versions/* endpoints.
     """
 
     __tablename__ = "edpb_properties"
@@ -145,6 +151,18 @@ class EdpProperties(Base):
             "trade_date",
             unique=True,
             postgresql_where=text("is_active"),
+        ),
+        # DB-enforced "one owner row per version_name" — a name is a single,
+        # unambiguous pointer (mirrors "only one config active at a time"),
+        # not something to search history for. Case-insensitive so "Diwali"
+        # and "diwali" can't both exist as distinct owners. Moving a name to
+        # a different row (apply / overwrite_version=true) must clear it off
+        # the old owner first — see repository.workflow.move_version_name().
+        Index(
+            "ix_edpb_properties_one_owner_per_version_name",
+            text("lower(version_name)"),
+            unique=True,
+            postgresql_where=text("version_name IS NOT NULL"),
         ),
     )
 
@@ -171,6 +189,16 @@ class EdpProperties(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
         comment="Set when a newer config replaces this row for the same trade_date"
+    )
+    version_name: Mapped[str | None] = mapped_column(
+        String(128), nullable=True,
+        comment=(
+            "Optional human label for this config, reusable across dates. "
+            "At most one row may own a given name at a time (see the "
+            "case-insensitive unique index above) — applying or "
+            "overwriting a name moves it here from its previous owner "
+            "rather than duplicating it."
+        )
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

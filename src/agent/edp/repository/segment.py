@@ -268,18 +268,15 @@ async def move_to_state(
     if reason is not None:
         row.skip_reason = reason
 
-    await session.flush()
-    # updated_at has onupdate=func.now() (server-side) — after the UPDATE
-    # above, SQLAlchemy expires it, and a later plain attribute read (e.g.
-    # in serialize_segment()) would try a synchronous reload that crashes
-    # under the async engine. Re-set it locally so it's never expired.
+    is_new_terminal_transition = prev_status != new_status and new_status in _TERMINAL_STATUSES
+    await (session.commit() if is_new_terminal_transition else session.flush())
     row.updated_at = now
     logger.info(
         f"[STATE] segment={row.segment_code} | {prev_status.value} -> {new_status.value} "
         f"category={category} reason={reason}"
     )
 
-    if prev_status != new_status and new_status in _TERMINAL_STATUSES:
+    if is_new_terminal_transition:
         await _send_terminal_alert(row)
 
 

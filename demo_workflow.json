@@ -1,5 +1,7 @@
 {
   "uploaded_by": "demo",
+  "version_name": "demo",
+  "overwrite_version": true,
   "workflow_json": {
       "segments": [
         {

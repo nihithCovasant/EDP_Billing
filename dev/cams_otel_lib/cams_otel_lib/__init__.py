@@ -5,8 +5,6 @@ Provides no-op tracing and standard logging so the agent can run locally.
 
 from __future__ import annotations
 
-import functools
-import inspect
 import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -38,21 +36,26 @@ class Logger:
 
 
 def otel_trace(func: F) -> F:
-    """No-op tracing decorator for local development."""
+    """
+    No-op tracing decorator for local development — returns `func`
+    unchanged rather than wrapping it.
 
-    if inspect.iscoroutinefunction(func):
-
-        @functools.wraps(func)
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            return await func(*args, **kwargs)
-
-        return async_wrapper  # type: ignore[return-value]
-
-    @functools.wraps(func)
-    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-        return func(*args, **kwargs)
-
-    return sync_wrapper  # type: ignore[return-value]
+    A functools.wraps()-based wrapper looked like a safe passthrough, but
+    broke FastAPI route handlers: functools.wraps() copies over
+    __annotations__ (which, under `from __future__ import annotations` in
+    the decorated module, are unevaluated strings like
+    "WorkflowVersionApplyRequest") without also rebinding __globals__ — the
+    wrapper's __globals__ stays pointed at *this* module. FastAPI resolves
+    those string annotations via typing.get_type_hints(call), which looks
+    names up in call.__globals__; since the real type isn't defined here,
+    resolution silently fails and FastAPI falls back to treating the
+    parameter as a query param instead of a request body, breaking every
+    POST endpoint with a Pydantic body model (e.g. /workflow/upload,
+    /workflow/versions/{name}/apply) with a 422 "Field required" error.
+    Since this stub's tracing is a no-op anyway, the simplest correct fix
+    is to not wrap at all.
+    """
+    return func
 
 
 @dataclass

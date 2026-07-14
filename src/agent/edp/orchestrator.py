@@ -120,7 +120,13 @@ class EdpOrchestrator:
                         post_trade_processes=self.config.default_post_trade_processes or None,
                     )
                     workflow, _ = await repository.upload(
-                        session, active_date, default_wf, uploaded_by="agent-bootstrap"
+                        session, active_date, default_wf, uploaded_by="agent-bootstrap",
+                        # "default" always points at whichever row was most
+                        # recently auto-seeded (no explicit config existed
+                        # for that day) — overwrite_version=True moves the
+                        # name forward instead of raising on the 2nd+ day
+                        # this ever fires (see move_version_name()).
+                        version_name="default", overwrite_version=True,
                     )
                     logger.info(edp_log(
                         "Default workflow auto-seeded",

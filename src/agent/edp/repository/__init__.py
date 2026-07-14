@@ -6,6 +6,10 @@ from .workflow import (
     get_latest_effective,
     upload,
     get_history as get_workflow_history,
+    get_by_version_name,
+    list_versions,
+    move_version_name,
+    clear_version_name,
 )
 from .segment import (
     get_one,
@@ -34,6 +38,10 @@ __all__ = [
     "get_latest_effective",
     "upload",
     "get_workflow_history",
+    "get_by_version_name",
+    "list_versions",
+    "move_version_name",
+    "clear_version_name",
     # segment
     "get_one",
     "get_all_for_date",

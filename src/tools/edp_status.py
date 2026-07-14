@@ -105,8 +105,22 @@ async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, An
         return resp.status_code, {"raw": resp.text[:500]}
 
 
+async def _delete(path: str) -> tuple[int, Dict[str, Any]]:
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.delete(f"{_base_url()}{path}")
+    try:
+        return resp.status_code, resp.json()
+    except Exception:
+        return resp.status_code, {"raw": resp.text[:500]}
+
+
 @tool
-async def upload_edp_workflow_config(workflow_json: dict, uploaded_by: Optional[str] = None) -> str:
+async def upload_edp_workflow_config(
+    workflow_json: dict,
+    version_name: str,
+    uploaded_by: Optional[str] = None,
+    overwrite_version: bool = False,
+) -> str:
     """
     Upload an EDP billing workflow config for today. Use this when the user
     provides/pastes a workflow config JSON and asks to upload/apply it.
@@ -117,11 +131,30 @@ async def upload_edp_workflow_config(workflow_json: dict, uploaded_by: Optional[
     There's no trade_date field — the server always resolves "today" itself,
     and if today's processing has already started, the upload is silently
     deferred to tomorrow instead of disrupting the in-flight run.
+
+    `version_name` is REQUIRED — every upload must be saved under a label
+    (e.g. "diwali_2026", "revised_cash_window") so it can be found again
+    later via list_edp_workflow_versions/apply_edp_workflow_version. If the
+    user hasn't given a name, ask them for one before calling this tool —
+    do not invent one yourself. If that name is already taken, this will
+    fail with a message asking for a different name; pass
+    overwrite_version=True only if the user explicitly confirms they want
+    to replace the existing config saved under that name.
     """
-    body = {"workflow_json": workflow_json, "uploaded_by": uploaded_by or "chat-user"}
-    logger.info(f"[EDP_CHAT] uploading workflow config uploaded_by={body['uploaded_by']}")
+    body = {
+        "workflow_json": workflow_json,
+        "uploaded_by": uploaded_by or "chat-user",
+        "version_name": version_name,
+        "overwrite_version": overwrite_version,
+    }
+    logger.info(f"[EDP_CHAT] uploading workflow config uploaded_by={body['uploaded_by']} version_name={version_name!r}")
     status_code, data = await _post("/edp/workflow/upload", body)
 
+    if status_code == 409:
+        return (
+            f"❌ A saved version named **{version_name}** already exists. "
+            f"Please choose a different name, or confirm you want to overwrite it."
+        )
     if status_code >= 400:
         detail = data.get("detail", data)
         return f"❌ Workflow upload failed (HTTP {status_code}): {detail}"
@@ -133,7 +166,7 @@ async def upload_edp_workflow_config(workflow_json: dict, uploaded_by: Optional[
         else ""
     )
     return (
-        f"✅ Workflow config uploaded successfully.\n\n"
+        f"✅ Workflow config uploaded successfully as **{data.get('version_name')}**.\n\n"
         f"- **Trade date:** {data.get('trade_date')}\n"
         f"- **Segments configured:** {data.get('segment_count')}\n"
         f"- **Post-trade processes configured:** {data.get('post_trade_process_count')}\n"
@@ -141,6 +174,66 @@ async def upload_edp_workflow_config(workflow_json: dict, uploaded_by: Optional[
         f"- **Config ID:** {data.get('id')}"
         f"{deferred_note}"
     )
+
+
+@tool
+async def list_edp_workflow_versions() -> str:
+    """
+    List all saved/named EDP workflow config versions. Use this when the
+    user asks "what configs/versions have I saved", "show me my saved
+    workflow versions", etc.
+    """
+    status_code, data = await _get("/edp/workflow/versions")
+    if status_code >= 400:
+        return f"❌ Could not list versions (HTTP {status_code}): {data.get('detail', data)}"
+    if not data:
+        return "No saved workflow versions yet."
+    lines = ["### 📁 Saved EDP workflow versions", "", "| Name | Trade date | Segments | Post-trade | Uploaded by |", "|---|---|---|---|---|"]
+    for v in data:
+        lines.append(
+            f"| **{v.get('version_name')}** | {v.get('trade_date')} | {v.get('segment_count')} | "
+            f"{v.get('post_trade_process_count')} | {v.get('uploaded_by')} |"
+        )
+    return "\n".join(lines)
+
+
+@tool
+async def apply_edp_workflow_version(version_name: str) -> str:
+    """
+    Re-apply a previously saved, named EDP workflow config right now. Use
+    this when the user asks to "switch back to", "restore", or "apply" a
+    version they saved earlier by name (see list_edp_workflow_versions for
+    the available names).
+    """
+    status_code, data = await _post(f"/edp/workflow/versions/{version_name}/apply", {})
+    if status_code == 404:
+        return f"No saved version named **{version_name}** — use list_edp_workflow_versions to see what's available."
+    if status_code >= 400:
+        return f"❌ Could not apply version (HTTP {status_code}): {data.get('detail', data)}"
+    if data.get("is_new") is False and not data.get("deferred"):
+        return f"✅ **{version_name}** is already the active config for **{data.get('trade_date')}** — no changes made."
+    deferred_note = (
+        f"\n⚠️ Deferred: today's processing already started, so this was applied to "
+        f"**{data.get('trade_date')}** instead of {data.get('resolved_trade_date')}."
+        if data.get("deferred")
+        else ""
+    )
+    return f"✅ Re-applied saved version **{version_name}** for **{data.get('trade_date')}**.{deferred_note}"
+
+
+@tool
+async def delete_edp_workflow_version(version_name: str) -> str:
+    """
+    Un-save a named EDP workflow config version (only removes the name/
+    label — the underlying config and its audit history are untouched).
+    Use this when the user asks to delete/remove/forget a saved version.
+    """
+    status_code, data = await _delete(f"/edp/workflow/versions/{version_name}")
+    if status_code == 404:
+        return f"No saved version named **{version_name}** to delete."
+    if status_code >= 400:
+        return f"❌ Could not delete version (HTTP {status_code}): {data.get('detail', data)}"
+    return f"✅ Removed the saved name **{version_name}** (the config itself is untouched)."
 
 
 @tool
@@ -218,10 +311,21 @@ async def update_edp_segment_window(
         target["window_end"] = new_end
         changes.append(f"window_end → {new_end}")
 
+    # Re-upload requires a version_name (see upload_edp_workflow_config) —
+    # this is a patch of one field on the config that's already active, not
+    # a brand-new named version, so just keep its existing name (falling
+    # back to "default" for legacy/unnamed rows) and move it forward onto
+    # this patched row.
+    version_name = data.get("version_name") or "default"
     logger.info(f"[EDP_CHAT] updating {code} on {resolved_date}: {', '.join(changes)}")
     upload_status, upload_data = await _post(
         "/edp/workflow/upload",
-        {"workflow_json": workflow_json, "uploaded_by": "chat-user"},
+        {
+            "workflow_json": workflow_json,
+            "uploaded_by": "chat-user",
+            "version_name": version_name,
+            "overwrite_version": True,
+        },
     )
     if upload_status >= 400:
         return f"❌ Update failed (HTTP {upload_status}): {upload_data.get('detail', upload_data)}"

@@ -1,5 +1,5 @@
 """
-Two bug-hunting tests against repository/segment.py.
+Bug-hunting tests against repository/segment.py.
 
 1. get_or_create() concurrent duplicate-insert race — SegmentExecution has
    a DB-level UniqueConstraint("trade_date", "segment_code") (models.py),
@@ -14,6 +14,15 @@ Two bug-hunting tests against repository/segment.py.
 2. move_to_state()'s best-effort alert email — _send_terminal_alert() wraps
    send_segment_alert() in try/except and only logs on failure. Confirm
    that an email-service outage never propagates out of move_to_state().
+
+3. move_to_state() must commit the terminal-status write BEFORE sending the
+   alert email, not after (i.e. not just flush() and rely on the caller's
+   own later commit). Sending first was a real double-alert bug: if the
+   caller's own subsequent commit then failed for any reason (a transient
+   DB blip/deadlock/timeout), the whole transaction rolled back — undoing
+   the transition — but the email had already gone out. The next wake
+   cycle would reprocess the still-non-terminal row, reach the same
+   terminal outcome again, and re-send the same alert a second time.
 """
 
 from __future__ import annotations
@@ -182,4 +191,72 @@ async def test_move_to_state_swallows_alert_email_failure(session_factory, test_
         "\n[FINDING CONFIRMED] move_to_state() swallows alert-email failures — the "
         "RuntimeError raised by send_segment_alert did not propagate; the FAILED "
         "transition committed successfully."
+    )
+
+
+async def test_move_to_state_commits_terminal_status_before_sending_alert(
+    session_factory, test_date, monkeypatch,
+):
+    """
+    Regression test for the double-alert bug: on a genuine terminal
+    transition, move_to_state() must commit the DB write before calling
+    send_segment_alert() — never the other way around. If the alert fires
+    first (or before a durable commit), a later commit failure would undo
+    the transition while the email has already gone out, causing a
+    duplicate alert on the next cycle's retry.
+    """
+    import global_email_service
+
+    call_order: list[str] = []
+
+    def _record_alert(payload):
+        call_order.append("alert_sent")
+
+    monkeypatch.setattr(global_email_service, "send_segment_alert", _record_alert)
+
+    workflow_json = build_default_workflow_json(
+        [
+            {
+                "segment_code": "EQ",
+                "login_id": "CV0001",
+                "window_start": "00:00",
+                "window_end": "23:59",
+            }
+        ]
+    )
+    async with session_factory() as session:
+        workflow, _ = await repository.upload(session, test_date, workflow_json, uploaded_by="test")
+        await session.commit()
+
+        row = await repository.get_or_create(session, workflow, test_date, "EQ")
+        await session.commit()
+
+    async with session_factory() as session:
+        row = await repository.get_one(session, test_date, "EQ")
+
+        real_commit = session.commit
+
+        async def _tracked_commit():
+            await real_commit()
+            call_order.append("committed")
+
+        monkeypatch.setattr(session, "commit", _tracked_commit)
+
+        await repository.move_to_state(
+            session, row, SegmentStatus.COMPLETED, now=None,
+        )
+
+    assert call_order == ["committed", "alert_sent"], (
+        f"move_to_state() must commit the terminal transition BEFORE sending the "
+        f"alert email — got order {call_order}. Sending the alert first (or before "
+        f"a durable commit) is exactly the bug that caused duplicate alerts: a "
+        f"later commit failure rolls back the transition after the email already "
+        f"went out, so the next cycle re-processes and re-sends it."
+    )
+
+    async with session_factory() as verify_session:
+        verified_row = await repository.get_one(verify_session, test_date, "EQ")
+    assert verified_row.segment_status == SegmentStatus.COMPLETED, (
+        "the COMPLETED transition must have actually been durably committed "
+        "(not just flushed) by move_to_state() itself"
     )

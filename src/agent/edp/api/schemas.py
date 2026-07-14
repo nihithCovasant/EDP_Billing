@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # =============================================================================
@@ -22,6 +22,22 @@ class WorkflowUploadRequest(BaseModel):
     # (resolve_active_date()), or tomorrow if today's already underway.
     workflow_json: Dict[str, Any]
     uploaded_by: str = "ops"
+    # Required label to save this config under (e.g. "diwali_2026") — every
+    # explicit upload must be named so it can be found again later via
+    # GET /workflow/versions (no more nameless uploads / NULLs going
+    # forward). If the name is already owned by another row, the upload is
+    # rejected with 409 unless overwrite_version=True, in which case the
+    # name is moved here.
+    version_name: str
+    overwrite_version: bool = False
+
+    @field_validator("version_name")
+    @classmethod
+    def _version_name_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("version_name is required and cannot be blank")
+        return v
 
 
 class WorkflowResponse(BaseModel):
@@ -35,6 +51,7 @@ class WorkflowResponse(BaseModel):
     segment_count: int = 0
     # None for a legacy config with no "post_trade_processes" list at all.
     post_trade_process_count: Optional[int] = None
+    version_name: Optional[str] = None
 
 
 class WorkflowUploadResponse(WorkflowResponse):
@@ -54,6 +71,27 @@ class WorkflowDetailResponse(WorkflowResponse):
     # forward instead (see repository.get_latest_effective()).
     requested_trade_date: Optional[date] = None
     carried_forward: bool = False
+
+
+# =============================================================================
+# Named workflow versions
+# =============================================================================
+
+class WorkflowVersionSummary(BaseModel):
+    """One row returned by GET /workflow/versions (list) and .../{name} (get)."""
+
+    id: str
+    version_name: str
+    trade_date: date
+    is_active: bool
+    uploaded_by: str
+    uploaded_at: Optional[datetime]
+    segment_count: int = 0
+    post_trade_process_count: Optional[int] = None
+
+
+class WorkflowVersionApplyRequest(BaseModel):
+    uploaded_by: str = "ops"
 
 
 # =============================================================================

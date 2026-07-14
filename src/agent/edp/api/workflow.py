@@ -1,13 +1,18 @@
 """
 Workflow endpoints.
 
-  POST /edp/workflow/upload              — upload workflow config (applies now)
-  GET  /edp/workflow/{trade_date}        — get active workflow for a date
-  GET  /edp/workflow/{trade_date}/history — all config versions for a date
+  POST   /edp/workflow/upload                     — upload workflow config (applies now)
+  GET    /edp/workflow/{trade_date}                — get active workflow for a date
+  GET    /edp/workflow/{trade_date}/history        — all config versions for a date
+  GET    /edp/workflow/versions                    — list all named versions
+  GET    /edp/workflow/versions/{name}             — get one named version's full config
+  POST   /edp/workflow/versions/{name}/apply       — re-apply a saved version now
+  DELETE /edp/workflow/versions/{name}             — un-name a version (soft delete the name)
 """
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException
@@ -19,26 +24,49 @@ from ..repository import (
     get_active,
     get_latest_effective,
     get_workflow_history,
+    get_by_version_name,
+    list_versions,
+    clear_version_name,
     has_processing_started,
 )
-from ..utils.constants import POST_TRADE_ORDER
+from ..utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER
 from ..utils.datetime_utils import now_ist, resolve_active_date
-from .schemas import WorkflowUploadRequest, WorkflowUploadResponse, WorkflowDetailResponse
+from .schemas import (
+    WorkflowUploadRequest,
+    WorkflowUploadResponse,
+    WorkflowDetailResponse,
+    WorkflowVersionSummary,
+    WorkflowVersionApplyRequest,
+)
 from cams_otel_lib import Logger as logger, otel_trace
 
 router = APIRouter()
 
 _REQUIRED_SEGMENT_FIELDS = {"segment_code", "window_start", "window_end"}
 _REQUIRED_POST_TRADE_FIELDS = {"process_code", "login_id"}
+_VALID_SEGMENT_CODES = set(SEGMENT_ORDER)
 _VALID_POST_TRADE_CODES = set(POST_TRADE_ORDER)
+# Plain 24h HH:MM, e.g. "17:00", "06:00" — no seconds, no timezone (the
+# whole config is IST-only, see EdpProperties docstring).
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+def _validate_hhmm(value, label: str) -> None:
+    if not isinstance(value, str) or not _HHMM_RE.match(value):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label} must be a 24h 'HH:MM' string (e.g. '17:00'), got {value!r}",
+        )
 
 
 def _validate_workflow_json(workflow_json: dict) -> None:
     """
-    Raise HTTPException(422) if workflow_json is missing required structure.
-    Processing order is a fixed code constant, not part of the config.
-    `post_trade_processes` is optional (backward compat — omitting it falls
-    back to fixed legacy defaults); if present, validated like segments.
+    Raise HTTPException(422) if workflow_json is missing required structure
+    or contains values that would fail later at runtime (unknown segment
+    codes, malformed window times, duplicate segments). Processing order is
+    a fixed code constant, not part of the config. `post_trade_processes`
+    is optional (backward compat — omitting it falls back to fixed legacy
+    defaults); if present, validated like segments.
     """
     segments = workflow_json.get("segments")
     if not isinstance(segments, list) or len(segments) == 0:
@@ -46,7 +74,13 @@ def _validate_workflow_json(workflow_json: dict) -> None:
             status_code=422,
             detail="workflow_json must contain a non-empty 'segments' list",
         )
+    seen_segment_codes = set()
     for i, seg in enumerate(segments):
+        if not isinstance(seg, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"segments[{i}] must be an object",
+            )
         missing = _REQUIRED_SEGMENT_FIELDS - set(seg.keys())
         if missing:
             raise HTTPException(
@@ -59,6 +93,22 @@ def _validate_workflow_json(workflow_json: dict) -> None:
                 status_code=422,
                 detail=f"Segment[{i}] has an empty or invalid segment_code",
             )
+        if code not in _VALID_SEGMENT_CODES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Segment[{i}] has unknown segment_code {code!r} "
+                    f"— must be one of {sorted(_VALID_SEGMENT_CODES)}"
+                ),
+            )
+        if code in seen_segment_codes:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Segment[{i}] duplicate segment_code {code!r}",
+            )
+        seen_segment_codes.add(code)
+        _validate_hhmm(seg.get("window_start"), f"Segment[{i}] ({code}).window_start")
+        _validate_hhmm(seg.get("window_end"), f"Segment[{i}] ({code}).window_end")
 
     post_trade_processes = workflow_json.get("post_trade_processes")
     if post_trade_processes is not None:
@@ -98,12 +148,21 @@ def _validate_workflow_json(workflow_json: dict) -> None:
                     detail=f"post_trade_processes[{i}] duplicate process_code {code!r}",
                 )
             seen_codes.add(code)
+            # window_start/window_end are optional per-process overrides here
+            # (unlike segments, where they're required) — only shape-check
+            # them when actually present.
+            if proc.get("window_start") is not None:
+                _validate_hhmm(proc.get("window_start"), f"post_trade_processes[{i}] ({code}).window_start")
+            if proc.get("window_end") is not None:
+                _validate_hhmm(proc.get("window_end"), f"post_trade_processes[{i}] ({code}).window_end")
 
 
 async def _upload_workflow_for_date(
     today: date,
     workflow_json: dict,
     uploaded_by: str,
+    version_name: str | None = None,
+    overwrite_version: bool = False,
 ) -> dict:
     """
     Core upload logic given an already-resolved "today" — split out from
@@ -117,12 +176,17 @@ async def _upload_workflow_for_date(
     async with get_session() as session:
         deferred = await has_processing_started(session, today)
         effective_date = today + timedelta(days=1) if deferred else today
-        row, is_new = await upload(
-            session,
-            effective_date,
-            workflow_json,
-            uploaded_by=uploaded_by,
-        )
+        try:
+            row, is_new = await upload(
+                session,
+                effective_date,
+                workflow_json,
+                uploaded_by=uploaded_by,
+                version_name=version_name,
+                overwrite_version=overwrite_version,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     if deferred:
         logger.warning(
             f"POST /workflow/upload: {today} already has processing underway — "
@@ -147,6 +211,7 @@ async def _upload_workflow_for_date(
         "post_trade_process_count": (
             len(post_trade_processes) if post_trade_processes is not None else None
         ),
+        "version_name": row.version_name,
     }
 
 
@@ -160,11 +225,128 @@ async def upload_workflow(body: WorkflowUploadRequest):
     (resolve_active_date(), same as the orchestrator's wake cycle), so ops
     can't target the wrong date. See _upload_workflow_for_date() for the
     deferral rule applied once "today" is resolved.
+
+    Pass version_name to also save this config under a reusable label —
+    see GET/POST /workflow/versions/* to list and re-apply saved configs
+    later. If the name is already taken by another config, this returns
+    409 unless overwrite_version=true.
     """
     _validate_workflow_json(body.workflow_json)
     config = load_edp_config()
     today = resolve_active_date(now_ist(), config.active_date_cutoff_hour, config.timezone)
-    return await _upload_workflow_for_date(today, body.workflow_json, body.uploaded_by)
+    return await _upload_workflow_for_date(
+        today,
+        body.workflow_json,
+        body.uploaded_by,
+        version_name=body.version_name,
+        overwrite_version=body.overwrite_version,
+    )
+
+
+def _version_summary(row) -> dict:
+    post_trade_processes = row.workflow_json.get("post_trade_processes")
+    return {
+        "id": row.id,
+        "version_name": row.version_name,
+        "trade_date": row.trade_date,
+        "is_active": row.is_active,
+        "uploaded_by": row.uploaded_by,
+        "uploaded_at": row.uploaded_at,
+        "segment_count": len(row.workflow_json.get("segments", [])),
+        "post_trade_process_count": (
+            len(post_trade_processes) if post_trade_processes is not None else None
+        ),
+    }
+
+
+# NOTE: these /workflow/versions* routes must be declared before
+# /workflow/{trade_date} below — Starlette matches routes in declaration
+# order, and "versions" would otherwise be swallowed by {trade_date} first
+# (then fail 422 trying to parse "versions" as a date) instead of ever
+# reaching these.
+@router.get("/workflow/versions", response_model=list[WorkflowVersionSummary])
+@otel_trace
+async def list_workflow_versions():
+    """All saved named configs (not tied to any single trade_date), newest first."""
+    async with get_session() as session:
+        rows = await list_versions(session)
+    return [_version_summary(r) for r in rows]
+
+
+@router.get("/workflow/versions/{version_name}", response_model=WorkflowDetailResponse)
+@otel_trace
+async def get_workflow_version(version_name: str):
+    """Get the full saved config for one named version."""
+    async with get_session() as session:
+        row = await get_by_version_name(session, version_name)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No saved version named {version_name!r}")
+    return {
+        **_version_summary(row),
+        "workflow_json": row.workflow_json,
+        "requested_trade_date": None,
+        "carried_forward": False,
+    }
+
+
+@router.post("/workflow/versions/{version_name}/apply", response_model=WorkflowUploadResponse)
+@otel_trace
+async def apply_workflow_version(version_name: str, body: WorkflowVersionApplyRequest):
+    """
+    Re-apply a saved named config starting now.
+
+    If this saved version is already today's active config (e.g. it's
+    "default" and nothing else has been applied since), this is a no-op —
+    it does NOT create a duplicate row, it just confirms it's already
+    active. Otherwise it creates a brand-new edpb_properties row (a fresh
+    audit entry, same as any other upload) for today's/tomorrow's trading
+    date using the saved workflow_json verbatim, and MOVES the name onto
+    that new row — "default" (or whatever name) always continues to point
+    at whichever row is the currently-active applied config, rather than
+    staying stuck on the old superseded one.
+    """
+    config = load_edp_config()
+    today = resolve_active_date(now_ist(), config.active_date_cutoff_hour, config.timezone)
+    async with get_session() as session:
+        saved = await get_by_version_name(session, version_name)
+        if saved is None:
+            raise HTTPException(status_code=404, detail=f"No saved version named {version_name!r}")
+        current_active = await get_active(session, today)
+        if current_active is not None and current_active.id == saved.id:
+            post_trade_processes = saved.workflow_json.get("post_trade_processes")
+            return {
+                "id": saved.id,
+                "trade_date": saved.trade_date,
+                "is_active": True,
+                "is_new": False,
+                "deferred": False,
+                "resolved_trade_date": today,
+                "uploaded_by": saved.uploaded_by,
+                "uploaded_at": saved.uploaded_at,
+                "segment_count": len(saved.workflow_json.get("segments", [])),
+                "post_trade_process_count": (
+                    len(post_trade_processes) if post_trade_processes is not None else None
+                ),
+                "version_name": saved.version_name,
+            }
+    return await _upload_workflow_for_date(
+        today, saved.workflow_json, body.uploaded_by,
+        version_name=version_name, overwrite_version=True,
+    )
+
+
+@router.delete("/workflow/versions/{version_name}")
+@otel_trace
+async def delete_workflow_version(version_name: str):
+    """
+    Un-name a saved version (soft delete — only clears the name, the
+    underlying config row and its audit history are untouched).
+    """
+    async with get_session() as session:
+        removed = await clear_version_name(session, version_name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No saved version named {version_name!r}")
+    return {"version_name": version_name, "deleted": True}
 
 
 @router.get("/workflow/{trade_date}", response_model=WorkflowDetailResponse)
@@ -205,6 +387,7 @@ async def get_workflow(trade_date: date, effective: bool = True):
         "workflow_json": row.workflow_json,
         "requested_trade_date": trade_date,
         "carried_forward": row.trade_date != trade_date,
+        "version_name": row.version_name,
     }
 
 
