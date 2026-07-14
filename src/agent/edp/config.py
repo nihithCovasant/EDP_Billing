@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from src.config.agent_config import load_agent_config
 from .utils.constants import POST_TRADE_ORDER, POST_TRADE_FIRST_WINDOW_START
@@ -29,19 +29,68 @@ def _normalize_postgres_url(url: str) -> str:
     return url
 
 
+def _redact_target(url: str) -> str:
+    """host:port/dbname only — never the password — for safe logging."""
+    try:
+        parsed = urlparse(url)
+        return f"{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
+    except Exception:
+        return "<unparseable>"
+
+
 def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> str:
     """
     Resolve the EDP (PostgreSQL-only) database URL. Priority (highest first):
-      1. DATABASE_URL env var (full connection string)
-      2. DB_HOST / DB_PORT / DB_NAME / DB_USERNAME / DB_PASSWORD env vars
-      3. agent_config.json → secrets.database.postgres.connection_string
-      4. agent_config.json → edp.database_url
+      1. agent_config.json → secrets.database.postgres.connection_string
+      2. agent_config.json → edp.database_url
+      3. DATABASE_URL env var (full connection string) — fallback only
+      4. DB_HOST / DB_PORT / DB_NAME / DB_USERNAME / DB_PASSWORD env vars — fallback only
 
-    No local-file fallback if none of these are set — running against a
-    throwaway on-disk database instead of the real Postgres instance is
-    exactly the kind of silent misconfiguration this should never allow;
-    raises immediately instead.
+    agent_config.json wins over env vars (not the other way around): this agent
+    runs as a pod on the CAMS platform, where every pod shares a handful of
+    ambient environment variables injected platform-wide — including a
+    DATABASE_URL that actually points at a different service's Postgres (the
+    LiteLLM proxy's own metadata DB). That ambient var is present in EVERY pod
+    regardless of what this specific agent needs, so it can never be trusted as
+    an intentional per-agent override — agent_config.json's explicit, per-agent
+    config always wins. DATABASE_URL/DB_HOST remain a fallback for the case
+    where agent_config.json has no database section configured at all (e.g. a
+    fresh scaffold).
+
+    No fallback at all if none of these are set — running against a throwaway
+    on-disk database instead of the real Postgres instance is exactly the kind
+    of silent misconfiguration this should never allow; raises immediately.
     """
+    db_url = (
+        secrets.get("database", {})
+        .get("postgres", {})
+        .get("connection_string")
+    )
+    if not db_url:
+        db_url = edp_raw.get("database_url")
+
+    if db_url:
+        resolved = _normalize_postgres_url(db_url)
+        _validate_database_url(resolved)
+
+        # Diagnostic only — not a warning: an ambient platform env var being
+        # correctly ignored is expected, healthy behavior on CAMS.
+        ambient_env_url = os.getenv("DATABASE_URL", "").strip()
+        ambient_db_host = os.getenv("DB_HOST", "").strip()
+        if ambient_env_url or ambient_db_host:
+            ambient_target = (
+                _redact_target(_normalize_postgres_url(ambient_env_url))
+                if ambient_env_url
+                else f"{ambient_db_host}:{os.getenv('DB_PORT', '5432').strip()}/{os.getenv('DB_NAME', 'postgres').strip()}"
+            )
+            logger.info(
+                f"[EDP CONFIG] Using agent_config.json's configured database "
+                f"({_redact_target(resolved)}); ignoring ambient DATABASE_URL/DB_HOST "
+                f"env var (points at {ambient_target}) — agent_config.json takes priority."
+            )
+
+        return resolved
+
     env_url = os.getenv("DATABASE_URL", "").strip()
     if env_url:
         resolved = _normalize_postgres_url(env_url)
@@ -59,28 +108,12 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
             userinfo = f"{userinfo}:{quote_plus(db_password)}"
         return f"postgresql+asyncpg://{userinfo}@{db_host}:{db_port}/{db_name}"
 
-    db_url = (
-        secrets.get("database", {})
-        .get("postgres", {})
-        .get("connection_string")
-    )
-    if db_url:
-        resolved = _normalize_postgres_url(db_url)
-        _validate_database_url(resolved)
-        return resolved
-
-    db_url = edp_raw.get("database_url")
-    if db_url:
-        resolved = _normalize_postgres_url(db_url)
-        _validate_database_url(resolved)
-        return resolved
-
     raise RuntimeError(
-        "EDP database is not configured — set DATABASE_URL, or DB_HOST "
-        "(+ DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD), or agent_config.json's "
-        "secrets.database.postgres.connection_string / edp.database_url. "
-        "There is no local-file fallback: refusing to start against a "
-        "throwaway database instead of the real PostgreSQL instance."
+        "EDP database is not configured — set agent_config.json's "
+        "secrets.database.postgres.connection_string / edp.database_url, "
+        "or DATABASE_URL, or DB_HOST (+ DB_PORT/DB_NAME/DB_USERNAME/DB_PASSWORD) "
+        "as a fallback. There is no local-file fallback: refusing to start "
+        "against a throwaway database instead of the real PostgreSQL instance."
     )
 
 

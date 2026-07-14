@@ -273,10 +273,26 @@ def build_app() -> FastAPI:
         ]
         _cors_allow_credentials = True
 
-    logger.info(f"CORS allow_origins={_cors_origins} allow_credentials={_cors_allow_credentials}")
+    # In addition to the literal allow-list above (which only ever covers
+    # localhost/127.0.0.1 dev origins plus whatever's hand-added),
+    # ALSO allow any *.cams.covasant.io frontend via regex — dev, staging,
+    # prod, and any future environment's frontend origin, with no further
+    # config changes needed each time CAMS spins up a new one. Unlike the
+    # literal "*" origin above, a regex is compatible with
+    # allow_credentials=True: Starlette reflects back the actual matched
+    # Origin (never a literal "*"), which browsers permit alongside credentials.
+    _cors_origin_regex = os.getenv(
+        "CORS_ALLOW_ORIGIN_REGEX", r"https://.*\.cams\.covasant\.io"
+    ).strip() or None
+
+    logger.info(
+        f"CORS allow_origins={_cors_origins} allow_origin_regex={_cors_origin_regex} "
+        f"allow_credentials={_cors_allow_credentials}"
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
+        allow_origin_regex=_cors_origin_regex,
         allow_credentials=_cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
