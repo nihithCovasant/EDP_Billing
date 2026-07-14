@@ -50,8 +50,11 @@ from cams_otel_lib import Logger as logger
 
 
 class RealSegmentStateMachine(AbstractSegmentStateMachine):
-    def __init__(self) -> None:
+    def __init__(self, segment_code: str) -> None:
         super().__init__(REAL_SEGMENT_TRANSITION_MAP)
+        # Set per-instance from the segment spec (see SegmentFactory) instead
+        # of via a per-code subclass. All 9 real segments share this logic.
+        self.SEGMENT_CODE = segment_code
 
     def get_state_handler(self, state: SegmentState | None):
         handlers = {

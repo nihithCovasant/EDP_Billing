@@ -71,7 +71,8 @@ def test_real_segment_recognized_by_transition_map_and_factory():
     against the same equivalence class)."""
     REAL_SEGMENT_TRANSITION_MAP.check_valid_segment("EQ")  # must not raise
     machine = SegmentFactory.get_segment_state_machine("EQ")
-    assert machine.__class__.__name__ == "CashSegmentStateMachine"
+    assert machine.__class__.__name__ == "RealSegmentStateMachine"
+    assert machine.SEGMENT_CODE == "EQ"
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +102,9 @@ def test_last_post_trade_code_is_final_order_slot():
 def test_post_trade_code_recognized_by_transition_map_and_factory():
     POST_TRADE_TRANSITION_MAP.check_valid_segment("COLVAL")  # must not raise
     machine = SegmentFactory.get_segment_state_machine("COLVAL")
-    assert machine.__class__.__name__ == "ColValStateMachine"
+    assert machine.__class__.__name__ == "PostTradeStateMachine"
+    assert machine.SEGMENT_CODE == "COLVAL"
+    assert machine.TRIGGER_METHOD_NAME == "trigger_collateral_valuation"
 
 
 # ---------------------------------------------------------------------------

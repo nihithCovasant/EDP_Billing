@@ -62,20 +62,33 @@ _TERMINAL_STATUSES = (SegmentStatus.COMPLETED, SegmentStatus.FAILED, SegmentStat
 
 
 class PostTradeStateMachine(AbstractSegmentStateMachine):
-    # Overridden by each concrete leaf class (e.g. ColValStateMachine):
-    #   TRIGGER_METHOD_NAME = "trigger_collateral_valuation" — CbosClient
-    #     method handle_triggered() dispatches to.
-    #   CHECK_TRIGGERED_METHOD_NAME = "check_collateral_valuation_triggered"
-    #     — CbosClient method handle_waiting_for_gtg() dispatches to.
+    # Set per-instance from the segment spec (see SegmentFactory) instead of
+    # via a per-code subclass. All 5 post-trade processes share this logic;
+    # they differ only in these fields:
+    #   TRIGGER_METHOD_NAME — CbosClient method handle_triggered() dispatches to.
+    #   CHECK_TRIGGERED_METHOD_NAME — CbosClient method handle_waiting_for_gtg()
+    #     dispatches to.
+    #   DEPENDS_ON_PREVIOUS_PROCESS — True for DMRPT and DMSTMT only (see
+    #     handle_waiting_for_gtg's docstring): their readiness gate is "the
+    #     previous process in POST_TRADE_ORDER has reached a terminal DB
+    #     status", not a CBOS call.
+    # Class defaults kept so the fields are always present.
     TRIGGER_METHOD_NAME: str = ""
     CHECK_TRIGGERED_METHOD_NAME: str = ""
-    # True for DMRPT and DMSTMT only — see handle_waiting_for_gtg's
-    # docstring. Their readiness gate is "the previous process in
-    # POST_TRADE_ORDER has reached a terminal DB status", not a CBOS call.
     DEPENDS_ON_PREVIOUS_PROCESS: bool = False
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        segment_code: str,
+        trigger_method_name: str,
+        check_triggered_method_name: str,
+        depends_on_previous_process: bool = False,
+    ) -> None:
         super().__init__(POST_TRADE_TRANSITION_MAP)
+        self.SEGMENT_CODE = segment_code
+        self.TRIGGER_METHOD_NAME = trigger_method_name
+        self.CHECK_TRIGGERED_METHOD_NAME = check_triggered_method_name
+        self.DEPENDS_ON_PREVIOUS_PROCESS = depends_on_previous_process
 
     def get_state_handler(self, state: SegmentState | None):
         handlers = {
