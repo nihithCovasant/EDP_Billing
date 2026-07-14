@@ -6,7 +6,6 @@ Generates final responses using retrieved context - customize for your response 
 from typing import Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage
 
-from src.config.agent_config import get_node_configuration
 from src.utils.llm_provider import get_llm_model, get_provider_from_model
 from src.utils.langfuse_decorator import trace_node
 from cams_otel_lib import Logger as logger, otel_trace
@@ -38,9 +37,6 @@ class ResponseGeneratorNode:
         """Initialize response generation node with tenant-aware configuration."""
         self.global_config = config
         self.tenant_id = tenant_id
-
-        # Get node-specific configuration
-        self.node_config = get_node_configuration("response", tenant_id, config)
 
         # Get tenant-specific LLM configuration
         tenant_config = config.get(tenant_id, config.get("default", {}))

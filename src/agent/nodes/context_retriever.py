@@ -6,7 +6,6 @@ Executes retrieval tools to gather context - customize for your knowledge source
 import asyncio
 from typing import Dict, Any, List
 
-from src.config.agent_config import get_node_configuration
 from src.utils.langfuse_decorator import trace_node
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -39,9 +38,6 @@ class ContextRetrieverNode:
         self.global_config = config
         self.tools = tools
         self.tenant_id = tenant_id
-
-        # Get node-specific configuration
-        self.node_config = get_node_configuration("retrieval", tenant_id, config)
 
         logger.debug(f"RetrievalNode initialized for tenant {tenant_id} with {len(tools)} tools")
 
