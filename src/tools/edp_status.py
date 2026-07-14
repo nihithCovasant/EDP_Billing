@@ -239,9 +239,11 @@ async def delete_edp_workflow_version(version_name: str) -> str:
 @tool
 async def update_edp_segment_window(
     identifier: str,
+    version_name: str,
     window_start: Optional[str] = None,
     window_end: Optional[str] = None,
     trade_date: Optional[str] = None,
+    overwrite_version: bool = False,
 ) -> str:
     """
     Change a single segment's or post-trade process's start and/or end time,
@@ -254,6 +256,16 @@ async def update_edp_segment_window(
     date's) active config itself, patches only the matching segment/process,
     and re-uploads the result — never ask the user for the raw JSON to do
     this.
+
+    `version_name` is REQUIRED — every change to the config, including this
+    quick single-field patch, must be saved under a label so it can be
+    found again later. Always ask the user what to name this change before
+    calling this tool; do not invent one yourself and do not silently reuse
+    the current config's existing name unless the user says to. If the
+    chosen name is already used by a different saved config, this will
+    fail with a message asking for a different name — pass
+    overwrite_version=True only if the user explicitly confirms they want
+    to replace it.
 
     `identifier` is the segment/process code (EQ, DR, CUR, SLB, NCDEX,
     NCDEXPHY, MCX, MCXPHY, NSECOM, COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT)
@@ -311,22 +323,30 @@ async def update_edp_segment_window(
         target["window_end"] = new_end
         changes.append(f"window_end → {new_end}")
 
-    # Re-upload requires a version_name (see upload_edp_workflow_config) —
-    # this is a patch of one field on the config that's already active, not
-    # a brand-new named version, so just keep its existing name (falling
-    # back to "default" for legacy/unnamed rows) and move it forward onto
-    # this patched row.
-    version_name = data.get("version_name") or "default"
-    logger.info(f"[EDP_CHAT] updating {code} on {resolved_date}: {', '.join(changes)}")
+    # If the caller happened to pass the config's own existing name back in
+    # (i.e. they chose to continue under the same name rather than fork a
+    # new one), that's a legitimate in-place continuation — overwrite it
+    # without a fuss. Any other name goes through the normal
+    # already-taken-elsewhere 409 check.
+    current_version_name = data.get("version_name")
+    should_overwrite = overwrite_version or (
+        bool(current_version_name) and version_name.strip().lower() == current_version_name.lower()
+    )
+    logger.info(f"[EDP_CHAT] updating {code} on {resolved_date}: {', '.join(changes)} version_name={version_name!r}")
     upload_status, upload_data = await _post(
         "/edp/workflow/upload",
         {
             "workflow_json": workflow_json,
             "uploaded_by": "chat-user",
             "version_name": version_name,
-            "overwrite_version": True,
+            "overwrite_version": should_overwrite,
         },
     )
+    if upload_status == 409:
+        return (
+            f"❌ A saved version named **{version_name}** already exists (as a different config). "
+            f"Please choose a different name, or confirm you want to overwrite it."
+        )
     if upload_status >= 400:
         return f"❌ Update failed (HTTP {upload_status}): {upload_data.get('detail', upload_data)}"
 
@@ -337,8 +357,8 @@ async def update_edp_segment_window(
         else ""
     )
     return (
-        f"✅ Updated **{code}** ({', '.join(changes)}) and re-uploaded the config for "
-        f"**{upload_data.get('trade_date')}**{carried_from_note}.{deferred_note}"
+        f"✅ Updated **{code}** ({', '.join(changes)}) and saved it as **{upload_data.get('version_name')}** "
+        f"for **{upload_data.get('trade_date')}**{carried_from_note}.{deferred_note}"
     )
 
 
