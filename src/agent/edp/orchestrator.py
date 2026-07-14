@@ -21,8 +21,9 @@ AbstractSegmentStateMachine subclasses), all DB operations in repository.*.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Optional
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from .config import EdpBootstrapConfig, build_default_workflow_json
@@ -43,6 +44,19 @@ from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_windo
 from .utils.log_fmt import edp_log, seg_log
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger, otel_trace
+
+
+@dataclass
+class _UnitPlan:
+    """Per-cycle drive parameters that differ between a real segment and a
+    post-trade process; everything else in _drive_unit() is identical for
+    both."""
+
+    login_id: str
+    window_start: datetime
+    window_end: datetime
+    initial_state: SegmentState
+    initial_process: str
 
 
 class EdpOrchestrator:
@@ -191,50 +205,53 @@ class EdpOrchestrator:
     # Per-segment orchestration
     # -------------------------------------------------------------------------
 
-    @otel_trace
-    async def _process_one_segment(
+    async def _drive_unit(
         self,
         segment_code: str,
+        noun: str,
+        resolve_plan: Callable[[dict], Optional[_UnitPlan]],
     ) -> str:
         """
-        Run the pipeline executor for one cycle's worth of progress on this
-        segment. Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
+        Shared drive loop for one unit — real segment or post-trade process —
+        for one wake cycle. ``noun`` is the log label; ``resolve_plan`` maps
+        the active workflow_json to this unit's drive parameters, or None when
+        the unit's per-code config is missing and it must fail.
+
+        Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked".
         """
         active_date = self._cycle_active_date
         now = self._cycle_now
         async with get_session() as session:
             row = await repository.get_one(session, active_date, segment_code)
             if not row:
-                logger.error(seg_log(segment_code, active_date, "Segment row not found in DB"))
+                logger.error(seg_log(segment_code, active_date, f"{noun} row not found in DB"))
                 return "failed"
 
             workflow = await repository.get_active(session, active_date)
             if not workflow:
                 workflow = await repository.get_latest_effective(session, active_date)
             if not workflow:
-                logger.error(seg_log(segment_code, active_date, "No active workflow found"))
-                return "failed"
-
-            seg_cfg = _find_segment_cfg(workflow.workflow_json, segment_code)
-            if not seg_cfg:
                 logger.error(seg_log(
-                    segment_code, active_date,
-                    "Segment code missing from workflow_json — cannot process",
+                    segment_code, active_date, f"No active workflow found for {noun.lower()}",
                 ))
                 return "failed"
-            login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
 
-            window_start, window_end = _resolve_window(
-                segment_code, workflow.workflow_json, active_date, self._tz
-            )
+            plan = resolve_plan(workflow.workflow_json)
+            if plan is None:
+                logger.error(seg_log(
+                    segment_code, active_date,
+                    f"{noun} code missing from workflow_json — cannot process",
+                ))
+                return "failed"
+
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
             # Window not yet open
-            if not state_machine.is_my_time_window(now, window_start):
+            if not state_machine.is_my_time_window(now, plan.window_start):
                 logger.info(seg_log(
                     segment_code, active_date,
-                    "Segment window not yet open — skipping this cycle",
-                    window_opens=window_start.strftime("%H:%M:%S %Z"),
+                    f"{noun} window not yet open — skipping this cycle",
+                    window_opens=plan.window_start.strftime("%H:%M:%S %Z"),
                     now=now.strftime("%H:%M:%S %Z"),
                 ))
                 return "blocked"
@@ -242,19 +259,19 @@ class EdpOrchestrator:
             # Window deadline missed (PENDING only) — a local timeout, not a
             # CBOS-driven skip signal, so this is FAILED/TIMEOUT, not SKIPPED.
             if (
-                state_machine.is_my_window_over(now, window_end)
+                state_machine.is_my_window_over(now, plan.window_end)
                 and row.segment_status == SegmentStatus.PENDING
             ):
                 logger.warning(seg_log(
                     segment_code, active_date,
-                    "Segment window deadline passed without starting — marking FAILED",
-                    deadline=window_end.strftime("%H:%M:%S %Z"),
+                    f"{noun} window deadline passed without starting — marking FAILED",
+                    deadline=plan.window_end.strftime("%H:%M:%S %Z"),
                     now=now.strftime("%H:%M:%S %Z"),
                 ))
                 await repository.move_to_state(
                     session, row, SegmentStatus.FAILED,
                     category="TIMEOUT",
-                    reason=f"Past deadline {window_end.isoformat()}",
+                    reason=f"Past deadline {plan.window_end.isoformat()}",
                     now=now,
                 )
                 return "failed"
@@ -263,22 +280,22 @@ class EdpOrchestrator:
             if row.segment_status == SegmentStatus.PENDING:
                 row.segment_status = SegmentStatus.IN_PROGRESS
                 row.started_at = now
-                row.current_state = SegmentState.INIT
-                row.current_process = "BeginFileUpload"
+                row.current_state = plan.initial_state
+                row.current_process = plan.initial_process
                 await session.flush()
                 logger.info(seg_log(
                     segment_code, active_date,
-                    "Segment STARTED",
+                    f"{noun} STARTED",
                     started_at=now.strftime("%H:%M:%S %Z"),
-                    window_start=window_start.strftime("%H:%M:%S %Z") if window_start else None,
-                    window_end=window_end.strftime("%H:%M:%S %Z") if window_end else None,
+                    window_start=plan.window_start.strftime("%H:%M:%S %Z") if plan.window_start else None,
+                    window_end=plan.window_end.strftime("%H:%M:%S %Z") if plan.window_end else None,
                     first_state=row.current_state.value,
                 ))
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
                 logger.info(seg_log(
                     segment_code, active_date,
-                    "Resuming IN_PROGRESS segment",
+                    f"Resuming IN_PROGRESS {noun.lower()}",
                     state=row.current_state.value if row.current_state else None,
                     process=row.current_process,
                     pid=row.process_id,
@@ -291,15 +308,43 @@ class EdpOrchestrator:
                     cbos=self.cbos,
                     row=row,
                     session=session,
-                    login_id=login_id,
+                    login_id=plan.login_id,
                     now=now,
-                    window_end=window_end,
+                    window_end=plan.window_end,
                 )
             finally:
                 if not repository.is_handled(row):
                     await repository.touch_heartbeat(session, row)
 
         return result
+
+    @otel_trace
+    async def _process_one_segment(
+        self,
+        segment_code: str,
+    ) -> str:
+        """
+        Run the pipeline executor for one cycle's worth of progress on this
+        segment. Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
+        """
+        active_date = self._cycle_active_date
+
+        def resolve_plan(workflow_json: dict) -> Optional[_UnitPlan]:
+            seg_cfg = _find_segment_cfg(workflow_json, segment_code)
+            if not seg_cfg:
+                return None
+            window_start, window_end = _resolve_window(
+                segment_code, workflow_json, active_date, self._tz
+            )
+            return _UnitPlan(
+                login_id=seg_cfg.get("login_id", self.config.cbos_login_id),
+                window_start=window_start,
+                window_end=window_end,
+                initial_state=SegmentState.INIT,
+                initial_process="BeginFileUpload",
+            )
+
+        return await self._drive_unit(segment_code, "Segment", resolve_plan)
 
     # -------------------------------------------------------------------------
     # Post-trade (T+1) orchestration — 5 processes, independent of segments
@@ -357,105 +402,29 @@ class EdpOrchestrator:
     @otel_trace
     async def _process_one_post_trade(self, segment_code: str) -> str:
         """
-        One cycle's worth of progress on this post-trade process. Mirrors
-        _process_one_segment(); login_id/gtg_process_name/window resolved
-        from the active config, falling back to fixed constants otherwise.
+        One cycle's worth of progress on this post-trade process. Shares
+        _drive_unit() with _process_one_segment(); login_id/gtg_process_name/
+        window resolved from the active config, falling back to fixed
+        constants otherwise. Unlike a segment, a missing per-process config
+        is tolerated (constants fill in), so resolve_plan never returns None.
         """
         active_date = self._cycle_active_date
-        now = self._cycle_now
-        async with get_session() as session:
-            row = await repository.get_one(session, active_date, segment_code)
-            if not row:
-                logger.error(seg_log(segment_code, active_date, "Post-trade process row not found in DB"))
-                return "failed"
 
-            workflow = await repository.get_active(session, active_date)
-            if not workflow:
-                workflow = await repository.get_latest_effective(session, active_date)
-            if not workflow:
-                logger.error(seg_log(segment_code, active_date, "No active workflow found for post-trade process"))
-                return "failed"
-
-            proc_cfg = _find_post_trade_cfg(workflow.workflow_json, segment_code)
-            login_id = (proc_cfg or {}).get("login_id") or self.config.post_trade_login_id
-            gtg_process_name = _resolve_post_trade_process_name(segment_code, workflow.workflow_json)
-            window_start = _resolve_post_trade_window(
-                segment_code, workflow.workflow_json, active_date, self._tz
+        def resolve_plan(workflow_json: dict) -> Optional[_UnitPlan]:
+            proc_cfg = _find_post_trade_cfg(workflow_json, segment_code)
+            return _UnitPlan(
+                login_id=(proc_cfg or {}).get("login_id") or self.config.post_trade_login_id,
+                window_start=_resolve_post_trade_window(
+                    segment_code, workflow_json, active_date, self._tz
+                ),
+                window_end=_resolve_post_trade_window_end(
+                    segment_code, workflow_json, active_date, self._tz
+                ),
+                initial_state=SegmentState.WAITING_FOR_GTG,
+                initial_process=_resolve_post_trade_process_name(segment_code, workflow_json),
             )
-            window_end = _resolve_post_trade_window_end(
-                segment_code, workflow.workflow_json, active_date, self._tz
-            )
-            state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
-            if not state_machine.is_my_time_window(now, window_start):
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Post-trade process window not yet open — skipping this cycle",
-                    window_opens=window_start.strftime("%H:%M:%S %Z"),
-                    now=now.strftime("%H:%M:%S %Z"),
-                ))
-                return "blocked"
-
-            # Window deadline missed (PENDING only) — mirrors
-            # _process_one_segment()'s same check; without it a process
-            # that never even started would sit PENDING forever past its
-            # deadline instead of failing loudly.
-            if (
-                state_machine.is_my_window_over(now, window_end)
-                and row.segment_status == SegmentStatus.PENDING
-            ):
-                logger.warning(seg_log(
-                    segment_code, active_date,
-                    "Post-trade process window deadline passed without starting — marking FAILED",
-                    deadline=window_end.strftime("%H:%M:%S %Z"),
-                    now=now.strftime("%H:%M:%S %Z"),
-                ))
-                await repository.move_to_state(
-                    session, row, SegmentStatus.FAILED,
-                    category="TIMEOUT",
-                    reason=f"Past deadline {window_end.isoformat()}",
-                    now=now,
-                )
-                return "failed"
-
-            if row.segment_status == SegmentStatus.PENDING:
-                row.segment_status = SegmentStatus.IN_PROGRESS
-                row.started_at = now
-                row.current_state = SegmentState.WAITING_FOR_GTG
-                row.current_process = gtg_process_name
-                await session.flush()
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Post-trade process STARTED",
-                    started_at=now.strftime("%H:%M:%S %Z"),
-                    window_opens=window_start.strftime("%H:%M:%S %Z") if window_start else None,
-                    first_state=row.current_state.value,
-                ))
-
-            elif row.segment_status == SegmentStatus.IN_PROGRESS:
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Resuming IN_PROGRESS post-trade process",
-                    state=row.current_state.value if row.current_state else None,
-                    process=row.current_process,
-                ))
-            else:
-                return "blocked"
-
-            try:
-                result = await state_machine.execute_handler(
-                    cbos=self.cbos,
-                    row=row,
-                    session=session,
-                    login_id=login_id,
-                    now=now,
-                    window_end=window_end,
-                )
-            finally:
-                if not repository.is_handled(row):
-                    await repository.touch_heartbeat(session, row)
-
-        return result
+        return await self._drive_unit(segment_code, "Post-trade process", resolve_plan)
 
 
 # ---------------------------------------------------------------------------
