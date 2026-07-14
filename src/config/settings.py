@@ -6,12 +6,12 @@ bridged into os.environ by apply_config_env() below, before Settings() reads it,
 so the whole app is config-driven and needs no .env file.
 """
 
-import json
 import os
-from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings
+
+from src.config.config_file import load_raw_config
 
 _env_applied = False
 
@@ -36,14 +36,7 @@ def apply_config_env() -> None:
         return
     _env_applied = True
     try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = (
-            Path(ext)
-            if ext and Path(ext).exists()
-            else Path(__file__).parent / "agent_config.json"
-        )
-        with open(cfg_path) as f:
-            data = json.load(f)
+        data = load_raw_config()
         env_block = data.get("agent_config", {}).get("env", {})
         if isinstance(env_block, dict):
             for key, value in env_block.items():

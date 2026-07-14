@@ -53,9 +53,6 @@ Option B: StructuredTool with input schema (for complex typed inputs)
 Config-based MCP tools (this file) are merged with code tools automatically.
 """
 
-import json
-import os
-from pathlib import Path
 from typing import Any, Dict, List
 
 from cams_otel_lib import Logger as logger
@@ -63,19 +60,15 @@ from cams_otel_lib import Logger as logger
 
 def load_tool_configs() -> List[Dict[str, Any]]:
     """Read tools array from agent_config.json (checks agent_config section then tenant default)."""
+    from src.config.config_file import load_raw_config, resolve_config_path
+
     try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = (
-            Path(ext)
-            if ext
-            else Path(__file__).parent.parent / "config" / "agent_config.json"
-        )
+        cfg_path = resolve_config_path()
         logger.info(f"MCP loader: reading config from {cfg_path} (exists={cfg_path.exists()})")
-        if not cfg_path.exists():
-            logger.warning(f"MCP loader: config file not found at {cfg_path}")
+        data = load_raw_config()
+        if not data:
+            logger.warning(f"MCP loader: no config data loaded from {cfg_path}")
             return []
-        with open(cfg_path) as f:
-            data = json.load(f)
 
         tools = data.get("agent_config", {}).get("tools", [])
         if not tools:

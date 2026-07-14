@@ -3,7 +3,6 @@ Tool registry for the agent.
 Manages available tools and their initialization.
 """
 
-import json
 import os
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -24,22 +23,15 @@ from cams_otel_lib import Logger as logger, otel_trace, Otel_Client
 
 
 def _read_agent_instance_id() -> str:
-    """Read instance_id from runtime_context in config. APP_CONFIG_PATH takes priority."""
-    try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = (
-            Path(ext)
-            if ext and Path(ext).exists()
-            else Path(__file__).parent.parent / "config" / "agent_config.json"
-        )
-        with open(cfg_path) as f:
-            data = json.load(f)
-        return (
-            data.get("runtime_context", {}).get("instance_id")
-            or data.get("instance_id", "N/A")
-        )
-    except Exception:
-        return "N/A"
+    """Read instance_id from runtime_context in config (file location via
+    config_file; APP_CONFIG_PATH takes priority)."""
+    from src.config.config_file import load_raw_config
+
+    data = load_raw_config()
+    return (
+        data.get("runtime_context", {}).get("instance_id")
+        or data.get("instance_id", "N/A")
+    )
 
 
 # Initialize OTEL before any @otel_trace calls happen at module import time.

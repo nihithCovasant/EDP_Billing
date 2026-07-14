@@ -11,8 +11,6 @@ async requests.
 
 import os
 import uuid
-import json
-from pathlib import Path
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -28,38 +26,23 @@ from cams_otel_lib import (
     reset_observability_client,
 )
 from src.config.settings import settings
+from src.config.config_file import load_raw_config
 
 
 def _read_config_field(field: str, default: str = "N/A") -> str:
     """Read a field from agent_config.json, checking top-level then runtime_context."""
-    try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = Path(ext) if ext else Path(__file__).parent.parent / "config" / "agent_config.json"
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                data = json.load(f)
-                return data.get(field) or data.get("runtime_context", {}).get(field, default) or default
-    except Exception:
-        pass
-    return default
+    data = load_raw_config()
+    return data.get(field) or data.get("runtime_context", {}).get(field, default) or default
 
 
 def _read_agent_name_from_config() -> str:
     """Read agent name from agent_definition in agent_config.json."""
-    try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = Path(ext) if ext else Path(__file__).parent.parent / "config" / "agent_config.json"
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                data = json.load(f)
-                return (
-                    data.get("agent_definition", {}).get("name")
-                    or data.get("name")
-                    or "N/A"
-                )
-    except Exception:
-        pass
-    return "N/A"
+    data = load_raw_config()
+    return (
+        data.get("agent_definition", {}).get("name")
+        or data.get("name")
+        or "N/A"
+    )
 
 
 _CONFIG_TENANT_ID = _read_config_field("tenant_id")

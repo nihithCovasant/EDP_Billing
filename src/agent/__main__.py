@@ -59,6 +59,8 @@ _logging.basicConfig = lambda *a, **k: None  # noqa: E731
 from src.config.settings import apply_config_env
 apply_config_env()
 
+from src.config.config_file import load_raw_config
+
 import uvicorn
 from fastapi import Request, Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,22 +83,11 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 
 def _read_agent_config_field(field: str, default: str = "N/A") -> str:
-    """Read a top-level field from agent_config.json. APP_CONFIG_PATH takes priority."""
-    try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        if ext:
-            p = Path(ext)
-            if p.exists():
-                with open(p) as f:
-                    data = json.load(f)
-                    # Support both top-level and nested runtime_context
-                    return data.get(field) or data.get("runtime_context", {}).get(field, default)
-        config_path = Path(__file__).parent.parent / "config" / "agent_config.json"
-        with open(config_path) as f:
-            data = json.load(f)
-            return data.get(field) or data.get("runtime_context", {}).get(field, default)
-    except Exception:
-        return default
+    """Read a top-level field from agent_config.json, falling back to
+    runtime_context then the default. File location via config_file
+    (APP_CONFIG_PATH takes priority)."""
+    data = load_raw_config()
+    return data.get(field) or data.get("runtime_context", {}).get(field, default)
 
 
 
@@ -115,11 +106,8 @@ def create_agent_card() -> AgentCard:
     skills_cfg = []
     raw_version = "1.0.0"
     try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = Path(ext) if ext else Path(__file__).parent.parent / "config" / "agent_config.json"
-        if cfg_path.exists():
-            import json as _json
-            raw = _json.loads(cfg_path.read_text())
+        raw = load_raw_config()
+        if raw:
             adapter = CAMSConfigAdapter(raw)
             agent_def = adapter.get_agent_definition()
             capabilities_cfg = agent_def.get("capabilities", {})
