@@ -40,7 +40,7 @@
     "app_name_adk": "edp-billing",
     "instructions": "You are a knowledgeable AI assistant with access to various tools and knowledge sources.\n\nYour role is to:\n- Provide accurate, well-researched answers using retrieved information\n- Cite sources when relevant information is found\n- Clearly state when information is not available\n- Ask clarifying questions when queries are ambiguous\n- Maintain accuracy over completeness\n\nAlways prioritize factual accuracy and cite your sources when possible.",
     "llm_config": {
-      "model": "gemini/gemini-2.5-pro",
+      "model": "gemini-2.5-pro",
       "temperature": 0.3,
       "max_tokens": "4096",
       "provider": "google"
@@ -65,7 +65,7 @@
     },
     "secrets": {
       "litellm": {
-        "enabled": true,
+        "enabled": false,
         "base_url": "https://cams-litellm.dev.cams.covasant.io/v2",
         "api_key": "sk-1234"
       },
