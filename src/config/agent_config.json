@@ -55,14 +55,14 @@
       "OTEL_TRACING_ENABLED": "false",
       "OTEL_CONSOLE_TRACING": "false",
       "OTEL_CONFIG_UUID": "local-dev-fixed-uuid",
-      "EMAIL_GRAPH_TENANT_ID": "f95e6085-bcb8-4822-9ac0-20279ac8544b",
-      "EMAIL_GRAPH_CLIENT_ID": "509a2b5c-65a1-45e0-944d-75c80c54cbb9",
-      "EMAIL_GRAPH_CLIENT_SECRET": "92i8Q~tWxt4QkY-2r9fkswdNBwwikpvEW68efaE_",
+      "EMAIL_GRAPH_TENANT_ID": "",
+      "EMAIL_GRAPH_CLIENT_ID": "",
+      "EMAIL_GRAPH_CLIENT_SECRET": "",
       "EMAIL_GRAPH_SENDER": "rms@covasant.com",
       "EMAIL_GRAPH_TIMEOUT_SECONDS": "15",
       "EMAIL_FROM_NAME": "EDP Billing Alerts",
-      "EMAIL_DEFAULT_TO": "nihith.yelchuri@covasant.com",
-      "EMAIL_DEFAULT_CC": "nihith.yelchuri@covasant.com",
+      "EMAIL_DEFAULT_TO": "",
+      "EMAIL_DEFAULT_CC": "",
       "EMAIL_MAX_RETRIES": "2",
       "EMAIL_RETRY_BACKOFF_SECONDS": "2",
       "EMAIL_SERVICE_HOST": "0.0.0.0",
@@ -109,14 +109,14 @@
       },
       "database": {
         "postgres": {
-          "connection_string": "postgresql+asyncpg://postgres:postgres_pass@mofsl-dev.chqacuc8miip.ap-south-1.rds.amazonaws.com:5432/EDPB_CAMS_V1"
+          "connection_string": ""
         }
       },
       "edpb_download": {
         "api_url": "http://localhost:9300/api/edpb/download",
         "member_code": "0446",
-        "user_id": "0446",
-        "password": "Mosl@7777"
+        "user_id": "",
+        "password": ""
       }
     },
     "edp": {

@@ -16,11 +16,51 @@ from pydantic_settings import BaseSettings
 _env_applied = False
 
 
+def _deep_fill_missing(primary: dict, fallback: dict) -> dict:
+    """Recursively fill any key in `primary` that is absent, None, or "" with
+    the corresponding value from `fallback`. Never touches non-empty values,
+    booleans, numbers, or already-present lists — only fills true gaps."""
+    for key, fallback_val in fallback.items():
+        if key not in primary or primary[key] is None or primary[key] == "":
+            primary[key] = fallback_val
+        elif isinstance(primary[key], dict) and isinstance(fallback_val, dict):
+            _deep_fill_missing(primary[key], fallback_val)
+    return primary
+
+
+def load_effective_config_dict() -> dict:
+    """Load agent_config.json — the CAMS-mounted one if APP_CONFIG_PATH points
+    at an existing file, else the one committed/baked into the image — then,
+    only if a local.agent_config.json exists at the repo root, fill in any
+    blank/missing fields from it.
+
+    local.agent_config.json is a gitignored, local-dev-only file: it never
+    ships inside a built image or gets mounted by CAMS, so this fallback is a
+    no-op in any real deployment — there, agent_config.json alone always wins.
+    """
+    ext = os.getenv("APP_CONFIG_PATH")
+    primary_path = (
+        Path(ext)
+        if ext and Path(ext).exists()
+        else Path(__file__).parent / "agent_config.json"
+    )
+    with open(primary_path) as f:
+        primary = json.load(f)
+
+    local_path = Path(__file__).resolve().parents[2] / "local.agent_config.json"
+    if local_path.exists():
+        with open(local_path) as f:
+            local = json.load(f)
+        primary = _deep_fill_missing(primary, local)
+
+    return primary
+
+
 def apply_config_env() -> None:
-    """Bridge agent_config.json's `agent_config.env` block into os.environ so
-    every env-reading consumer (this Settings object, the EDP config loader,
-    cams_otel_lib, global_email_service, ...) is fed from that single file — no
-    .env required.
+    """Bridge the effective agent_config.json's `agent_config.env` block into
+    os.environ so every env-reading consumer (this Settings object, the EDP
+    config loader, cams_otel_lib, global_email_service, ...) is fed from that
+    single source — no .env required.
 
     Defined here rather than in a dedicated module because Settings() must call
     it before reading the environment, and settings.py imports nothing else from
@@ -28,22 +68,13 @@ def apply_config_env() -> None:
     module would cause. Uses os.environ.setdefault(), so an explicitly-set real
     environment variable still overrides the config value. Idempotent; never
     raises (a missing/malformed config just leaves os.environ as-is).
-
-    APP_CONFIG_PATH (if set and existing) takes priority for locating the file.
     """
     global _env_applied
     if _env_applied:
         return
     _env_applied = True
     try:
-        ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = (
-            Path(ext)
-            if ext and Path(ext).exists()
-            else Path(__file__).parent / "agent_config.json"
-        )
-        with open(cfg_path) as f:
-            data = json.load(f)
+        data = load_effective_config_dict()
         env_block = data.get("agent_config", {}).get("env", {})
         if isinstance(env_block, dict):
             for key, value in env_block.items():

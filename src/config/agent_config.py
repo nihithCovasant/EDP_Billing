@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from src.config.cams_config_adapter import load_cams_config
-from src.config.settings import settings
+from src.config.settings import settings, load_effective_config_dict
 from cams_otel_lib import Logger as logger, otel_trace
 
 _MULTI_TENANT = settings.multi_tenant_enabled
@@ -26,59 +26,35 @@ def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> None:
 @otel_trace
 def load_agent_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """
-    Load agent configuration from JSON file (CAMS schema).
-    
-    Priority:
-    1. Try external config path from settings.app_config_path (for multi-instance support)
-    2. Fall back to internal config path (default: src/config/agent_config.json)
+    Load agent configuration (CAMS schema).
+
+    Without an explicit config_path, this uses the same effective-config
+    resolution as apply_config_env() (see settings.load_effective_config_dict):
+    the CAMS-mounted/APP_CONFIG_PATH agent_config.json if present, else the
+    committed one baked into the image, with any blank/missing field filled in
+    from a local, gitignored local.agent_config.json when one exists (local
+    dev only — never present in a real deployment).
 
     Args:
-        config_path: Path to config file (overrides both external and internal paths)
+        config_path: Explicit file to load instead of the effective config
+            resolution above (bypasses the local.agent_config.json fallback).
 
     Returns:
         Configuration dictionary in internal format
     """
-    # Determine config path priority
-    if config_path is None:
-        # Try external path first (from environment variable)
-        if settings.app_config_path:
-            config_path = Path(settings.app_config_path)
-            logger.info(f"Attempting to load config from external path: {config_path}")
-        else:
-            # Fall back to internal image path
-            config_path = Path(__file__).parent / "agent_config.json"
-            logger.info(f"No external config path set, using internal path: {config_path}")
-
     try:
-        with open(config_path, "r") as f:
-            cams_config = json.load(f)
-        
-        logger.info(f"✓ Successfully loaded CAMS agent configuration from: {config_path}")
+        if config_path is not None:
+            with open(config_path, "r") as f:
+                cams_config = json.load(f)
+            logger.info(f"✓ Successfully loaded CAMS agent configuration from: {config_path}")
+        else:
+            cams_config = load_effective_config_dict()
+            logger.info("✓ Successfully loaded CAMS agent configuration (effective config)")
 
         # Convert CAMS schema to internal format
-        internal_config = load_cams_config(cams_config)
-
-
-        return internal_config
-    except FileNotFoundError:
-        # If external path fails, try internal fallback
-        if settings.app_config_path and config_path != Path(__file__).parent / "agent_config.json":
-            logger.warning(f"External config not found at {config_path}, falling back to internal config")
-            internal_path = Path(__file__).parent / "agent_config.json"
-            try:
-                with open(internal_path, "r") as f:
-                    cams_config = json.load(f)
-                logger.info(f"✓ Successfully loaded CAMS agent configuration from internal fallback: {internal_path}")
-                internal_config = load_cams_config(cams_config)
-                return internal_config
-            except Exception as e:
-                logger.error(f"Error loading config from internal fallback {internal_path}: {e}")
-                return {"default": {}}
-        else:
-            logger.error(f"Config file not found at {config_path}")
-            return {"default": {}}
+        return load_cams_config(cams_config)
     except Exception as e:
-        logger.error(f"Error loading config from {config_path}: {e}")
+        logger.error(f"Error loading config from {config_path or 'effective config'}: {e}")
         return {"default": {}}
 
 
