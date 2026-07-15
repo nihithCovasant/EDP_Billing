@@ -52,15 +52,16 @@ show_config() {
     echo "Configuration Summary:"
     echo "---------------------"
     # Runtime settings (agent name, host, port, log level, OTEL, EDP, email,
-    # ...) are loaded inside Python from agent_config.json's `env` block by
-    # apply_config_env() — they are NOT shell env vars here, so we don't echo
-    # misleading defaults. agent_config.json is the single source of truth.
+    # ...) are loaded inside Python from agent_config.json's `secrets.env`
+    # block by apply_config_env() — they are NOT shell env vars here, so we
+    # don't echo misleading defaults. agent_config.json is the single source
+    # of truth.
     if [ ! -z "$APP_CONFIG_PATH" ]; then
         echo "Config Path: $APP_CONFIG_PATH (external)"
     else
         echo "Config Path: /app/src/config/agent_config.json (internal)"
     fi
-    echo "Runtime settings: loaded from agent_config.json -> agent_config.env"
+    echo "Runtime settings: loaded from agent_config.json -> agent_config.secrets.env"
 
     # Show any explicit env-var overrides that are actually set (these win over
     # the config file via os.environ.setdefault()).

@@ -1,9 +1,9 @@
 """
 Application settings.
 
-Configuration comes from agent_config.json — its `agent_config.env` block is
-bridged into os.environ by apply_config_env() below, before Settings() reads it,
-so the whole app is config-driven and needs no .env file.
+Configuration comes from agent_config.json — its `agent_config.secrets.env`
+block is bridged into os.environ by apply_config_env() below, before
+Settings() reads it, so the whole app is config-driven and needs no .env file.
 """
 
 import json
@@ -37,6 +37,11 @@ def load_effective_config_dict() -> dict:
     local.agent_config.json is a gitignored, local-dev-only file: it never
     ships inside a built image or gets mounted by CAMS, so this fallback is a
     no-op in any real deployment — there, agent_config.json alone always wins.
+
+    Runtime env values (HOST, PORT, EMAIL_*, CORS_*, OTEL_*, ...) live under
+    `agent_config.secrets.env` (moved out of a bare `agent_config.env` so
+    every configurable value — not just DB/LLM/EDPB credentials — is covered
+    by the same single `secrets` block and the same local-fallback merge).
     """
     ext = os.getenv("APP_CONFIG_PATH")
     primary_path = (
@@ -57,10 +62,10 @@ def load_effective_config_dict() -> dict:
 
 
 def apply_config_env() -> None:
-    """Bridge the effective agent_config.json's `agent_config.env` block into
-    os.environ so every env-reading consumer (this Settings object, the EDP
-    config loader, cams_otel_lib, global_email_service, ...) is fed from that
-    single source — no .env required.
+    """Bridge the effective agent_config.json's `agent_config.secrets.env`
+    block into os.environ so every env-reading consumer (this Settings
+    object, the EDP config loader, cams_otel_lib, global_email_service, ...)
+    is fed from that single source — no .env required.
 
     Defined here rather than in a dedicated module because Settings() must call
     it before reading the environment, and settings.py imports nothing else from
@@ -75,7 +80,7 @@ def apply_config_env() -> None:
     _env_applied = True
     try:
         data = load_effective_config_dict()
-        env_block = data.get("agent_config", {}).get("env", {})
+        env_block = data.get("agent_config", {}).get("secrets", {}).get("env", {})
         if isinstance(env_block, dict):
             for key, value in env_block.items():
                 if value is not None:

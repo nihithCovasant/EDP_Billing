@@ -52,9 +52,9 @@ whatever `agent_config.json → secrets.database.postgres.connection_string`
 points at, so that database host must be reachable from the container.
 
 To change any setting, edit `src/config/agent_config.json` (its
-`agent_config.env` / `.secrets` / `.edp` blocks) — see the repo-level config
-docs. To override a single value for one run, pass an explicit `-e VAR=...`
-(explicit env vars still win over the config file).
+`agent_config.secrets.env` / other `.secrets` fields / `.edp` blocks) — see the
+repo-level config docs. To override a single value for one run, pass an
+explicit `-e VAR=...` (explicit env vars still win over the config file).
 
 ### Standalone `docker run`
 
@@ -75,8 +75,8 @@ priority order.
 
 `agent_config.json` is the **single source of truth**. At startup
 `apply_config_env()` (`src/config/settings.py`) bridges its
-`agent_config.env` block into the process environment, so every existing
-env-reading code path (pydantic `Settings`, `src/agent/edp/config.py`,
+`agent_config.secrets.env` block into the process environment, so every
+existing env-reading code path (pydantic `Settings`, `src/agent/edp/config.py`,
 `cams_otel_lib`, `global_email_service`, ...) is fed from the file — no `.env`
 and no `-e` flags required.
 
@@ -84,8 +84,9 @@ Edit these blocks in `src/config/agent_config.json`:
 
 | Block | Owns |
 |---|---|
-| `agent_config.env` | Server (`HOST`/`PORT`/`LOG_LEVEL`), `AGENT_NAME`, OTEL flags, `EDP_WAKE_INTERVAL_SECONDS`, `EDP_LOOP_ENABLED`, all `EMAIL_*` (dry-run, Graph credentials, recipients), `CBOS_*` overrides |
-| `agent_config.secrets` | LiteLLM gateway (`base_url`/`api_key`), `database.postgres.connection_string`, Pinecone, `edpb_download` |
+| `agent_config.secrets.env` | Server (`HOST`/`PORT`/`LOG_LEVEL`), `AGENT_NAME`, OTEL flags, `EDP_WAKE_INTERVAL_SECONDS`, `EDP_LOOP_ENABLED`, all `EMAIL_*` (dry-run, Graph credentials, recipients), `CBOS_*` overrides |
+| `agent_config.secrets.google` / `.litellm` | Direct Gemini API key (takes priority) and/or the LiteLLM gateway (`base_url`/`api_key`) fallback |
+| `agent_config.secrets` (other) | `database.postgres.connection_string`, Pinecone, `edpb_download` |
 | `agent_config.edp` | CBOS URLs / mock flag / login IDs, and the 9 segment / 5 post-trade-process window definitions |
 
 Because the bridge uses `os.environ.setdefault()`, an explicit env var

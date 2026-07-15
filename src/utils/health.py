@@ -103,9 +103,10 @@ class HealthChecker:
         try:
             from src.config.settings import settings
 
-            # Primary path: a direct MOFSL-provided GSU key for Google's
-            # Generative Language API (see llm_provider.py — this takes
-            # priority over the LiteLLM gateway when configured).
+            # Primary path: a direct Gemini/Google API key — either
+            # secrets.google.api_key (JSON) or GOOGLE_API_KEY (env var, e.g.
+            # bridged from secrets.env.GOOGLE_API_KEY) — see llm_provider.py,
+            # where this takes priority over the LiteLLM gateway.
             try:
                 from src.config.agent_config import get_secrets, load_agent_config
 
@@ -116,12 +117,12 @@ class HealthChecker:
                 google_cfg = {}
                 litellm_cfg = {}
 
-            if google_cfg.get("api_key"):
+            if google_cfg.get("api_key") or settings.google_api_key:
                 return ComponentHealth(
                     name="llm",
                     status=HealthStatus.HEALTHY,
-                    message="LLM configured via direct Google GSU key",
-                    details={"configured_providers": ["google_gsu_direct"]},
+                    message="LLM configured via direct Gemini API key",
+                    details={"configured_providers": ["google_direct"]},
                 )
 
             # Secondary path: the LiteLLM gateway. When enabled, all LLM

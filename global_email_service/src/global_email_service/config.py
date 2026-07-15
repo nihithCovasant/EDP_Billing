@@ -1,7 +1,7 @@
 """Service settings.
 
 Configuration comes from the host project's agent_config.json (its
-`agent_config.env` block), bridged into os.environ at import by
+`agent_config.secrets.env` block), bridged into os.environ at import by
 _apply_agent_config_env() below — so no .env file is required, matching the
 rest of the project. Real process environment variables still override, and a
 legacy .env is honored as a last-resort fallback if one happens to exist.
@@ -20,9 +20,9 @@ from typing import List, Optional
 
 
 def _apply_agent_config_env() -> None:
-    """Bridge the host project's agent_config.json `agent_config.env` block into
-    os.environ so this service is configured from that single source — no .env
-    file required, matching the rest of the project.
+    """Bridge the host project's agent_config.json `agent_config.secrets.env`
+    block into os.environ so this service is configured from that single
+    source — no .env file required, matching the rest of the project.
 
     When this service runs *embedded* in the EDP agent, the agent has already
     applied that block, so these values are present and this is a cheap no-op.
@@ -48,7 +48,7 @@ def _apply_agent_config_env() -> None:
             seen.add(cfg_path)
             if cfg_path.exists():
                 data = json.loads(cfg_path.read_text(encoding="utf-8"))
-                env_block = data.get("agent_config", {}).get("env", {})
+                env_block = data.get("agent_config", {}).get("secrets", {}).get("env", {})
                 if isinstance(env_block, dict):
                     for key, value in env_block.items():
                         if value is not None:

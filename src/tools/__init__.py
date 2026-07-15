@@ -8,8 +8,8 @@ import os
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-# Bridge agent_config.json's `env` block into os.environ first (single source
-# of truth), then load .env as a fallback. Order matters: setdefault means the
+# Bridge agent_config.json's `secrets.env` block into os.environ first (single
+# source of truth), then load .env as a fallback. Order matters: setdefault means the
 # config values win, and any .env only fills what config didn't set. Both make
 # OTEL_ENABLED, OTEL_CONFIG_UUID, AGENT_NAME, etc. visible to os.getenv() before
 # initialize_otel_client() runs below.

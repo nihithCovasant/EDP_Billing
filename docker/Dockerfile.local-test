@@ -1,0 +1,52 @@
+# LOCAL TEST ONLY — not committed, not used for real deployments.
+# Mirrors docker/Dockerfile exactly, except the builder stage uses
+# requirements-local.txt + the dev/cams_otel_lib local stub instead of the
+# GCP Artifact Registry (avoids needing the gcp_reader_sa secret / real
+# cams-otel-lib / platform-sdk-common packages for a local smoke-test build).
+# platform-sdk-common is omitted entirely — grep confirms it's never
+# imported anywhere in src/, so it's safe to skip for a local test image.
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN python3 -m venv venv
+ENV PATH="/app/venv/bin:$PATH"
+
+COPY requirements-local.txt .
+COPY global_email_service/ ./global_email_service/
+COPY dev/ ./dev/
+
+RUN pip install --upgrade pip \
+    && pip install -r requirements-local.txt \
+    && pip install -e dev/cams_otel_lib
+
+# Production stage
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY --from=builder /app/venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+COPY src/ ./src/
+COPY global_email_service/ ./global_email_service/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+COPY dev/ ./dev/
+
+COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
+
+RUN mkdir -p /app/config /app/secrets
+
+ENV HOST=0.0.0.0
+ENV PORT=8005
+
+EXPOSE 8005
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://localhost:%s/health/live' % os.getenv('PORT','8005'))" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["python", "-m", "src.agent"]

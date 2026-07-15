@@ -53,9 +53,9 @@ _root_logger.setLevel(_logging.INFO)
 # later — make that a no-op for handler setup so it can't re-add a blocking direct StreamHandler.
 _logging.basicConfig = lambda *a, **k: None  # noqa: E731
 
-# Export agent_config.json's `env` block into os.environ before any local
-# imports read it (settings, tools/OTEL init, the EDP config loader). Config is
-# the single source of truth — no .env file required.
+# Export agent_config.json's `secrets.env` block into os.environ before any
+# local imports read it (settings, tools/OTEL init, the EDP config loader).
+# Config is the single source of truth — no .env file required.
 from src.config.settings import apply_config_env
 apply_config_env()
 

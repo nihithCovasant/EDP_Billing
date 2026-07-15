@@ -236,18 +236,22 @@ def _create_google_llm(
 ) -> ChatGoogleGenerativeAI:
     """Create Google (Gemini) LLM instance.
 
-    Priority: MOFSL-provided GSU key (config.secrets.google.api_key) direct to
-    Google's Generative Language API > LiteLLM gateway > GOOGLE_API_KEY env var.
+    Priority — a direct Gemini API key always wins over the LiteLLM gateway:
+      1. config.secrets.google.api_key (JSON, direct to Google's Generative
+         Language API)
+      2. GOOGLE_API_KEY env var / config.secrets.env.GOOGLE_API_KEY (direct,
+         same API — bridged into os.environ by apply_config_env())
+      3. LiteLLM gateway (config.secrets.litellm)
     """
     google_config = _get_google_config()
-    gsu_api_key = google_config.get("api_key", "")
+    direct_api_key = google_config.get("api_key", "") or settings.google_api_key
 
-    if gsu_api_key:
+    if direct_api_key:
         direct_model = _strip_provider_prefix(model_name)
-        logger.debug(f"Creating Google LLM via direct GSU key: {direct_model}")
+        logger.debug(f"Creating Google LLM via direct Gemini API key: {direct_model}")
         extra = {"max_output_tokens": max_tokens} if max_tokens is not None else {}
         return ChatGoogleGenerativeAI(
-            google_api_key=SecretStr(gsu_api_key),
+            google_api_key=SecretStr(direct_api_key),
             model=direct_model,
             temperature=temperature,
             streaming=streaming,
@@ -258,20 +262,12 @@ def _create_google_llm(
     litellm_config = _get_litellm_config()
     litellm_enabled = litellm_config.get("enabled", False)
     litellm_base_url = litellm_config.get("base_url", "")
-
-    api_key = settings.google_api_key
     litellm_api_key = litellm_config.get("api_key", "")
-    if not api_key and not (litellm_enabled and litellm_base_url):
-        raise ValueError(
-            "No Google LLM credentials configured. Set secrets.google.api_key "
-            "in agent_config.json (GSU key), enable secrets.litellm, or set "
-            "GOOGLE_API_KEY."
-        )
 
     if litellm_enabled and litellm_base_url:
         logger.debug(f"Creating Google LLM via LiteLLM gateway: {model_name}")
         llm_kwargs = {
-            "api_key": SecretStr(litellm_api_key or api_key or "litellm-gateway"),
+            "api_key": SecretStr(litellm_api_key or "litellm-gateway"),
             "model": model_name,
             "temperature": temperature,
             "streaming": streaming,
@@ -283,18 +279,12 @@ def _create_google_llm(
             llm_kwargs["default_headers"] = custom_headers
         llm_kwargs.update(kwargs)
         return ChatOpenAI(**llm_kwargs)
-    else:
-        logger.debug(f"Creating Google LLM: {model_name}")
-        # Google uses max_output_tokens, not max_tokens
-        extra = {"max_output_tokens": max_tokens} if max_tokens is not None else {}
-        return ChatGoogleGenerativeAI(
-            google_api_key=SecretStr(api_key),
-            model=_strip_provider_prefix(model_name),
-            temperature=temperature,
-            streaming=streaming,
-            **extra,
-            **kwargs,
-        )
+
+    raise ValueError(
+        "No Google LLM credentials configured. Set secrets.google.api_key or "
+        "secrets.env.GOOGLE_API_KEY in agent_config.json, or enable "
+        "secrets.litellm."
+    )
 
 
 @otel_trace

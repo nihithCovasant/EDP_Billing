@@ -101,6 +101,15 @@
       "response": ""
     },
     "secrets": {
+      "env": {
+        "HOST": "0.0.0.0",
+        "PORT": "8005",
+        "LOG_LEVEL": "INFO",
+        "AGENT_NAME": "My Custom Agent",
+        "CORS_ALLOW_ORIGINS": "http://localhost:3000",
+        "CORS_ALLOW_ORIGIN_REGEX": "",
+        "GOOGLE_API_KEY": "your-direct-gemini-api-key-here"
+      },
       "google": {
         "api_key": "your-direct-google-gsu-api-key-here"
       },

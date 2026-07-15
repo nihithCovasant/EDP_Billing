@@ -31,9 +31,14 @@
 **`src/config/agent_config.json` is the single source of truth — no `.env` file is required.**
 
 At startup, `apply_config_env()` (`src/config/settings.py`) bridges the
-`agent_config.env` block into the process environment, so every setting —
-server, runtime flags, OTEL, EDP wake loop, email alerts — is read from that one
-file. Secrets live alongside it under `agent_config.secrets`.
+`agent_config.secrets.env` block into the process environment, so every
+setting — server, runtime flags, OTEL, EDP wake loop, email alerts — is read
+from that one file, alongside the rest of `agent_config.secrets`.
+
+Locally, a gitignored `local.agent_config.json` at the repo root fills in
+anything blank/missing in the committed `agent_config.json` (real secrets stay
+out of git). In a real CAMS deployment, the `agent_config.json` you upload via
+CAMS's UI always wins — `local.agent_config.json` never ships in that image.
 
 Edit `src/config/agent_config.json`:
 
