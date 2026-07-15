@@ -23,20 +23,44 @@ from cams_otel_lib import Logger as logger, otel_trace
 # Cache config to avoid reloading on every LLM creation
 _cached_config = None
 _cached_litellm_config = None
+_cached_google_config = None
 
 @otel_trace
 def _get_litellm_config():
     """Get LiteLLM configuration from config.secrets.litellm"""
     global _cached_config, _cached_litellm_config
-    
+
     if _cached_litellm_config is None:
         if _cached_config is None:
             _cached_config = load_agent_config()
-        
+
         secrets = get_secrets("default", _cached_config)
         _cached_litellm_config = secrets.get("litellm", {})
-    
+
     return _cached_litellm_config
+
+
+@otel_trace
+def _get_google_config():
+    """Get direct Google API (GSU) configuration from config.secrets.google"""
+    global _cached_config, _cached_google_config
+
+    if _cached_google_config is None:
+        if _cached_config is None:
+            _cached_config = load_agent_config()
+
+        secrets = get_secrets("default", _cached_config)
+        _cached_google_config = secrets.get("google", {})
+
+    return _cached_google_config
+
+
+def _strip_provider_prefix(model_name: str) -> str:
+    """Strip LiteLLM-style "provider/" prefixes (e.g. "gemini/gemini-2.5-pro")
+    so the model name is valid for Google's Generative Language API directly."""
+    if "/" in model_name:
+        return model_name.split("/", 1)[1]
+    return model_name
 
 
 class LLMProvider(str, Enum):
@@ -210,7 +234,27 @@ def _create_anthropic_llm(
 def _create_google_llm(
     model_name: str, temperature: float, streaming: bool, custom_headers: Optional[dict] = None, max_tokens: Optional[int] = None, **kwargs
 ) -> ChatGoogleGenerativeAI:
-    """Create Google (Gemini) LLM instance with optional LiteLLM gateway support."""
+    """Create Google (Gemini) LLM instance.
+
+    Priority: MOFSL-provided GSU key (config.secrets.google.api_key) direct to
+    Google's Generative Language API > LiteLLM gateway > GOOGLE_API_KEY env var.
+    """
+    google_config = _get_google_config()
+    gsu_api_key = google_config.get("api_key", "")
+
+    if gsu_api_key:
+        direct_model = _strip_provider_prefix(model_name)
+        logger.debug(f"Creating Google LLM via direct GSU key: {direct_model}")
+        extra = {"max_output_tokens": max_tokens} if max_tokens is not None else {}
+        return ChatGoogleGenerativeAI(
+            google_api_key=SecretStr(gsu_api_key),
+            model=direct_model,
+            temperature=temperature,
+            streaming=streaming,
+            **extra,
+            **kwargs,
+        )
+
     litellm_config = _get_litellm_config()
     litellm_enabled = litellm_config.get("enabled", False)
     litellm_base_url = litellm_config.get("base_url", "")
@@ -219,8 +263,9 @@ def _create_google_llm(
     litellm_api_key = litellm_config.get("api_key", "")
     if not api_key and not (litellm_enabled and litellm_base_url):
         raise ValueError(
-            "GOOGLE_API_KEY environment variable is not set. "
-            "Please set it in your .env file."
+            "No Google LLM credentials configured. Set secrets.google.api_key "
+            "in agent_config.json (GSU key), enable secrets.litellm, or set "
+            "GOOGLE_API_KEY."
         )
 
     if litellm_enabled and litellm_base_url:
@@ -244,7 +289,7 @@ def _create_google_llm(
         extra = {"max_output_tokens": max_tokens} if max_tokens is not None else {}
         return ChatGoogleGenerativeAI(
             google_api_key=SecretStr(api_key),
-            model=model_name,
+            model=_strip_provider_prefix(model_name),
             temperature=temperature,
             streaming=streaming,
             **extra,
@@ -297,7 +342,7 @@ def validate_api_keys() -> dict:
     return {
         "openai": bool(os.getenv("OPENAI_API_KEY")),
         "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
-        "google": bool(os.getenv("GOOGLE_API_KEY")),
+        "google": bool(_get_google_config().get("api_key") or os.getenv("GOOGLE_API_KEY")),
     }
 
 

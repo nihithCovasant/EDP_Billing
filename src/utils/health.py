@@ -103,17 +103,32 @@ class HealthChecker:
         try:
             from src.config.settings import settings
 
-            # Primary path: the LiteLLM gateway. When enabled, all LLM traffic
-            # is routed through it (see llm_provider.py) and NO direct provider
-            # API key is required — so the old "no API keys" check is wrong for
-            # this deployment. Treat a configured gateway as healthy.
+            # Primary path: a direct MOFSL-provided GSU key for Google's
+            # Generative Language API (see llm_provider.py — this takes
+            # priority over the LiteLLM gateway when configured).
             try:
                 from src.config.agent_config import get_secrets, load_agent_config
 
-                litellm_cfg = get_secrets("default", load_agent_config()).get("litellm", {})
+                secrets = get_secrets("default", load_agent_config())
+                google_cfg = secrets.get("google", {})
+                litellm_cfg = secrets.get("litellm", {})
             except Exception:
+                google_cfg = {}
                 litellm_cfg = {}
 
+            if google_cfg.get("api_key"):
+                return ComponentHealth(
+                    name="llm",
+                    status=HealthStatus.HEALTHY,
+                    message="LLM configured via direct Google GSU key",
+                    details={"configured_providers": ["google_gsu_direct"]},
+                )
+
+            # Secondary path: the LiteLLM gateway. When enabled, all LLM
+            # traffic is routed through it (see llm_provider.py) and NO
+            # direct provider API key is required — so the old "no API keys"
+            # check is wrong for this deployment. Treat a configured gateway
+            # as healthy.
             if litellm_cfg.get("enabled") and litellm_cfg.get("base_url"):
                 return ComponentHealth(
                     name="llm",

@@ -96,8 +96,11 @@
       "response": "You are the EDP Billing Agent for MOFSL. Answer the user's question using the retrieved information and conversation history below. Prefer the retrieved context over prior knowledge, cite specifics (segment codes, process codes, statuses, amounts) when present, and clearly state when the information is not available.\n\nRETRIEVED INFORMATION:\n{context}\n\nCONVERSATION HISTORY:\n{conversation}\n\nUSER QUESTION: {question}\n\nProvide a helpful, accurate response:"
     },
     "secrets": {
+      "google": {
+        "api_key": ""
+      },
       "litellm": {
-        "enabled": true,
+        "enabled": false,
         "base_url": "https://cams-litellm.dev.cams.covasant.io/v2",
         "api_key": "sk-1234"
       },

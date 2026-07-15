@@ -101,6 +101,9 @@
       "response": ""
     },
     "secrets": {
+      "google": {
+        "api_key": "your-direct-google-gsu-api-key-here"
+      },
       "litellm": {
         "enabled": true,
         "base_url": "https://aifabric-litellm.example.com/v1",
