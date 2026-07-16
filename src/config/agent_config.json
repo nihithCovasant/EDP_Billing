@@ -72,7 +72,7 @@
         "AGENT_DESCRIPTION": "EDP Trade Process billing agent",
         "STREAMING_ENABLED": "true",
         "ENVIRONMENT": "dev",
-        "EDP_WAKE_INTERVAL_SECONDS": "5",
+        "EDP_WAKE_INTERVAL_SECONDS": "30",
         "EDP_LOOP_ENABLED": "true",
         "EMAIL_DRY_RUN": "false",
         "OTEL_ENABLED": "false",

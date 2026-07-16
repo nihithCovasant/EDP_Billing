@@ -279,6 +279,7 @@ def build_app() -> FastAPI:
     else:
         _cors_origins = [
             "https://aifabric-frontend.dev.cams.covasant.io",
+            "https://cams-frontend.staging.cams.covasant.io",
             "http://localhost:3000",
             "http://localhost:3001",
             "http://localhost:8000",
