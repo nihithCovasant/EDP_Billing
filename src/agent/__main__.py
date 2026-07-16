@@ -29,7 +29,24 @@ from logging.handlers import QueueHandler as _QueueHandler, QueueListener as _Qu
 
 _LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
-_log_formatter = _logging.Formatter("%(asctime)s %(levelname)s:%(name)s:%(message)s")
+_log_formatter = _logging.Formatter("%(asctime)s IST %(levelname)s:%(name)s:%(message)s")
+# Formatter.converter defaults to time.localtime — i.e. whatever the OS/
+# container timezone is (commonly UTC in Docker, since base images default
+# to it), NOT IST. This agent only ever operates in IST (see
+# EdpBootstrapConfig.timezone), so %(asctime)s is pinned to IST explicitly
+# here instead of depending on the deployment environment's TZ setting.
+import time as _time
+from datetime import datetime as _datetime
+from zoneinfo import ZoneInfo as _ZoneInfo
+
+_IST = _ZoneInfo("Asia/Kolkata")
+
+
+def _ist_converter(secs: float) -> _time.struct_time:
+    return _datetime.fromtimestamp(secs, tz=_IST).timetuple()
+
+
+_log_formatter.converter = _ist_converter
 
 try:
     sys.stdout.reconfigure(errors="backslashreplace")
