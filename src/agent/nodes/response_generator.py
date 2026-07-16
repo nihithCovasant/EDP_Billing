@@ -180,7 +180,15 @@ class ResponseGeneratorNode:
             _llm_start = _time.time()
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             _llm_duration = _time.time() - _llm_start
-            final_response = response.content.strip()
+            # response.content is usually a plain string, but some providers
+            # (e.g. Gemini via the direct Google SDK) can return a list of
+            # content blocks instead — normalize before .strip().
+            raw_content = response.content
+            if isinstance(raw_content, list):
+                raw_content = "".join(
+                    (b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw_content
+                )
+            final_response = raw_content.strip()
 
             # FEATURE:prometheus
             if _METRICS_AVAILABLE:

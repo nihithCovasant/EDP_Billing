@@ -26,6 +26,33 @@ from langgraph.checkpoint.memory import MemorySaver
 
 
 
+def _stringify_message_content(content: Any) -> str:
+    """
+    Normalize a LangChain message's .content to plain text.
+
+    Most providers (OpenAI-compatible, incl. the LiteLLM gateway) return a
+    plain string. Google's Gemini SDK (used directly now that LiteLLM is
+    optional, see src/utils/llm_provider.py) can return a *list* of content
+    blocks instead (e.g. [{"type": "text", "text": "..."}]) — passing that
+    straight through as final_response used to reach the chat UI as a raw
+    JSON array, which broke its markdown renderer (raw.replace is not a
+    function, since raw wasn't a string).
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    parts.append(text)
+        return "".join(parts)
+    return str(content) if content is not None else ""
+
+
 class AgentState(TypedDict):
     """
     Agent state definition — customise this for your agent's needs.
@@ -282,7 +309,7 @@ class AgentExecutor(A2AAgentExecutor):
             for msg in reversed(final_state["messages"]):
                 if isinstance(msg, _AIMessage) and not getattr(msg, "tool_calls", None):
                     final_state = dict(final_state)
-                    final_state["final_response"] = msg.content
+                    final_state["final_response"] = _stringify_message_content(msg.content)
                     break
 
         return final_state
