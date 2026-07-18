@@ -279,6 +279,9 @@ def test_validate_workflow_json_accepts_valid_config():
 # API layer -- version endpoints (list / get / apply / delete)
 # =============================================================================
 
+ADMIN_HEADERS = {"X-User-Role": "System Administrator"}
+
+
 @pytest.fixture
 def api_client():
     app = FastAPI()
@@ -335,7 +338,7 @@ async def test_apply_workflow_version_is_noop_when_already_active(
         await session.commit()
 
     async with api_client as client:
-        resp = await client.post(f"/edp/workflow/versions/{name}/apply", json={})
+        resp = await client.post(f"/edp/workflow/versions/{name}/apply", json={}, headers=ADMIN_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
         assert body["is_new"] is False
@@ -366,7 +369,7 @@ async def test_apply_workflow_version_creates_new_row_and_moves_name_when_not_ac
         await session.commit()
 
     async with api_client as client:
-        resp = await client.post(f"/edp/workflow/versions/{name}/apply", json={})
+        resp = await client.post(f"/edp/workflow/versions/{name}/apply", json={}, headers=ADMIN_HEADERS)
         assert resp.status_code == 200
         body = resp.json()
         assert body["is_new"] is True
@@ -388,9 +391,58 @@ async def test_delete_workflow_version_endpoint(cfg, session_factory, test_date,
         await session.commit()
 
     async with api_client as client:
-        resp = await client.delete(f"/edp/workflow/versions/{name}")
+        resp = await client.delete(f"/edp/workflow/versions/{name}", headers=ADMIN_HEADERS)
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
 
-        second = await client.delete(f"/edp/workflow/versions/{name}")
+        second = await client.delete(f"/edp/workflow/versions/{name}", headers=ADMIN_HEADERS)
         assert second.status_code == 404
+
+
+# =============================================================================
+# API layer -- mutating endpoints require the System Administrator role
+# =============================================================================
+
+async def test_apply_workflow_version_rejects_non_admin_role(cfg, session_factory, test_date, api_client):
+    name = _version_name()
+    async with session_factory() as session:
+        await repository.upload(
+            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+        )
+        await session.commit()
+
+    async with api_client as client:
+        no_role_resp = await client.post(f"/edp/workflow/versions/{name}/apply", json={})
+        assert no_role_resp.status_code == 403
+
+        wrong_role_resp = await client.post(
+            f"/edp/workflow/versions/{name}/apply", json={}, headers={"X-User-Role": "Viewer"},
+        )
+        assert wrong_role_resp.status_code == 403
+
+
+async def test_delete_workflow_version_rejects_non_admin_role(cfg, session_factory, test_date, api_client):
+    name = _version_name()
+    async with session_factory() as session:
+        await repository.upload(
+            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+        )
+        await session.commit()
+
+    async with api_client as client:
+        resp = await client.delete(f"/edp/workflow/versions/{name}")
+        assert resp.status_code == 403
+
+    # The version must still exist -- the rejected request must not have
+    # touched anything.
+    async with session_factory() as session:
+        assert await repository.get_by_version_name(session, name) is not None
+
+
+async def test_upload_workflow_rejects_non_admin_role(api_client):
+    async with api_client as client:
+        resp = await client.post(
+            "/edp/workflow/upload",
+            json={"workflow_json": _simple_workflow_json(), "version_name": _version_name()},
+        )
+    assert resp.status_code == 403

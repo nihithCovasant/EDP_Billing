@@ -15,7 +15,17 @@
           <h1>EDP Billing Assistant</h1>
           <p>Trade-day processing · Motilal Oswal</p>
         </div>
-        <button id="newChatBtn" class="new-chat-btn" title="Start a new conversation">+ New chat</button>
+        <div class="topbar-actions">
+          <label class="role-select-wrap" title="Dev-only: simulates the caller role a real auth gateway/JWT would supply. Config changes (upload/apply/delete a workflow version) require System Administrator.">
+            <span class="role-select-label">Role</span>
+            <select id="roleSelect" class="role-select">
+              <option value="">No role (unauthenticated)</option>
+              <option value="Viewer">Viewer</option>
+              <option value="System Administrator">System Administrator</option>
+            </select>
+          </label>
+          <button id="newChatBtn" class="new-chat-btn" title="Start a new conversation">+ New chat</button>
+        </div>
       </div>
     </header>
 

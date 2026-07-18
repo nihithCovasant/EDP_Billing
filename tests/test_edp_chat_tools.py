@@ -19,6 +19,41 @@ async def _invoke(tool, **kwargs) -> str:
 
 
 # =============================================================================
+# _actor_headers() -- forwards the current request's caller identity/role
+# onto this agent's own internal /edp/* API calls (see api/auth.py's
+# require_admin_role, which needs X-User-Role to recognize a chat-driven
+# config change as coming from an admin).
+# =============================================================================
+
+class _FakeRequestContext:
+    def __init__(self, userid):
+        self.userid = userid
+
+
+def test_actor_headers_forwards_userid_and_role(monkeypatch):
+    monkeypatch.setattr(edp_status, "get_request_context", lambda: _FakeRequestContext("a@b.com (uid:1)"))
+    monkeypatch.setattr(edp_status, "get_current_role", lambda: "System Administrator")
+
+    headers = edp_status._actor_headers()
+
+    assert headers == {"X-User-ID": "a@b.com (uid:1)", "X-User-Role": "System Administrator"}
+
+
+def test_actor_headers_omits_missing_values(monkeypatch):
+    monkeypatch.setattr(edp_status, "get_request_context", lambda: None)
+    monkeypatch.setattr(edp_status, "get_current_role", lambda: None)
+
+    assert edp_status._actor_headers() == {}
+
+
+def test_actor_headers_ignores_placeholder_na_userid(monkeypatch):
+    monkeypatch.setattr(edp_status, "get_request_context", lambda: _FakeRequestContext("N/A"))
+    monkeypatch.setattr(edp_status, "get_current_role", lambda: None)
+
+    assert edp_status._actor_headers() == {}
+
+
+# =============================================================================
 # update_edp_segment_window -- version_name is a required argument, and
 # whether overwrite_version ends up True depends on whether the caller's
 # chosen name matches the config's current name.

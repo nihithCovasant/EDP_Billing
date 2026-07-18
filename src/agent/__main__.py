@@ -110,6 +110,24 @@ def _read_agent_config_field(field: str, default: str = "N/A") -> str:
         return default
 
 
+def _resolve_request_user_id(default: str) -> str:
+    """
+    Real per-request caller identity, if available — decoded from this
+    request's own Authorization: Bearer JWT (or X-User-ID header) by
+    OtelContextMiddleware, see src/middleware/claims_middleware.py. Falls
+    back to `default` (the static scaffold-time config value, the same for
+    every caller) only when no request-scoped identity was set — e.g. a
+    call with no auth header at all, or outside a real HTTP request.
+    """
+    try:
+        from cams_otel_lib import get_request_context
+        ctx = get_request_context()
+    except Exception:
+        ctx = None
+    userid = getattr(ctx, "userid", None) if ctx else None
+    return userid if userid and userid != "N/A" else default
+
+
 
 
 
@@ -346,10 +364,15 @@ def build_app() -> FastAPI:
             if not query:
                 return {"error": "Query is required"}
 
-            # Read runtime context from config (injected at scaffold time from JWT)
+            # tenant_id/instance_id: static, scaffold-time config (same for
+            # every caller of this agent instance). user_id: prefer the real
+            # caller's own identity for THIS request (decoded from their
+            # Authorization: Bearer JWT by OtelContextMiddleware), falling
+            # back to the static config value only if no JWT/header was
+            # sent — see _resolve_request_user_id().
             tenant_id = _read_agent_config_field("tenant_id", default="default")
-            user_id = _read_agent_config_field("user_id", default="")
             instance_id = _read_agent_config_field("instance_id", default="N/A")
+            user_id = _resolve_request_user_id(_read_agent_config_field("user_id", default=""))
 
             thread_id = body.get("conversation_id") or f"thread_{uuid.uuid4().hex[:16]}"
 

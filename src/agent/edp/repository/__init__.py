@@ -1,6 +1,7 @@
 """Repository package — re-exports all public DB operations."""
 
 from .control import get_effective_state, record_action, get_history as get_control_history
+from .audit import record_event as record_audit_event, get_history as get_audit_history
 from .workflow import (
     get_active,
     get_latest_effective,
@@ -33,6 +34,9 @@ __all__ = [
     "get_effective_state",
     "record_action",
     "get_control_history",
+    # audit
+    "record_audit_event",
+    "get_audit_history",
     # workflow
     "get_active",
     "get_latest_effective",

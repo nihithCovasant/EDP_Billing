@@ -1,9 +1,10 @@
 """
-SQLAlchemy models for EDP Billing agent — 3 tables, all prefixed edpb_:
+SQLAlchemy models for EDP Billing agent — 4 tables, all prefixed edpb_:
 
 edpb_properties          — daily uploaded JSON config per trade_date
 edpb_segment_execution   — runtime state per (trade_date, segment_code)
 edpb_agent_control       — append-only START/STOP audit log
+edpb_audit_log           — append-only config-change audit log
 
 No foreign keys (soft references only). All tables are append-only.
 """
@@ -97,6 +98,11 @@ class SegmentState(str, enum.Enum):
 class AgentControlAction(str, enum.Enum):
     START = "START"
     STOP = "STOP"
+
+
+class AuditAction(str, enum.Enum):
+    WORKFLOW_UPLOAD = "WORKFLOW_UPLOAD"
+    WORKFLOW_VERSION_DELETE = "WORKFLOW_VERSION_DELETE"
 
 
 # ---------------------------------------------------------------------------
@@ -381,4 +387,56 @@ class AgentControl(Base):
     snapshot_json: Mapped[dict | None] = mapped_column(
         _MutableJSON, nullable=True,
         comment="Runtime state snapshot at time of action"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Table 4: edpb_audit_log
+# ---------------------------------------------------------------------------
+
+class AuditLog(Base):
+    """
+    Append-only audit trail of config changes — who changed what, when.
+
+    Scope is deliberately narrow: workflow config uploads (this includes
+    the chat "quick patch" tool update_edp_segment_window, which re-uploads
+    a patched config under the hood — see api/workflow.py's shared
+    _upload_workflow_for_date()) and named-version deletes. Applying a
+    saved version either results in a no-op (nothing changed, nothing
+    logged) or funnels through that same upload path, so it needs no
+    separate action of its own. This is NOT a log of every read, EDP
+    segment state transition, or chat query — see edpb_segment_execution
+    for runtime processing history instead.
+
+    `actor` prefers the real caller identity from the request context
+    (X-User-ID header -> OtelContextMiddleware, see
+    src/middleware/claims_middleware.py) over any self-reported
+    "uploaded_by" in the request body — see api/workflow.py::_resolve_actor()
+    — falling back to that only when no request-scoped identity is
+    available (e.g. a direct repository call in a test/script).
+    """
+
+    __tablename__ = "edpb_audit_log"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    actor: Mapped[str] = mapped_column(String(256), nullable=False)
+    action: Mapped[AuditAction] = mapped_column(Enum(AuditAction), nullable=False)
+    trade_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    version_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    config_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True,
+        comment="edpb_properties.id this event relates to — no FK constraint"
+    )
+    summary: Mapped[str] = mapped_column(
+        Text, nullable=False,
+        comment="Short human-readable description, e.g. 'EQ.window_start 17:00 -> 18:00'"
+    )
+    changes_json: Mapped[dict] = mapped_column(
+        _MutableJSON, nullable=False, default=dict,
+        comment="Structured before/after diff — see api/workflow.py::diff_workflow_configs()"
     )

@@ -82,6 +82,14 @@ def set_request_context(ctx: RequestContext) -> Token:
     return _request_context.set(ctx)
 
 
+def get_request_context() -> Optional[RequestContext]:
+    """Current request's context (set by OtelContextMiddleware), or None
+    outside a request (e.g. a script/background task with no HTTP
+    request). Mirrors the real cams-otel-lib's
+    platform_sdk.common.request_context_var.get_request_context()."""
+    return _request_context.get()
+
+
 def reset_request_context(token: Token) -> None:
     _request_context.reset(token)
 

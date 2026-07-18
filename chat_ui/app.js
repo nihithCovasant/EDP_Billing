@@ -3,6 +3,13 @@
 
 const API_URL = "/agent/run";
 const STORAGE_KEY = "edpb_chat_conversation_id";
+// Dev-only role simulator (see require_admin_role() in
+// src/agent/edp/api/auth.py) -- a real deployment gets this from the CAMS
+// gateway's JWT `role` claim instead; this <select> exists purely so this
+// bundled chat UI can test admin-gated actions (upload/apply/delete a
+// workflow version) without a real auth setup. Persists across reloads via
+// localStorage, sent as X-User-Role on every /agent/run call.
+const ROLE_STORAGE_KEY = "edpb_chat_role";
 
 const DEFAULT_SUGGESTIONS = [
   "How is today's EDP processing going?",
@@ -76,6 +83,7 @@ const formEl = document.getElementById("chatForm");
 const inputEl = document.getElementById("chatInput");
 const sendBtn = document.getElementById("sendBtn");
 const newChatBtn = document.getElementById("newChatBtn");
+const roleSelectEl = document.getElementById("roleSelect");
 
 let conversationId = sessionStorage.getItem(STORAGE_KEY) || null;
 let isSending = false;
@@ -377,9 +385,13 @@ async function sendMessage(query) {
   appendTypingIndicator();
 
   try {
+    const headers = { "Content-Type": "application/json" };
+    const role = roleSelectEl ? roleSelectEl.value : "";
+    if (role) headers["X-User-Role"] = role;
+
     const response = await fetch(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         query,
         conversation_id: conversationId,
@@ -440,6 +452,13 @@ newChatBtn.addEventListener("click", () => {
   renderSuggestions();
   refreshDayStatus();
 });
+
+if (roleSelectEl) {
+  roleSelectEl.value = localStorage.getItem(ROLE_STORAGE_KEY) || "";
+  roleSelectEl.addEventListener("change", () => {
+    localStorage.setItem(ROLE_STORAGE_KEY, roleSelectEl.value);
+  });
+}
 
 initSuggestionCards();
 renderSuggestions();

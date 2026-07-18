@@ -184,3 +184,21 @@ class AgentStopResponse(AgentControlResponse):
 class AgentStatusResponse(BaseModel):
     effective_state: str
     history: List[AgentControlResponse] = Field(default_factory=list)
+
+
+# =============================================================================
+# Audit log
+# =============================================================================
+
+class AuditLogEntry(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    occurred_at: datetime
+    actor: str
+    action: str
+    trade_date: Optional[date] = None
+    version_name: Optional[str] = None
+    config_id: Optional[str] = None
+    summary: str
+    changes_json: Dict[str, Any] = Field(default_factory=dict)

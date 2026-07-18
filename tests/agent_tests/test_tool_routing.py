@@ -179,7 +179,7 @@ def test_status_query_routes_to_get_edp_status(client):
         async def __aexit__(self, *a):
             return False
 
-        async def get(self, url):
+        async def get(self, url, headers=None):
             assert url.endswith("/edp/status/2026-07-13")
             return FakeHTTPResponse()
 
@@ -272,7 +272,7 @@ async def test_get_edp_status_tool_output_directly_for_cross_check():
         async def __aexit__(self, *a):
             return False
 
-        async def get(self, url):
+        async def get(self, url, headers=None):
             return FakeHTTPResponse()
 
     with patch.object(edp_status_module.httpx, "AsyncClient", FakeAsyncClient):

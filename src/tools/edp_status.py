@@ -15,13 +15,24 @@ registration needed.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 import httpx
 from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
+
+try:
+    from cams_otel_lib import get_request_context
+except ImportError:  # pragma: no cover - defensive, older cams-otel-lib
+    get_request_context = None
+
+try:
+    from src.middleware.claims_middleware import get_current_role
+except ImportError:  # pragma: no cover - defensive
+    get_current_role = None
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -57,9 +68,48 @@ _CODE_ALIASES: Dict[str, str] = {
 
 _TIME_FORMATS = ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H.%M")
 
+_DATE_FORMATS = (
+    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
+    "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%B %d, %Y", "%b %d, %Y",
+)
+_ORDINAL_SUFFIX_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
+
+# Relative-day phrasing the LLM might pass through verbatim instead of
+# converting to an ISO date itself — resolved relative to today (IST).
+_RELATIVE_DAYS: Dict[str, int] = {
+    "today": 0,
+    "yesterday": -1,
+    "the day before yesterday": -2,
+    "day before yesterday": -2,
+    "tomorrow": 1,
+}
+
 
 def _resolve_code(identifier: str) -> Optional[str]:
     return _CODE_ALIASES.get(identifier.strip().upper())
+
+
+def _normalize_date(raw: str) -> str:
+    """
+    Best-effort "YYYY-MM-DD" normalizer for a user-supplied date phrase —
+    handles relative terms ("yesterday", "today") and common absolute
+    formats ("10th July 2026", "2026-07-10", "10-07-2026"), so callers
+    still work even if the LLM passes the phrase through unconverted.
+    Falls back to the raw string unchanged if nothing matches (the
+    downstream API call will then just 404/422 on an unparseable date).
+    """
+    cleaned = raw.strip().lower()
+    if cleaned in _RELATIVE_DAYS:
+        target = datetime.now(IST).date() + timedelta(days=_RELATIVE_DAYS[cleaned])
+        return target.isoformat()
+
+    cleaned = _ORDINAL_SUFFIX_RE.sub("", raw.strip())
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(cleaned, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return raw
 
 
 def _normalize_time(raw: str) -> str:
@@ -87,9 +137,44 @@ def _today_ist() -> str:
     return datetime.now(IST).date().isoformat()
 
 
+def _actor_headers() -> Dict[str, str]:
+    """
+    Forward the current request's caller identity AND role (if any) to
+    this same agent's own /edp/* API:
+    - X-User-ID lets audit log entries (see GET /edp/audit) attribute
+      chat-driven config changes to the real caller instead of a generic
+      fallback string — OtelContextMiddleware on the receiving end
+      (src/middleware/claims_middleware.py) re-derives its request context
+      from this same header.
+    - X-User-Role lets mutating config endpoints (upload/apply/delete —
+      see api/auth.py::require_admin_role) recognize a chat-driven change
+      as coming from an admin, since this internal call has no
+      Authorization header of its own to decode; without forwarding this,
+      every config change via chat would be rejected with 403 even for an
+      actual System Administrator.
+    """
+    headers: Dict[str, str] = {}
+    if get_request_context is not None:
+        try:
+            ctx = get_request_context()
+        except Exception:
+            ctx = None
+        userid = getattr(ctx, "userid", None) if ctx else None
+        if userid and userid != "N/A":
+            headers["X-User-ID"] = userid
+    if get_current_role is not None:
+        try:
+            role = get_current_role()
+        except Exception:
+            role = None
+        if role:
+            headers["X-User-Role"] = role
+    return headers
+
+
 async def _get(path: str) -> tuple[int, Dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(f"{_base_url()}{path}")
+        resp = await client.get(f"{_base_url()}{path}", headers=_actor_headers())
     try:
         return resp.status_code, resp.json()
     except Exception:
@@ -98,7 +183,7 @@ async def _get(path: str) -> tuple[int, Dict[str, Any]]:
 
 async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{_base_url()}{path}", json=json_body)
+        resp = await client.post(f"{_base_url()}{path}", json=json_body, headers=_actor_headers())
     try:
         return resp.status_code, resp.json()
     except Exception:
@@ -107,7 +192,7 @@ async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, An
 
 async def _delete(path: str) -> tuple[int, Dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.delete(f"{_base_url()}{path}")
+        resp = await client.delete(f"{_base_url()}{path}", headers=_actor_headers())
     try:
         return resp.status_code, resp.json()
     except Exception:
@@ -190,9 +275,11 @@ async def list_edp_workflow_versions() -> str:
         return "No saved workflow versions yet."
     lines = ["### 📁 Saved EDP workflow versions", "", "| Name | Trade date | Segments | Post-trade | Uploaded by |", "|---|---|---|---|---|"]
     for v in data:
+        post_trade_count = v.get("post_trade_process_count")
         lines.append(
-            f"| **{v.get('version_name')}** | {v.get('trade_date')} | {v.get('segment_count')} | "
-            f"{v.get('post_trade_process_count')} | {v.get('uploaded_by')} |"
+            f"| **{v.get('version_name') or '—'}** | {v.get('trade_date') or '—'} | "
+            f"{v.get('segment_count', '—')} | {post_trade_count if post_trade_count is not None else '—'} | "
+            f"{v.get('uploaded_by') or '—'} |"
         )
     return "\n".join(lines)
 
@@ -234,6 +321,57 @@ async def delete_edp_workflow_version(version_name: str) -> str:
     if status_code >= 400:
         return f"❌ Could not delete version (HTTP {status_code}): {data.get('detail', data)}"
     return f"✅ Removed the saved name **{version_name}** (the config itself is untouched)."
+
+
+def _fmt_ts_ist(raw: Optional[str]) -> str:
+    """Best-effort "YYYY-MM-DD HH:MM IST" formatter for an ISO timestamp
+    string coming back from the API — falls back to the raw value
+    unchanged if it doesn't parse."""
+    if not raw:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(raw)
+        return dt.astimezone(IST).strftime("%Y-%m-%d %H:%M IST")
+    except ValueError:
+        return raw
+
+
+@tool
+async def list_edp_audit_log(trade_date: Optional[str] = None, limit: int = 20) -> str:
+    """
+    Show recent EDP workflow config changes — who changed what, when. Use
+    this when the user asks "what changed recently", "who updated the
+    config", "show me the audit log/trail", "who changed CASH's window",
+    etc. Covers workflow uploads (including quick single-field patches via
+    update_edp_segment_window, which re-upload under the hood) and named-
+    version deletes.
+
+    `trade_date` is optional (any date phrasing, e.g. "today", "2026-07-10")
+    — filters to changes affecting that trading date; omit it to see the
+    most recent changes across all dates. `limit` caps how many entries
+    come back (default 20, max 200).
+    """
+    path = f"/edp/audit?limit={limit}"
+    if trade_date:
+        path += f"&trade_date={_normalize_date(trade_date)}"
+    status_code, data = await _get(path)
+    if status_code >= 400:
+        return f"❌ Could not fetch the audit log (HTTP {status_code}): {data.get('detail', data)}"
+    if not data:
+        return "No audit log entries yet" + (f" for **{trade_date}**." if trade_date else ".")
+
+    lines = [
+        "### 📝 Recent EDP config changes",
+        "",
+        "| When (IST) | Actor | Action | Trade date | Version | What changed |",
+        "|---|---|---|---|---|---|",
+    ]
+    for e in data:
+        lines.append(
+            f"| {_fmt_ts_ist(e.get('occurred_at'))} | {e.get('actor')} | {e.get('action')} | "
+            f"{e.get('trade_date') or '—'} | {e.get('version_name') or '—'} | {e.get('summary')} |"
+        )
+    return "\n".join(lines)
 
 
 @tool
@@ -285,7 +423,7 @@ async def update_edp_segment_window(
             f"or a common name like Cash, F&O, CD, Collateral Valuation."
         )
 
-    resolved_date = trade_date or _today_ist()
+    resolved_date = _normalize_date(trade_date) if trade_date else _today_ist()
     status_code, data = await _get(f"/edp/workflow/{resolved_date}")
     if status_code == 404:
         return (
@@ -365,17 +503,22 @@ async def update_edp_segment_window(
 @tool
 async def get_edp_status(trade_date: Optional[str] = None, segment_code: Optional[str] = None) -> str:
     """
-    Check EDP billing processing status. Use this when the user asks about
-    the status of a segment, a trading day, or "how is today's processing
-    going".
+    Check EDP billing processing status for ANY trading day — today,
+    yesterday, or any past date. Use this whenever the user asks about the
+    status of a segment/process, or a whole trading day, for any date —
+    e.g. "how is today's processing going", "what happened with EQ
+    yesterday", "show me DR's status on 10th July 2026", "was anything
+    skipped last Monday's run" — this is the one tool for all of those,
+    just with a different `trade_date`.
 
-    `trade_date` is optional, format YYYY-MM-DD — defaults to today (IST) if
-    not mentioned. `segment_code` is optional (e.g. "EQ", "COLVAL") — if the
-    user names a specific segment/process, pass it to get its full detail;
-    if they ask about the whole day, leave it out to get a summary of every
-    segment for that day.
+    `trade_date` is optional — any date phrasing works ("yesterday",
+    "today", "10th July 2026", "2026-07-10", ...); defaults to today (IST)
+    if not mentioned. `segment_code` is optional (e.g. "EQ", "COLVAL") — if
+    the user names a specific segment/process, pass it to get its full
+    detail; if they ask about the whole day, leave it out to get a summary
+    of every segment for that day.
     """
-    resolved_date = trade_date or _today_ist()
+    resolved_date = _normalize_date(trade_date) if trade_date else _today_ist()
 
     if segment_code:
         status_code, data = await _get(f"/edp/status/{resolved_date}/{segment_code.upper()}")

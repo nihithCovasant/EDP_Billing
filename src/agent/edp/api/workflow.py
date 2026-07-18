@@ -15,10 +15,12 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from .auth import require_admin_role
 from ..config import load_edp_config
 from ..database import get_session
+from ..models import AuditAction
 from ..repository import (
     upload,
     get_active,
@@ -28,6 +30,7 @@ from ..repository import (
     list_versions,
     clear_version_name,
     has_processing_started,
+    record_audit_event,
 )
 from ..utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER
 from ..utils.datetime_utils import now_ist, resolve_active_date
@@ -39,6 +42,11 @@ from .schemas import (
     WorkflowVersionApplyRequest,
 )
 from cams_otel_lib import Logger as logger, otel_trace
+
+try:
+    from cams_otel_lib import get_request_context
+except ImportError:  # pragma: no cover - defensive, see _resolve_actor()
+    get_request_context = None
 
 router = APIRouter()
 
@@ -157,6 +165,92 @@ def _validate_workflow_json(workflow_json: dict) -> None:
                 _validate_hhmm(proc.get("window_end"), f"post_trade_processes[{i}] ({code}).window_end")
 
 
+def _resolve_actor(explicit: str) -> str:
+    """
+    Prefer the real caller identity from the request context (X-User-ID
+    header -> OtelContextMiddleware, see src/middleware/claims_middleware.py)
+    over the request body's self-reported `uploaded_by`, which any caller
+    can set to anything. Falls back to `explicit` when no request-scoped
+    identity is available (e.g. a direct repository call in a test/script,
+    or a version of cams-otel-lib that predates get_request_context()).
+    """
+    if get_request_context is not None:
+        try:
+            ctx = get_request_context()
+        except Exception:
+            ctx = None
+        userid = getattr(ctx, "userid", None) if ctx else None
+        if userid and userid != "N/A":
+            return userid
+    return explicit or "unknown"
+
+
+def _index_by_code(items: list, key: str) -> dict:
+    return {
+        item.get(key): item
+        for item in (items or [])
+        if isinstance(item, dict) and item.get(key)
+    }
+
+
+_DIFF_WATCHED_FIELDS = ("window_start", "window_end", "login_id")
+
+
+def _diff_section(old_items: list, new_items: list, key: str) -> list[dict]:
+    old_by_code = _index_by_code(old_items, key)
+    new_by_code = _index_by_code(new_items, key)
+    changes: list[dict] = []
+    for code, new_item in new_by_code.items():
+        old_item = old_by_code.get(code)
+        if old_item is None:
+            changes.append({"code": code, "change": "added"})
+            continue
+        for field in _DIFF_WATCHED_FIELDS:
+            if field in old_item or field in new_item:
+                old_value, new_value = old_item.get(field), new_item.get(field)
+                if old_value != new_value:
+                    changes.append({
+                        "code": code, "change": "modified", "field": field,
+                        "old": old_value, "new": new_value,
+                    })
+    for code in old_by_code:
+        if code not in new_by_code:
+            changes.append({"code": code, "change": "removed"})
+    return changes
+
+
+def diff_workflow_configs(old_json: dict | None, new_json: dict) -> tuple[str, dict]:
+    """
+    Compare two workflow_json configs and return (human summary, structured
+    diff) for the audit log — segments keyed by segment_code, post_trade_
+    processes keyed by process_code. old_json=None (first-ever upload for a
+    date) is reported as an initial config, not a "change".
+    """
+    if old_json is None:
+        return "Initial config for this trade date", {"initial": True, "segments": [], "post_trade_processes": []}
+
+    seg_changes = _diff_section(old_json.get("segments"), new_json.get("segments"), "segment_code")
+    pt_changes = _diff_section(
+        old_json.get("post_trade_processes"), new_json.get("post_trade_processes"), "process_code",
+    )
+    all_changes = seg_changes + pt_changes
+    if not all_changes:
+        return "Re-uploaded with no effective changes", {"segments": seg_changes, "post_trade_processes": pt_changes}
+
+    modified = [c for c in all_changes if c["change"] == "modified"]
+    added = [c["code"] for c in all_changes if c["change"] == "added"]
+    removed = [c["code"] for c in all_changes if c["change"] == "removed"]
+    parts = [f"{c['code']}.{c['field']} {c['old']!r}\u2192{c['new']!r}" for c in modified]
+    bits = []
+    if parts:
+        bits.append(", ".join(parts))
+    if added:
+        bits.append(f"added {', '.join(added)}")
+    if removed:
+        bits.append(f"removed {', '.join(removed)}")
+    return "; ".join(bits), {"segments": seg_changes, "post_trade_processes": pt_changes}
+
+
 async def _upload_workflow_for_date(
     today: date,
     workflow_json: dict,
@@ -173,9 +267,14 @@ async def _upload_workflow_for_date(
     deferred to tomorrow instead of disrupting the in-flight run; a day
     where every segment is still PENDING applies the change immediately.
     """
+    actor = _resolve_actor(uploaded_by)
     async with get_session() as session:
         deferred = await has_processing_started(session, today)
         effective_date = today + timedelta(days=1) if deferred else today
+
+        prior = await get_active(session, effective_date) or await get_latest_effective(session, effective_date)
+        old_workflow_json = prior.workflow_json if prior else None
+
         try:
             row, is_new = await upload(
                 session,
@@ -187,6 +286,19 @@ async def _upload_workflow_for_date(
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+
+        if is_new:
+            summary, changes = diff_workflow_configs(old_workflow_json, workflow_json)
+            await record_audit_event(
+                session,
+                actor=actor,
+                action=AuditAction.WORKFLOW_UPLOAD,
+                summary=summary,
+                trade_date=effective_date,
+                version_name=row.version_name,
+                config_id=row.id,
+                changes=changes,
+            )
     if deferred:
         logger.warning(
             f"POST /workflow/upload: {today} already has processing underway — "
@@ -215,7 +327,7 @@ async def _upload_workflow_for_date(
     }
 
 
-@router.post("/workflow/upload", response_model=WorkflowUploadResponse)
+@router.post("/workflow/upload", response_model=WorkflowUploadResponse, dependencies=[Depends(require_admin_role)])
 @otel_trace
 async def upload_workflow(body: WorkflowUploadRequest):
     """
@@ -289,7 +401,11 @@ async def get_workflow_version(version_name: str):
     }
 
 
-@router.post("/workflow/versions/{version_name}/apply", response_model=WorkflowUploadResponse)
+@router.post(
+    "/workflow/versions/{version_name}/apply",
+    response_model=WorkflowUploadResponse,
+    dependencies=[Depends(require_admin_role)],
+)
 @otel_trace
 async def apply_workflow_version(version_name: str, body: WorkflowVersionApplyRequest):
     """
@@ -335,7 +451,7 @@ async def apply_workflow_version(version_name: str, body: WorkflowVersionApplyRe
     )
 
 
-@router.delete("/workflow/versions/{version_name}")
+@router.delete("/workflow/versions/{version_name}", dependencies=[Depends(require_admin_role)])
 @otel_trace
 async def delete_workflow_version(version_name: str):
     """
@@ -344,6 +460,14 @@ async def delete_workflow_version(version_name: str):
     """
     async with get_session() as session:
         removed = await clear_version_name(session, version_name)
+        if removed:
+            await record_audit_event(
+                session,
+                actor=_resolve_actor("ops"),
+                action=AuditAction.WORKFLOW_VERSION_DELETE,
+                summary=f"Un-named saved version {version_name!r}",
+                version_name=version_name,
+            )
     if not removed:
         raise HTTPException(status_code=404, detail=f"No saved version named {version_name!r}")
     return {"version_name": version_name, "deleted": True}

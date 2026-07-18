@@ -17,7 +17,7 @@ from sqlalchemy import delete
 
 from src.agent.edp import repository
 from src.agent.edp.config import EdpBootstrapConfig, build_default_workflow_json
-from src.agent.edp.models import EdpProperties, SegmentExecution, SegmentStatus
+from src.agent.edp.models import AuditLog, EdpProperties, SegmentExecution, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER, NEXT_DAY_WINDOW_SEGMENTS
 
@@ -121,6 +121,9 @@ async def cleanup_day(session_factory, trade_date: date) -> None:
         )
         await session.execute(
             delete(EdpProperties).where(EdpProperties.trade_date == trade_date)
+        )
+        await session.execute(
+            delete(AuditLog).where(AuditLog.trade_date == trade_date)
         )
         await session.commit()
 
