@@ -89,6 +89,7 @@ CBOS API request / response shapes
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json as _json
 import time as _time
@@ -248,6 +249,56 @@ class CbosClient:
         # Post-trade "already triggered" pre-checks default to False;
         # tests opt in via mock_mark_already_triggered().
         self._mock_already_triggered_segments: set[str] = set()
+
+    # -------------------------------------------------------------------------
+    # Connectivity check — GET /edp/health (see src/agent/__main__.py)
+    # -------------------------------------------------------------------------
+
+    @otel_trace
+    async def check_connectivity(self) -> dict:
+        """
+        Lightweight reachability probe for both CBOS base URLs — a plain GET
+        with a short timeout, deliberately NOT a real business call (no
+        Segment/ProcessName payload), so a health check can't accidentally
+        trigger billing side effects. Any HTTP response (even 404/405 — CBOS
+        has no route at the bare base URL) counts as "reachable"; only a
+        connection error/timeout counts as unreachable.
+        """
+        if self.use_mock:
+            return {
+                "status": "mock",
+                "status_url": {"ok": True, "url": self.status_url},
+                "process_url": {"ok": True, "url": self.process_url},
+            }
+
+        async def _probe(url: str) -> dict:
+            t0 = _time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(url)
+                return {
+                    "ok": True,
+                    "url": url,
+                    "http_status": resp.status_code,
+                    "latency_ms": int((_time.monotonic() - t0) * 1000),
+                }
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "url": url,
+                    "error": str(exc),
+                    "latency_ms": int((_time.monotonic() - t0) * 1000),
+                }
+
+        status_result, process_result = await asyncio.gather(
+            _probe(self.status_url), _probe(self.process_url),
+        )
+        overall_ok = status_result["ok"] and process_result["ok"]
+        return {
+            "status": "ok" if overall_ok else "error",
+            "status_url": status_result,
+            "process_url": process_result,
+        }
 
     # -------------------------------------------------------------------------
     # 1. file_process_status — Good-to-Go / completion checks

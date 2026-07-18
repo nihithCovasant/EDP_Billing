@@ -282,6 +282,8 @@ async def move_to_state(
 
 async def _send_terminal_alert(row: SegmentExecution) -> None:
     """Best-effort email alert — failures are logged, never raised."""
+    from ..alert_health import record_alert_attempt
+
     try:
         from global_email_service import send_segment_alert
         from ..utils.serializers import serialize_segment_alert
@@ -292,12 +294,14 @@ async def _send_terminal_alert(row: SegmentExecution) -> None:
             f"[ALERT] segment={row.segment_code} | Alert email sent for "
             f"status={row.segment_status.value}"
         )
+        record_alert_attempt(success=True)
     except Exception as exc:
         logger.error(
             f"[ALERT] segment={row.segment_code} | Failed to send alert email "
             f"(status={row.segment_status.value}): {exc}",
             exc_info=True,
         )
+        record_alert_attempt(success=False, error=str(exc))
 
 
 # =============================================================================

@@ -14,4 +14,19 @@ logs/
 # Local SQLite dev DB (Postgres is the real backing store — see .env)
 *.db
 *.sqlite3
-/config/agent_config.json
+
+# Real agent config (LLM/DB/EDPB credentials) — never commit. Only the
+# checked-in agent_config.example.json (placeholders only) should be tracked.
+# NOTE: previously written as "/config/agent_config.json", which never
+# actually matched this file's real path, so it was tracked with a live
+# password in git history. Rotate that password before/when sharing this
+# repo's history externally.
+src/config/agent_config.json
+
+# Internal-only docs (PRDs, architecture notes, contracts) — not meant for
+# a client-facing repo. Keep README.md at root; everything else that's a
+# "document" rather than code lives here.
+docs/
+
+# Cursor IDE local workspace state (not project source)
+.cursor/

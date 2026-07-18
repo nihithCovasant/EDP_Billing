@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
 from .config import load_edp_config, EdpBootstrapConfig
 from .database import close_database, init_database
 from .orchestrator import EdpOrchestrator
+from .utils.datetime_utils import now_ist
 from .utils.log_fmt import edp_log
 from src.tools.cbos_client import CbosClient
 from cams_otel_lib import Logger as logger, otel_trace
@@ -39,6 +41,11 @@ class EdpWakeLoop:
         # Monotonic (not wall-clock) timestamp of the last cycle start — used
         # by liveness_check() to detect a wedged loop.
         self._last_cycle_started_at: Optional[float] = None
+        # Wall-clock (IST) start/end timestamps of the last cycle — reported
+        # by health_snapshot() for GET /edp/health; separate from the
+        # monotonic field above, which exists purely for staleness math.
+        self._last_cycle_started_at_wall: Optional[datetime] = None
+        self._last_cycle_ended_at_wall: Optional[datetime] = None
 
     @otel_trace
     async def start(self) -> None:
@@ -119,6 +126,7 @@ class EdpWakeLoop:
     async def _run_one_cycle(self) -> None:
         """Run exactly one wake cycle: orchestrator pass + START/END/ERROR logging."""
         self._last_cycle_started_at = time.monotonic()
+        self._last_cycle_started_at_wall = now_ist()
         self._cycle_count += 1
         cycle_no = self._cycle_count
         t0 = time.monotonic()
@@ -146,6 +154,37 @@ class EdpWakeLoop:
                 elapsed_ms=elapsed_ms,
                 error=str(exc),
             ), exc_info=True)
+        finally:
+            # Recorded even on error/exception -- an "ended" timestamp that
+            # never advances is itself useful wedged-loop evidence.
+            self._last_cycle_ended_at_wall = now_ist()
+
+    @property
+    def cbos(self) -> Optional[CbosClient]:
+        """The orchestrator's CbosClient, if the loop has started — used by
+        GET /edp/health's CBOS connectivity check (see __main__.py)."""
+        return self._orchestrator.cbos if self._orchestrator else None
+
+    def health_snapshot(self) -> Dict[str, Any]:
+        """
+        Billing-loop section of GET /edp/health (see __main__.py) — whether
+        the loop is running at all, plus the last cycle's start/end wall-clock
+        times, distinct from liveness_check()'s wedged-loop staleness math.
+        """
+        running = self._task is not None and not self._task.done()
+        return {
+            "running": running,
+            "cycle_count": self._cycle_count,
+            "last_cycle_started_at": (
+                self._last_cycle_started_at_wall.isoformat()
+                if self._last_cycle_started_at_wall else None
+            ),
+            "last_cycle_ended_at": (
+                self._last_cycle_ended_at_wall.isoformat()
+                if self._last_cycle_ended_at_wall else None
+            ),
+            "wake_interval_seconds": self._config.wake_interval_seconds if self._config else None,
+        }
 
     async def liveness_check(self) -> Tuple[bool, str]:
         """

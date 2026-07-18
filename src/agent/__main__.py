@@ -335,7 +335,68 @@ def build_app() -> FastAPI:
             media_type="application/json",
         )
 
+    @app.get("/edp/health")
+    async def edp_health_check():
+        """
+        EDP-specific health check — distinct from the generic /health above
+        (which only covers the CAMS scaffold's own LLM/DB/tools/etc). Reports:
+          - billing_loop: is the 24/7 wake loop running, plus its last cycle's
+            start/end wall-clock times (see EdpWakeLoop.health_snapshot()).
+          - database: a live "SELECT 1" against the EDP DB, with latency
+            (see database.check_connectivity()).
+          - cbos: a lightweight reachability probe of both CBOS base URLs
+            (see CbosClient.check_connectivity()) — "mock" status when
+            EDP_USE_MOCK_CBOS=true, never treated as a failure in that mode.
+          - alerts: last terminal-status alert email attempt/success/failure
+            (see alert_health.py) — informational only, never fails the
+            overall status on its own (a fresh process with zero alerts sent
+            yet is normal, not a failure).
 
+        Returns 200 if billing_loop, database, and cbos are all healthy;
+        503 Service Unavailable otherwise (chosen over a plain 500 since
+        this reports a genuinely unavailable dependency, not a server bug —
+        503 is the standard code for exactly this case and is what
+        Kubernetes/most LB health checks expect for "not ready").
+        """
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+        from fastapi import Response as _Response
+        from src.agent.edp.database import check_connectivity as check_db_connectivity
+        from src.agent.edp.alert_health import get_alert_health
+
+        loop_snapshot = edp_loop.health_snapshot()
+        loop_alive, loop_alive_reason = await edp_loop.liveness_check()
+
+        db_result, cbos_result = await asyncio.gather(
+            check_db_connectivity(),
+            edp_loop.cbos.check_connectivity() if edp_loop.cbos is not None else asyncio.sleep(0, result={
+                "status": "error", "error": "CBOS client not initialized (wake loop not started)",
+            }),
+        )
+
+        billing_loop_ok = loop_snapshot["running"] and loop_alive
+        db_ok = db_result.get("status") == "ok"
+        cbos_ok = cbos_result.get("status") in ("ok", "mock")
+
+        overall_ok = billing_loop_ok and db_ok and cbos_ok
+        payload = {
+            "status": "healthy" if overall_ok else "unhealthy",
+            "checked_at": _dt.now(_ZI("Asia/Kolkata")).isoformat(),
+            "billing_loop": {
+                **loop_snapshot,
+                "enabled": edp_loop_enabled,
+                "alive": loop_alive,
+                "alive_reason": loop_alive_reason,
+            },
+            "database": db_result,
+            "cbos": cbos_result,
+            "alerts": get_alert_health(),
+        }
+        return _Response(
+            content=json.dumps(payload),
+            status_code=200 if overall_ok else 503,
+            media_type="application/json",
+        )
 
     @app.post("/agent/run")
     async def agent_run_endpoint(http_request: Request, body: dict = Body(...)):

@@ -5,9 +5,11 @@ Async database engine and session factory for the EDP agent.
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -42,6 +44,26 @@ async def close_database() -> None:
         await _engine.dispose()
     _engine = None
     _session_factory = None
+
+
+@otel_trace
+async def check_connectivity() -> Dict[str, Any]:
+    """
+    Live "SELECT 1" against the EDP database — used by GET /edp/health (see
+    src/agent/__main__.py). Deliberately a fresh live check every call rather
+    than a passively-cached timestamp: a stale "last successful" time would
+    hide an outage that started right after the last successful check.
+    """
+    if _session_factory is None:
+        return {"status": "error", "error": "Database not initialized", "latency_ms": 0}
+    t0 = time.monotonic()
+    try:
+        async with get_session() as session:
+            await session.execute(text("SELECT 1"))
+        return {"status": "ok", "latency_ms": int((time.monotonic() - t0) * 1000)}
+    except Exception as exc:
+        logger.error(f"EDP database connectivity check failed: {exc}")
+        return {"status": "error", "error": str(exc), "latency_ms": int((time.monotonic() - t0) * 1000)}
 
 
 @asynccontextmanager
