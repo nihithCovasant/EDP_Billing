@@ -31,3 +31,5 @@ docs/
 
 # Cursor IDE local workspace state (not project source)
 .cursor/
+src/config/agent_config.json
+src/config/agent_config.json

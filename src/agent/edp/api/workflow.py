@@ -1,13 +1,20 @@
 """
 Workflow endpoints.
 
-  POST   /edp/workflow/upload                     — upload workflow config (applies now)
+  POST   /edp/workflow/upload                     — upload workflow config (applies now)      [admin]
   GET    /edp/workflow/{trade_date}                — get active workflow for a date
   GET    /edp/workflow/{trade_date}/history        — all config versions for a date
   GET    /edp/workflow/versions                    — list all named versions
   GET    /edp/workflow/versions/{name}             — get one named version's full config
-  POST   /edp/workflow/versions/{name}/apply       — re-apply a saved version now
+  POST   /edp/workflow/versions/{name}/apply       — re-apply a saved version now               [admin]
   DELETE /edp/workflow/versions/{name}             — un-name a version (soft delete the name)
+
+require_admin_role (see ./auth.py) is scoped to exactly the two actions
+that change what's running or when: uploading a config (which sets/edits
+segment + post-trade window timings) and applying a saved version
+(which changes which version is active). Everything else — listing,
+reading, and un-naming a saved version — is unrestricted, since none of
+those mutate timings or the active version.
 """
 
 from __future__ import annotations
@@ -451,12 +458,17 @@ async def apply_workflow_version(version_name: str, body: WorkflowVersionApplyRe
     )
 
 
-@router.delete("/workflow/versions/{version_name}", dependencies=[Depends(require_admin_role)])
+@router.delete("/workflow/versions/{version_name}")
 @otel_trace
 async def delete_workflow_version(version_name: str):
     """
     Un-name a saved version (soft delete — only clears the name, the
     underlying config row and its audit history are untouched).
+
+    Not admin-gated: this only removes a label, it neither changes which
+    version is active nor alters any segment/post-trade timings — the two
+    actions require_admin_role is scoped to (see upload_workflow /
+    apply_workflow_version below).
     """
     async with get_session() as session:
         removed = await clear_version_name(session, version_name)

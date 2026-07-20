@@ -383,6 +383,9 @@ async def test_apply_workflow_version_creates_new_row_and_moves_name_when_not_ac
 
 
 async def test_delete_workflow_version_endpoint(cfg, session_factory, test_date, api_client):
+    """Deleting (un-naming) a saved version is intentionally NOT admin-gated
+    (see api/auth.py) -- it's just a label change, not a timing/active-version
+    change -- so this deliberately calls it with no X-User-Role header."""
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
@@ -391,11 +394,11 @@ async def test_delete_workflow_version_endpoint(cfg, session_factory, test_date,
         await session.commit()
 
     async with api_client as client:
-        resp = await client.delete(f"/edp/workflow/versions/{name}", headers=ADMIN_HEADERS)
+        resp = await client.delete(f"/edp/workflow/versions/{name}")
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
 
-        second = await client.delete(f"/edp/workflow/versions/{name}", headers=ADMIN_HEADERS)
+        second = await client.delete(f"/edp/workflow/versions/{name}")
         assert second.status_code == 404
 
 
@@ -421,7 +424,10 @@ async def test_apply_workflow_version_rejects_non_admin_role(cfg, session_factor
         assert wrong_role_resp.status_code == 403
 
 
-async def test_delete_workflow_version_rejects_non_admin_role(cfg, session_factory, test_date, api_client):
+async def test_delete_workflow_version_allowed_without_any_role(cfg, session_factory, test_date, api_client):
+    """require_admin_role is scoped to "changing versions" (apply) and
+    "updating segment timings" (upload) only -- delete/un-name is neither,
+    so it must succeed with no X-User-Role header and no Authorization JWT."""
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
@@ -431,12 +437,11 @@ async def test_delete_workflow_version_rejects_non_admin_role(cfg, session_facto
 
     async with api_client as client:
         resp = await client.delete(f"/edp/workflow/versions/{name}")
-        assert resp.status_code == 403
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
 
-    # The version must still exist -- the rejected request must not have
-    # touched anything.
     async with session_factory() as session:
-        assert await repository.get_by_version_name(session, name) is not None
+        assert await repository.get_by_version_name(session, name) is None
 
 
 async def test_upload_workflow_rejects_non_admin_role(api_client):

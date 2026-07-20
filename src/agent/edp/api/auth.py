@@ -1,11 +1,13 @@
 """
-Role-based access control for mutating EDP workflow endpoints.
+Role-based access control for EDP workflow endpoints.
 
-Config changes (upload, apply a saved version, delete a saved version --
-the same "config changes" scope as the edpb_audit_log trail, see
-models.py::AuditLog) require the caller to hold the System Administrator
-role. Read-only endpoints (status, list/get versions, audit log) are
-unrestricted.
+Deliberately narrow: only the two actions that change what actually runs
+today require the caller to hold the System Administrator role --
+uploading a config (which sets/edits segment + post-trade window timings)
+and applying a saved version (which changes which version is active).
+Everything else, including deleting/un-naming a saved version (a label
+change with no effect on timings or the active config -- see
+models.py::AuditLog for how it's still audited), is unrestricted.
 
 Reads directly from the request's own headers on every call -- an
 Authorization: Bearer JWT's `role` claim (decoded, not verified; see
