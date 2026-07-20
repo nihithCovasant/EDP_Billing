@@ -108,6 +108,9 @@
       },
       "pinecone": {
         "environment": "us-east-1-aws"
+      },
+      "edpb_download": {
+        "api_url": "http://localhost:7000"
       }
     }
   },

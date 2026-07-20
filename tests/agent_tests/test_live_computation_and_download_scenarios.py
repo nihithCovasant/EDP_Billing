@@ -16,16 +16,15 @@ Key facts (see test_tool_routing.py docstring for full detail):
 - `simple_calculator(expression)` evaluates a Python expression and returns
   `f"Result: {result}"`.
 - `text_counter(text)` returns `f"Characters: {char_count}, Words: {word_count}"`.
-- `download_file(filename, trade_date=None)` (src/tools/edpb_download.py) does
-  NOT read a file from disk — it POSTs to a configured EDPB HTTP API
-  (default/placeholder `http://localhost:9300/api/edpb/download`, per
+- `download_file(identifier, trade_date=None)` (src/tools/edpb_download.py)
+  takes a segment/process code or common name (e.g. "MCX", "Cash") — NOT a
+  filename — and POSTs `{"trade_date": ...}` to a configured EDPB HTTP API
+  (default/placeholder `http://localhost:7000/edpb/{code}/download`, per
   `src/config/agent_config.json` -> `agent_config.secrets.edpb_download`).
   Since no such server runs in this test environment, the real call fails to
   connect and the tool returns a clean, honest
-  "Failed to call the EDPB download API for '<filename>': <exc>" message
-  (src/tools/edpb_download.py lines 96-98) — never a fabricated success. This
-  makes it safe to test the "file doesn't exist" scenario without seeding any
-  fixture file on disk (there is no disk-based lookup to seed).
+  "Failed to call the EDPB download API for '<code>': <exc>" message —
+  never a fabricated success.
 - `EDP_LOOP_ENABLED=false` (set before importing `src.agent.__main__`) skips
   the EDP wake loop so no live Postgres is needed to build/serve the app.
 """
@@ -134,18 +133,18 @@ def test_live_text_counter_is_correct(client):
 
 
 # ---------------------------------------------------------------------------
-# 3. Download of a nonexistent file — must not fabricate success
+# 3. Download for a segment with no live EDPB server running — must not
+#    fabricate success
 # ---------------------------------------------------------------------------
 
-def test_live_download_nonexistent_file_reports_failure(client):
-    filename = "VN_DOES_NOT_EXIST_12345.txt"
+def test_live_download_with_no_server_reports_failure(client):
     resp = client.post(
-        "/agent/run", json={"query": f"download the script named {filename}"}
+        "/agent/run", json={"query": "download the files for MCX for today"}
     )
     assert resp.status_code == 200
     body = resp.json()
     assert "error" not in body
-    print("\n--- LIVE nonexistent-file download response ---")
+    print("\n--- LIVE no-server download response ---")
     print(body["response"])
 
     response_lower = body["response"].lower()

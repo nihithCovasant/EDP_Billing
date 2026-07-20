@@ -380,15 +380,18 @@ def test_text_counter_query_routes_to_text_counter(client):
 
 
 # ---------------------------------------------------------------------------
-# 4. Download query -> download_file with a specific filename arg
+# 4. Download query -> download_file with a specific segment/process code
 # ---------------------------------------------------------------------------
 
-def test_download_query_routes_to_download_file_with_exact_filename(client):
-    filename = "VN_09072026.txt"
+def test_download_query_routes_to_download_file_with_exact_identifier(client):
+    code = "MCX"
 
     class FakeHTTPResponse:
         status_code = 200
-        text = '{"status": "ok", "file": "%s"}' % filename
+        text = '{"status": "success", "file_name": "%s_09072026.txt"}' % code
+
+        def json(self):
+            return {"status": "success", "file_name": f"{code}_09072026.txt"}
 
     class FakeAsyncClient:
         def __init__(self, *a, **k):
@@ -400,17 +403,18 @@ def test_download_query_routes_to_download_file_with_exact_filename(client):
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url, json=None):
+        async def post(self, url, json=None, headers=None):
             self.last_json = json
+            self.last_headers = headers
             return FakeHTTPResponse()
 
     llm = ScriptedLLM(
         [
             AIMessage(
                 content="",
-                tool_calls=[_tool_call("download_file", {"filename": filename})],
+                tool_calls=[_tool_call("download_file", {"identifier": code})],
             ),
-            lambda: AIMessage(content=f"Downloaded '{filename}' successfully."),
+            lambda: AIMessage(content=f"Downloaded files for '{code}' successfully."),
         ]
     )
 
@@ -420,23 +424,23 @@ def test_download_query_routes_to_download_file_with_exact_filename(client):
          patch.object(edpb_download_module.download_file, "coroutine", spy), \
          patch.object(edpb_download_module.httpx, "AsyncClient", FakeAsyncClient):
         resp = client.post(
-            "/agent/run", json={"query": f"download file with filename {filename}"}
+            "/agent/run", json={"query": f"download the files for {code}"}
         )
 
     assert resp.status_code == 200
     body = resp.json()
 
-    # (b) the tool was invoked with exactly this filename. Note:
+    # (b) the tool was invoked with exactly this identifier. Note:
     # `download_file`'s pydantic args schema (built from its signature,
     # `trade_date: Optional[str] = None`) fills in the omitted optional
     # kwarg with its declared default when StructuredTool.ainvoke()
     # validates/coerces the LLM-provided args dict — so the underlying
     # coroutine is actually invoked with `trade_date=None` explicitly, even
-    # though the (scripted) LLM's tool_call args only specified `filename`.
-    spy.assert_awaited_once_with(filename=filename, trade_date=None)
+    # though the (scripted) LLM's tool_call args only specified `identifier`.
+    spy.assert_awaited_once_with(identifier=code, trade_date=None)
 
-    # (c) response is coherent with the real filename that was downloaded
-    assert filename in body["response"]
+    # (c) response is coherent with the real code that was downloaded
+    assert code in body["response"]
 
 
 # ---------------------------------------------------------------------------
