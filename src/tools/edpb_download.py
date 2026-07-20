@@ -39,6 +39,15 @@ from src.config.agent_config import get_secrets, load_agent_config
 # var provides a real one.
 _DEFAULT_API_BASE_URL = "http://localhost:7000"
 
+# A single download call can trigger multiple chunked file downloads
+# server-side (trade/position/product-master, ...), which can comfortably
+# exceed a "normal" API timeout. A client-side timeout here does NOT stop
+# the server-side download -- it just means we give up waiting and report
+# failure even though the download completes anyway moments later -- so
+# this is deliberately generous. Overridable via EDPB_DOWNLOAD_TIMEOUT_SECONDS
+# for slower environments without editing code.
+_DEFAULT_TIMEOUT_SECONDS = 180.0
+
 _cached_edpb_config: Optional[Dict[str, Any]] = None
 
 _DATE_FORMATS = (
@@ -140,12 +149,23 @@ async def download_file(identifier: str, trade_date: Optional[str] = None) -> st
     api_url = f"{base_url}/edpb/{code.lower()}/download"
     payload = {"trade_date": resolved_trade_date}
     headers = {"Content-Type": "application/json"}
+    timeout_seconds = float(os.getenv("EDPB_DOWNLOAD_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)))
 
     logger.info(f"[EDPB_DOWNLOAD] code={code} trade_date={resolved_trade_date} | POST {api_url}")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             resp = await client.post(api_url, json=payload, headers=headers)
+    except httpx.TimeoutException as exc:
+        logger.error(
+            f"[EDPB_DOWNLOAD] code={code} | TIMEOUT after {timeout_seconds}s error={exc} — "
+            f"the server-side download may still complete even though this request gave up waiting"
+        )
+        return (
+            f"Timed out waiting for the EDPB download API for **{code}** (trade_date={resolved_trade_date}) "
+            f"after {timeout_seconds:.0f}s. The download may still be running/have completed on the server "
+            f"side — re-check status before assuming it failed."
+        )
     except Exception as exc:
         logger.error(f"[EDPB_DOWNLOAD] code={code} | EXCEPTION error={exc}")
         return f"Failed to call the EDPB download API for **{code}**: {exc}"
@@ -174,10 +194,19 @@ async def download_file(identifier: str, trade_date: Optional[str] = None) -> st
     lines = [f"{icon} **{code}** ({resolved_trade_date}) — status: **{status}**"]
     if data.get("message"):
         lines.append(f"- **Message:** {data['message']}")
-    if data.get("file_name"):
-        lines.append(f"- **File:** {data['file_name']}")
-    if data.get("file_path"):
-        lines.append(f"- **Path:** {data['file_path']}")
+    if data.get("reason"):
+        lines.append(f"- **Reason:** {data['reason']}")
+    # Real EDPB download-API response shape: lists of downloaded filenames
+    # grouped by file type (not a single file_name/file_path pair) plus the
+    # directory they landed in. "missing" is deliberately not surfaced here
+    # per product decision -- a partial file-type gap isn't reported as an
+    # overall failure.
+    for file_type in ("trade", "position", "product_master"):
+        files = data.get(file_type)
+        if files:
+            lines.append(f"- **{file_type.replace('_', ' ').title()}:** {', '.join(files)}")
+    if data.get("download_dir"):
+        lines.append(f"- **Download dir:** {data['download_dir']}")
     if len(lines) == 1:
         lines.append(f"- **Raw response:** {data}")
     return "\n".join(lines)
