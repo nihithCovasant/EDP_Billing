@@ -14,3 +14,6 @@ logs/
 # Local SQLite dev DB (Postgres is the real backing store — see .env)
 *.db
 *.sqlite3
+
+# Real agent config (contains live credentials) - never commit
+src/config/agent_config.json
