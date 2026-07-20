@@ -15,3 +15,5 @@ logs/
 *.db
 *.sqlite3
 /config/agent_config.json
+# Real agent config (contains live credentials) - never commit
+src/config/agent_config.json
