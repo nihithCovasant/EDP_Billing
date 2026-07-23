@@ -1,0 +1,15 @@
+# Secret-scanning gate (mirrors mofsl_file_download_rpa_bot's setup): blocks
+# commits that introduce new credentials. The baseline records today's known
+# findings (placeholder examples, test fixtures) so only NEW secrets fail.
+#
+#   uv tool install pre-commit && pre-commit install
+#
+# To audit/refresh the baseline after intentional changes:
+#   uvx detect-secrets scan --baseline .secrets.baseline
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: ^(\.venv/|logs/|dev/)

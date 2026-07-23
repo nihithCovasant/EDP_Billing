@@ -67,16 +67,13 @@
       "litellm": {
         "enabled": false,
         "base_url": "https://cams-litellm.dev.cams.covasant.io/v2",
-        "api_key": "sk-1234"
+        "api_key": ""
       },
       "pinecone": {
         "environment": ""
       },
       "edpb_download": {
-        "api_url": "http://15.206.92.61:8006/portal/download",
-        "member_code": "0446",
-        "username": "0446",
-        "password": "Mosl@7777"
+        "api_url": "http://localhost:7000"
       }
     },
     "edp": {
