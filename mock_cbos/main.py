@@ -21,6 +21,12 @@ agent codebase (src/). To go live against the real CBOS system:
      base URLs instead of this mock server's URL, and set CBOS_USE_MOCK=false.
 
 See README.md in this folder for full usage instructions.
+
+DEPRECATION (2026-07-23, wayfinder ticket 06): the CANONICAL mock CBOS server
+now lives in edpb-core (`uvicorn edpb_core.mock_cbos.app:app --port 8009`) —
+the v5-faithful simulation shared by all three repos. This server remains for
+the engine-side scenario knobs (/mock/scenario/*) until those are folded into
+edpb_core.mock_cbos; prefer the edpb-core server for anything upload-lane.
 """
 
 from __future__ import annotations

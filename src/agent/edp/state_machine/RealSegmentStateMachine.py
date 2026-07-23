@@ -44,10 +44,12 @@ applies the resulting single state transition; there is no internal loop.
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from edpb_core import mint_run_id
+from edpb_core.batch_api import BatchStatus
 
 from ..edpb_client import get_edpb_client
 from ..models import SegmentExecution, SegmentState
@@ -178,7 +180,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         state = get_state(row, SegmentState.DOWNLOADING.value)
         cid = state.get("correlation_id")
         if not cid:
-            cid = f"edp-{row.segment_code.lower()}-{row.trade_date.isoformat()}-{uuid.uuid4().hex[:8]}"
+            cid = mint_run_id(row.segment_code, row.trade_date)
             state["correlation_id"] = cid
             set_state(row, SegmentState.DOWNLOADING.value, state)
         return cid
@@ -402,7 +404,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             batch = await get_edpb_client().get_batch_status(
                 batch_id, correlation_id=self._run_correlation_id(row),
             )
-            if batch.found and batch.status == "incomplete":
+            if batch.found and batch.status == BatchStatus.INCOMPLETE:
                 missing = ", ".join(
                     f"{slot.get('upload_id')} ({slot.get('name')})" for slot in batch.missing_slots
                 ) or "unknown"
@@ -417,7 +419,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                     row, "BATCH_INCOMPLETE",
                     f"uploader batch {batch_id} INCOMPLETE — missing mandatory slots: {missing}", now,
                 )
-            if batch.found and batch.status in ("failed", "rejected"):
+            if batch.found and batch.status in (BatchStatus.FAILED, BatchStatus.REJECTED):
                 logger.error(stage_log(
                     row.segment_code, "WAITING_FOR_FILE_UPLOAD",
                     f"Uploader reports batch {batch.status} — failing",

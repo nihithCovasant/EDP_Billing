@@ -25,6 +25,9 @@ from typing import Optional
 
 import httpx
 
+from edpb_core import CORRELATION_HEADER
+from edpb_core.batch_api import BATCHES_PATH
+
 from cams_otel_lib import Logger as logger, otel_trace
 
 # Which bot endpoint + body serves each download segment. EQ's full-segment
@@ -92,7 +95,7 @@ class EdpbClient:
         """Per-run correlation id when the caller has one (the engine mints
         one per segment-day, see RealSegmentStateMachine._run_correlation_id);
         the client's own id is only the fallback."""
-        return {"X-Request-ID": correlation_id or self.request_id}
+        return {CORRELATION_HEADER: correlation_id or self.request_id}
 
     @staticmethod
     def supports_segment(segment: str) -> bool:
@@ -161,7 +164,7 @@ class EdpbClient:
         if self.use_mock:
             return self._mock_submit(manifest_path)
 
-        url = f"{self.uploader_url}/batches"
+        url = f"{self.uploader_url}{BATCHES_PATH}"
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(

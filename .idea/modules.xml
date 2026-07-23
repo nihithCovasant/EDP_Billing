@@ -4,6 +4,7 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/EDP_Billing.iml" filepath="$PROJECT_DIR$/.idea/EDP_Billing.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/cams-otel-lib.iml" filepath="$PROJECT_DIR$/.idea/cams-otel-lib.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/edpb-core.iml" filepath="$PROJECT_DIR$/.idea/edpb-core.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/global-email-service.iml" filepath="$PROJECT_DIR$/.idea/global-email-service.iml" />
     </modules>
   </component>

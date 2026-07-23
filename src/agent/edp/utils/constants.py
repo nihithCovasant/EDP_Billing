@@ -21,9 +21,9 @@ from datetime import timedelta
 # Fund), removed for now — see MfSegmentStateMachine git history to restore
 # it. NCDEXPHY/MCXPHY are the physical-settlement counterparts of
 # NCDEX/MCX, run immediately after their respective segment.
-SEGMENT_ORDER: tuple[str, ...] = (
-    "EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM",
-)
+# Canonical vocabulary lives in edpb-core (shared with the uploader and the
+# RPA bot); re-exported here so existing imports keep working.
+from edpb_core import SEGMENT_ORDER as SEGMENT_ORDER  # noqa: E402
 
 # Human display labels.
 SEGMENT_NAMES: dict[str, str] = {
@@ -40,9 +40,7 @@ SEGMENT_NAMES: dict[str, str] = {
 
 # Fixed processing order for the 5 T+1 post-trade processes — run once per
 # trade_date, sequentially, AFTER (but not gated on) the 9 real segments.
-POST_TRADE_ORDER: tuple[str, ...] = (
-    "COLVAL", "COLALLOC", "MTFFT", "DMRPT", "DMSTMT",
-)
+from edpb_core import POST_TRADE_ORDER as POST_TRADE_ORDER  # noqa: E402
 
 POST_TRADE_NAMES: dict[str, str] = {
     "COLVAL": "Collateral Valuation",
