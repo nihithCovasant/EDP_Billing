@@ -195,26 +195,8 @@ class EdpWakeLoop:
         external restart (Kubernetes acting on a failed liveness probe)
         can recover it.
         """
-        if self._task is None:
-            if self._stop_event.is_set():
-                return True, "wake loop stopped intentionally (shutdown in progress)"
-            if self._last_cycle_started_at is None:
-                return True, "wake loop starting up, not started yet"
-            # Task reference cleared but the loop had previously run cycles
-            # and nobody asked for a stop — the self-reschedule chain broke.
-            return False, "wake loop task is gone without an intentional stop — treating as dead"
-        if self._task.done():
-            if self._stop_event.is_set():
-                return True, "wake loop stopped intentionally (shutdown in progress)"
-            # The self-rescheduling chain (_cycle_wrapper) only ever
-            # completes on its own if _stop_event was set OR it raised an
-            # unhandled exception — since _stop_event isn't set here, this
-            # task died unexpectedly and nothing will ever wake up the
-            # pipeline again until an external restart.
-            exc = None
-            if not self._task.cancelled():
-                exc = self._task.exception()
-            return False, f"wake loop task terminated unexpectedly (exception={exc!r}) — no future cycle will run"
+        if self._task is None or self._task.done():
+            return True, "wake loop not running (stopped or never started)"
         if self._last_cycle_started_at is None or self._config is None:
             return True, "wake loop starting up, no cycle run yet"
 

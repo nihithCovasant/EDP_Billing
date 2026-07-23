@@ -33,5 +33,3 @@ docs/
 .cursor/
 src/config/agent_config.json
 src/config/agent_config.json
-bug_report_dump.txt
-bug_report_full_dump.json

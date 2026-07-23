@@ -31,8 +31,7 @@ with a dedicated ProcessName for COLALLOC/MTFFT/DMSTMT.
 CBOS API request / response shapes
   file_process_status
     POST {STATUS_URL}/api/edp/file_process_status
-    Body: {"Segment":"EQ","TradeDate":"2026-06-29","ProcessName":"BeginFileUpload","UserID":"CV0001"}
-      (TradeDate added in API doc V5 — required on every file_process_status call.)
+    Body: {"Segment":"EQ","ProcessName":"BeginFileUpload","UserID":"CV0001"}
     OK:   {"Status":"Success","Data":[{"MSG":"TRUE|FALSE|SKIP"}]}
 
     EXCEPTION: the 3 "already triggered" ProcessNames reused via this same
@@ -311,24 +310,10 @@ class CbosClient:
         segment: str,
         process_name: str,
         user_id: str,
-        trade_date: date,
-        include_segment: bool = True,
     ) -> FileStatusResult:
         """
         POST {STATUS_URL}/api/edp/file_process_status
         Returns TRUE (ready), FALSE (not yet), or SKIP (holiday/not applicable).
-
-        V5 doc change: TradeDate (YYYY-MM-DD) is now required, placed right
-        after Segment in the payload.
-
-        include_segment=False for the post-trade "Shape B" ProcessNames the
-        doc documents WITHOUT a Segment field (CollateralValuation,
-        MTFCOLLALLOC/CollateralAllocation, MTFFUNDTRAN/FundTransfer,
-        CHECKDAILYMARGINSTATEMENT/DAILYMARGINSTATEMENT) — these run once for
-        the whole book, not per market segment, so the doc's own request
-        samples omit it. `segment` is still passed by every caller (used
-        for logging and the mock's per-key state), just left out of the
-        real HTTP payload when False.
         """
         if self.use_mock:
             result = self._mock_file_status(segment, process_name)
@@ -339,12 +324,7 @@ class CbosClient:
             return result
 
         url = f"{self.status_url}/api/edp/file_process_status"
-        payload: dict = {}
-        if include_segment:
-            payload["Segment"] = segment
-        payload["TradeDate"] = trade_date.isoformat()
-        payload["ProcessName"] = process_name
-        payload["UserID"] = user_id
+        payload = {"Segment": segment, "ProcessName": process_name, "UserID": user_id}
         logger.info(
             f"[CBOS] segment={segment} api=file_process_status process={process_name} "
             f"| POST {url}"
@@ -622,11 +602,11 @@ class CbosClient:
         against EDP_Trade_Process_API_v3 STEP 38 (response {"MSG":"TRUE"}
         on success). Unlike the other 4 post-trade triggers, this one goes
         through the STATUS API, not the PROCESS API's {LOGINID,TRADEDATE}
-        shape. Doc Step 38's request sample has no Segment field.
+        shape. trade_date is accepted but unused, kept only to match every
+        other trigger_*()'s signature for PostTradeStateMachine's dispatch.
         """
         result = await self.file_process_status(
             segment="DMSTMT", process_name="DAILYMARGINSTATEMENT", user_id=login_id,
-            trade_date=trade_date, include_segment=False,
         )
         if result.is_error:
             return PostTradeTriggerResult(
@@ -683,26 +663,24 @@ class CbosClient:
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(MTFCOLLALLOC) — CBOS's own check
         endpoint for whether collateral allocation already ran today."""
-        return await self._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", login_id, trade_date)
+        return await self._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", login_id)
 
     @otel_trace
     async def check_mtf_fund_transfer_triggered(
         self, login_id: str, trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(MTFFUNDTRAN)."""
-        return await self._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", login_id, trade_date)
+        return await self._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", login_id)
 
     @otel_trace
     async def check_daily_margin_statements_triggered(
         self, login_id: str, trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(CHECKDAILYMARGINSTATEMENT)."""
-        return await self._already_triggered_via_file_status(
-            "DMSTMT", "CHECKDAILYMARGINSTATEMENT", login_id, trade_date,
-        )
+        return await self._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", login_id)
 
     async def _already_triggered_via_file_status(
-        self, segment: str, process_name: str, user_id: str, trade_date: date,
+        self, segment: str, process_name: str, user_id: str,
     ) -> AlreadyTriggeredResult:
         """
         Real mode: reuses file_process_status(process_name) but does NOT
@@ -719,10 +697,7 @@ class CbosClient:
         """
         if self.use_mock:
             return self._mock_already_triggered(segment)
-        result = await self.file_process_status(
-            segment=segment, process_name=process_name, user_id=user_id, trade_date=trade_date,
-            include_segment=False,
-        )
+        result = await self.file_process_status(segment=segment, process_name=process_name, user_id=user_id)
         if result.is_error:
             return AlreadyTriggeredResult(
                 already_triggered=False, raw_body=result.raw_body,
@@ -1056,13 +1031,6 @@ def _parse_post_trade_trigger(body: str) -> tuple[bool, str, bool]:
     A non-"Success" top-level Status means CBOS rejected the request
     (permanent, is_transient=False).
 
-    EDP_Trade_Process_API_v3 Step 24 (MTF Fund Transfer) documents a second
-    failure shape that keeps the top-level Status as "Success" but nests
-    the real error in Result[].Result (or Result[].MSG) instead of Data[] —
-    e.g. {"Status":"Success","Result":[{"Result":"The specified @job_name
-    ('MTF_RISK_UPDATE') does not exist."}]}. That must be treated as a
-    permanent failure too, not silently read as a successful trigger.
-
     Falls back to treating any other unparsable-but-200 body as success
     (some endpoints, e.g. MTF Fund Transfer, have no guaranteed JSON shape)
     UNLESS it looks like an HTML error page (_looks_like_html_error_page),
@@ -1080,12 +1048,6 @@ def _parse_post_trade_trigger(body: str) -> tuple[bool, str, bool]:
         items = data.get("Data")
         if isinstance(items, list) and items:
             msg = items[0].get("MSG")
-        if not msg:
-            result_items = data.get("Result")
-            if isinstance(result_items, list) and result_items:
-                nested_error = result_items[0].get("Result") or result_items[0].get("MSG")
-                if nested_error:
-                    return False, str(nested_error), False
         if not msg:
             msg = data.get("MSG") or data.get("Message")
         return True, msg or "Process started successfully", False

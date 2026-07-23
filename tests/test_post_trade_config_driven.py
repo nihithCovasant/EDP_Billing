@@ -30,29 +30,11 @@ from datetime import datetime, time as dtime, timedelta
 
 from src.agent.edp import repository
 from src.agent.edp.config import build_default_workflow_json
-from src.agent.edp.orchestrator import EdpOrchestrator, _post_trade_configs
-from src.agent.edp.utils.constants import POST_TRADE_ORDER
+from src.agent.edp.orchestrator import EdpOrchestrator
 from src.tools.cbos_client import CbosClient
 
 from . import helpers
 from .fakes import RecordingFileStatusCbosClient
-
-
-def test_post_trade_configs_treats_stale_null_same_as_absent_key():
-    """
-    Upload-time validation now rejects an explicit "post_trade_processes":
-    null, but a row written to the DB before that validation existed could
-    still have one on disk. _post_trade_configs() must not crash on it —
-    treat it the same as the key being absent (fixed POST_TRADE_ORDER
-    defaults), not list-comprehend over None every wake cycle.
-    """
-    configs = _post_trade_configs({"segments": [], "post_trade_processes": None})
-    assert [c["process_code"] for c in configs] == list(POST_TRADE_ORDER)
-
-
-def test_post_trade_configs_respects_explicit_empty_list():
-    """Contrast case: an explicit empty list still means 'seed none'."""
-    assert _post_trade_configs({"segments": [], "post_trade_processes": []}) == []
 
 
 async def test_post_trade_process_uses_configured_login_id_and_process_name(

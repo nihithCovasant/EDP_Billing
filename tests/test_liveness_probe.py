@@ -40,73 +40,11 @@ async def test_liveness_healthy_before_any_cycle_has_run():
     assert ok is True
 
 
-async def test_liveness_healthy_when_never_started():
+async def test_liveness_healthy_when_stopped_or_never_started():
     loop = _make_loop()
     ok, reason = await loop.liveness_check()
     assert ok is True
-    assert "starting up" in reason
-
-
-async def test_liveness_healthy_when_stopped_intentionally():
-    """DEF-017 fix: an intentional stop() (graceful shutdown) must not be
-    confused with a crashed loop — both used to collapse into the same
-    "not running" -> always-alive branch."""
-    loop = _make_loop()
-    loop._task = None
-    loop._last_cycle_started_at = time.monotonic()
-    loop._stop_event.set()
-    ok, reason = await loop.liveness_check()
-    assert ok is True
-    assert "stopped intentionally" in reason
-
-
-async def test_liveness_unhealthy_when_task_reference_gone_without_a_stop():
-    """DEF-017 fix: previously `self._task is None` always reported alive,
-    even if the loop had been running and its task reference vanished
-    without stop() ever being called — now that's treated as dead."""
-    loop = _make_loop()
-    loop._task = None
-    loop._last_cycle_started_at = time.monotonic()
-    # _stop_event deliberately left unset — nobody asked for a shutdown.
-    ok, reason = await loop.liveness_check()
-    assert ok is False
-    assert "without an intentional stop" in reason
-
-
-async def test_liveness_unhealthy_when_task_completed_unexpectedly():
-    """DEF-017 fix: a wake-loop task that finished on its own (crashed or
-    otherwise exited) without an intentional stop() must fail liveness —
-    previously `self._task.done()` always reported alive, forever hiding a
-    dead pipeline behind a healthy-looking probe."""
-    loop = _make_loop()
-
-    async def _boom():
-        raise RuntimeError("simulated crash")
-
-    loop._task = asyncio.ensure_future(_boom())
-    loop._last_cycle_started_at = time.monotonic()
-    try:
-        await loop._task
-    except RuntimeError:
-        pass
-    ok, reason = await loop.liveness_check()
-    assert ok is False
-    assert "terminated unexpectedly" in reason
-
-
-async def test_liveness_healthy_when_task_completed_after_intentional_stop():
-    loop = _make_loop()
-
-    async def _noop():
-        return None
-
-    loop._task = asyncio.ensure_future(_noop())
-    loop._last_cycle_started_at = time.monotonic()
-    loop._stop_event.set()
-    await loop._task
-    ok, reason = await loop.liveness_check()
-    assert ok is True
-    assert "stopped intentionally" in reason
+    assert "not running" in reason
 
 
 async def test_liveness_healthy_shortly_after_a_cycle_starts():

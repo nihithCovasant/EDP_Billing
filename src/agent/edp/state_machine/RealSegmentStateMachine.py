@@ -76,7 +76,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="BeginFileUpload", user_id=login_id,
-            trade_date=row.trade_date,
         )
         record_poll(row, SegmentState.INIT.value, "BeginFileUpload_STATUS", result.response, now)
         await session.flush()
@@ -107,14 +106,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             logger.info(stage_log(
                 row.segment_code, "INIT",
                 "EDP window not yet open — will check next cycle", response=result.response,
-            ))
-            return SegmentHandlerResult(outcome=BLOCKED)
-
-        if not result.is_ready:
-            logger.warning(stage_log(
-                row.segment_code, "INIT",
-                "Unrecognized BeginFileUpload response — treating as not-ready, will retry",
-                response=result.response,
             ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
@@ -232,7 +223,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         """POST file_process_status(FILEUPLOAD) — poll until exchange files are uploaded."""
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="FILEUPLOAD", user_id=login_id,
-            trade_date=row.trade_date,
         )
         record_poll(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, "FILEUPLOAD_STATUS", result.response, now)
         await session.flush()
@@ -267,14 +257,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                 response=result.response,
             ))
             return self._fail_result(row, "CBOS_ERROR", "Unexpected FILEUPLOAD SKIP response", now)
-
-        if not result.is_ready:
-            logger.warning(stage_log(
-                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-                "Unrecognized FILEUPLOAD response — treating as not-ready, will retry",
-                response=result.response,
-            ))
-            return SegmentHandlerResult(outcome=BLOCKED)
 
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_FILE_UPLOAD",
@@ -475,7 +457,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         """POST file_process_status(CONTRACTNOTEGENERATION) — wait until contract notes complete."""
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="CONTRACTNOTEGENERATION", user_id=login_id,
-            trade_date=row.trade_date,
         )
         record_poll(
             row, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION.value,
@@ -510,14 +491,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             ))
             return self._fail_result(row, "CBOS_ERROR", "Unexpected CONTRACTNOTEGENERATION SKIP response", now)
 
-        if not result.is_ready:
-            logger.warning(stage_log(
-                row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
-                "Unrecognized CONTRACTNOTEGENERATION response — treating as not-ready, will retry",
-                response=result.response,
-            ))
-            return SegmentHandlerResult(outcome=BLOCKED)
-
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_CONTRACT_NOTE_GENERATION",
             "Contract notes CONFIRMED — segment COMPLETED",
@@ -544,7 +517,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         step_key = f"{process_name}_STATUS"
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
-            trade_date=row.trade_date,
         )
         record_poll(row, stage_key, step_key, result.response, now)
         await session.flush()
@@ -576,14 +548,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                 f"Unexpected SKIP for {process_name} — marking FAILED", response=result.response,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"Unexpected {process_name} SKIP response", now)
-
-        if not result.is_ready:
-            logger.warning(stage_log(
-                row.segment_code, state_name,
-                f"Unrecognized {process_name} response — treating as not-ready, will retry",
-                response=result.response,
-            ))
-            return SegmentHandlerResult(outcome=BLOCKED)
 
         logger.info(stage_log(
             row.segment_code, state_name, f"{process_name} CONFIRMED — advancing to {next_state.value}",

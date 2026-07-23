@@ -71,7 +71,7 @@ _root_logger.setLevel(_logging.INFO)
 _logging.basicConfig = lambda *a, **k: None  # noqa: E731
 
 import uvicorn
-from fastapi import Request, Body, FastAPI, HTTPException
+from fastapi import Request, Body, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -423,7 +423,7 @@ def build_app() -> FastAPI:
 
             query = body.get("query", "")
             if not query:
-                raise HTTPException(status_code=400, detail="Query is required")
+                return {"error": "Query is required"}
 
             # tenant_id/instance_id: static, scaffold-time config (same for
             # every caller of this agent instance). user_id: prefer the real
@@ -467,11 +467,9 @@ def build_app() -> FastAPI:
                 "user_id": user_id,
             }
 
-        except HTTPException:
-            raise
         except Exception as e:
             logger.error(f"Agent error: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            return {"error": str(e)}
 
     return app
 

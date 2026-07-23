@@ -74,37 +74,6 @@ async def test_update_segment_window_requires_version_name_argument():
     assert False, "expected a validation error for missing version_name"
 
 
-async def test_update_segment_window_refuses_a_past_trade_date(monkeypatch):
-    """
-    Regression coverage: POST /edp/workflow/upload has no trade_date
-    parameter -- it always applies to today's (or a deferred) active
-    config. Passing a past trade_date here used to silently fetch that
-    past day's config and re-upload it as TODAY's active config. It must
-    now be refused outright, with neither _get nor _post ever called.
-    """
-    calls = {"get": 0, "post": 0}
-
-    async def fake_get(path):
-        calls["get"] += 1
-        return 200, {}
-
-    async def fake_post(path, body):
-        calls["post"] += 1
-        return 200, {}
-
-    monkeypatch.setattr(edp_status, "_get", fake_get)
-    monkeypatch.setattr(edp_status, "_post", fake_post)
-    monkeypatch.setattr(edp_status, "_today_ist", lambda: "2026-07-14")
-
-    result = await _invoke(
-        edp_status.update_edp_segment_window,
-        identifier="EQ", version_name="fix", window_start="5 PM", trade_date="2026-07-10",
-    )
-
-    assert calls == {"get": 0, "post": 0}
-    assert "today" in result.lower()
-
-
 async def test_update_segment_window_reusing_current_name_auto_overwrites(monkeypatch):
     captured = {}
 

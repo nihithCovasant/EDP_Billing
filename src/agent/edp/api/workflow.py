@@ -125,14 +125,6 @@ def _validate_workflow_json(workflow_json: dict) -> None:
         _validate_hhmm(seg.get("window_start"), f"Segment[{i}] ({code}).window_start")
         _validate_hhmm(seg.get("window_end"), f"Segment[{i}] ({code}).window_end")
 
-    if "post_trade_processes" in workflow_json and workflow_json["post_trade_processes"] is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "workflow_json.post_trade_processes must not be explicit null — "
-                "omit the key entirely to fall back to defaults, or pass a list"
-            ),
-        )
     post_trade_processes = workflow_json.get("post_trade_processes")
     if post_trade_processes is not None:
         if not isinstance(post_trade_processes, list):
@@ -525,7 +517,7 @@ async def get_workflow(trade_date: date, effective: bool = True):
         "segment_count": len(row.workflow_json.get("segments", [])),
         "post_trade_process_count": (
             len(row.workflow_json["post_trade_processes"])
-            if row.workflow_json.get("post_trade_processes") is not None
+            if "post_trade_processes" in row.workflow_json
             else None
         ),
         "workflow_json": row.workflow_json,

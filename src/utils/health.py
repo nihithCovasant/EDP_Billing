@@ -160,33 +160,55 @@ class HealthChecker:
     @otel_trace
     async def check_database_connectivity(self) -> ComponentHealth:
         """
-        Live check against the actual EDP database (the async SQLAlchemy
-        engine set up by src.agent.edp.database.init_database() at
-        startup) — this agent is EDP-specific and PostgreSQL-only (no
-        SQLite fallback, no generic "postgresql feature" toggle), so this
-        reuses the same check_connectivity() GET /edp/health already
-        relies on, rather than a nonexistent settings.postgres_connection_string.
+        Check database connectivity (if configured).
 
         Returns:
             ComponentHealth with database status
         """
         try:
-            from src.agent.edp.database import check_connectivity
+            from src.config.settings import settings
 
-            result = await check_connectivity()
-            if result["status"] == "ok":
+            if not settings.postgres_connection_string:
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.HEALTHY,
-                    message=f"Database connection successful ({result['latency_ms']}ms)",
-                    details={"type": "postgresql", "latency_ms": result["latency_ms"]},
+                    message="Database not configured (using in-memory storage)",
+                    details={"type": "in-memory"},
                 )
-            return ComponentHealth(
-                name="database",
-                status=HealthStatus.UNHEALTHY,
-                message=f"Database connection failed: {result.get('error')}",
-                details={"type": "postgresql"},
-            )
+
+            # Test PostgreSQL connection using psycopg (v3) — the driver
+            # installed by the postgresql feature (psycopg[binary]>=3.1.0).
+            try:
+                import psycopg
+
+                async with await psycopg.AsyncConnection.connect(
+                    settings.postgres_connection_string
+                ) as conn:
+                    await conn.execute("SELECT 1")
+
+                return ComponentHealth(
+                    name="database",
+                    status=HealthStatus.HEALTHY,
+                    message="Database connection successful",
+                    details={"type": "postgresql"},
+                )
+
+            except ImportError:
+                return ComponentHealth(
+                    name="database",
+                    status=HealthStatus.HEALTHY,
+                    message="PostgreSQL driver not installed (feature not selected)",
+                    details={"type": "in-memory"},
+                )
+            except Exception as e:
+                logger.error(f"Database health check failed: {e}")
+                return ComponentHealth(
+                    name="database",
+                    status=HealthStatus.UNHEALTHY,
+                    message=f"Database connection failed: {str(e)}",
+                    details={"type": "postgresql"},
+                )
+
         except Exception as e:
             logger.error(f"Database health check error: {e}")
             return ComponentHealth(
@@ -300,16 +322,6 @@ class HealthChecker:
                 details={"enabled": metrics.enabled, "endpoint": "/metrics"},
             )
 
-        except (ImportError, ModuleNotFoundError):
-            # src.utils.metrics was part of the original generic scaffold
-            # and was never carried into this EDP-specific build — a
-            # missing module is not a health problem, it's expected.
-            return ComponentHealth(
-                name="metrics",
-                status=HealthStatus.HEALTHY,
-                message="Metrics module not present in this build (feature not implemented)",
-                details={"enabled": False},
-            )
         except Exception as e:
             logger.error(f"Metrics health check error: {e}")
             return ComponentHealth(
@@ -354,16 +366,6 @@ class HealthChecker:
                 },
             )
 
-        except (ImportError, ModuleNotFoundError):
-            # src.middleware.rate_limiting was part of the original generic
-            # scaffold and was never carried into this EDP-specific build —
-            # a missing module is not a health problem, it's expected.
-            return ComponentHealth(
-                name="rate_limiter",
-                status=HealthStatus.HEALTHY,
-                message="Rate limiter module not present in this build (feature not implemented)",
-                details={"enabled": False},
-            )
         except Exception as e:
             logger.error(f"Rate limiter health check error: {e}")
             return ComponentHealth(
@@ -428,10 +430,9 @@ class HealthChecker:
         """
         components = await self.check_all_components()
 
-        # Determine overall status — only critical components (LLM, database)
-        # can cause UNHEALTHY. Optional component failures (observability,
-        # metrics, rate_limiter) produce DEGRADED.
-        critical_components = {"llm", "database"}
+        # Determine overall status — only critical components (LLM) can cause UNHEALTHY.
+        # Optional component failures (DB, observability, metrics, rate_limiter) produce DEGRADED.
+        critical_components = {"llm"}
 
         critical_unhealthy = any(
             c.status == HealthStatus.UNHEALTHY and c.name in critical_components
@@ -467,11 +468,8 @@ class HealthChecker:
         """
         components = await self.check_all_components()
 
-        # Ready only if critical components (LLM + the EDP database this
-        # agent is entirely built around) are at least degraded — an LLM
-        # key with no reachable database means every /edp/* call will
-        # fail, so readiness must not report healthy in that state.
-        critical_components = ["llm", "database"]
+        # Ready if critical components (LLM) are at least degraded
+        critical_components = ["llm"]
 
         for component in components:
             if component.name in critical_components:

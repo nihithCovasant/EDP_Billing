@@ -328,7 +328,10 @@ class EdpOrchestrator:
                 ))
                 return
 
-        proc_configs = _post_trade_configs(workflow.workflow_json)
+        if "post_trade_processes" in workflow.workflow_json:
+            proc_configs = workflow.workflow_json["post_trade_processes"]
+        else:
+            proc_configs = [{"process_code": code} for code in POST_TRADE_ORDER]
         configured_codes = [pc.get("process_code", "") for pc in proc_configs]
         configured_codes = [c for c in configured_codes if c in POST_TRADE_ORDER]
         ordered_codes = [c for c in POST_TRADE_ORDER if c in configured_codes]
@@ -513,13 +516,9 @@ def _post_trade_configs(workflow_json: dict) -> list[dict]:
     """The active config's post_trade_processes list, or the fixed legacy
     default (POST_TRADE_ORDER, no overrides) if the config predates this
     field entirely. An explicit EMPTY list means "seed none" and is kept
-    as-is. Upload-time validation now rejects an explicit `null`, but a
-    row written before that validation existed could still have one on
-    disk — treat that the same as "key absent" rather than crashing every
-    wake cycle on a list comprehension over None."""
-    value = workflow_json.get("post_trade_processes")
-    if value is not None:
-        return value
+    as-is."""
+    if "post_trade_processes" in workflow_json:
+        return workflow_json["post_trade_processes"]
     return [{"process_code": code} for code in POST_TRADE_ORDER]
 
 

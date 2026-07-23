@@ -110,7 +110,7 @@ def send_alert_email(
     request = parse_payload(payload)
 
     to = request.to or list(config.default_to)
-    if not to and not config.dry_run:
+    if not to:
         raise InvalidPayloadError(
             "No recipients resolved — pass 'to' in the payload or set EMAIL_DEFAULT_TO."
         )

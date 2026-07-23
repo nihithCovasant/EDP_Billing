@@ -174,9 +174,8 @@ async def seed_post_trade_processes(
     POST_TRADE_ORDER; an explicit empty list means "seed none." Not called
     by the orchestrator (which seeds lazily); kept for test setup.
     """
-    value = workflow.workflow_json.get("post_trade_processes")
-    if value is not None:
-        proc_configs = value
+    if "post_trade_processes" in workflow.workflow_json:
+        proc_configs = workflow.workflow_json["post_trade_processes"]
     else:
         proc_configs = [{"process_code": code} for code in POST_TRADE_ORDER]
 

@@ -84,19 +84,13 @@ async def retry_failed_segment(trade_date: date, segment_code: str):
     Only works if the segment is currently in FAILED or SKIPPED status.
     """
     async with get_session() as session:
-        existing = await get_one(session, trade_date, segment_code)
-        if not existing:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No segment={segment_code} record exists for trade_date={trade_date}",
-            )
         row = await retry_segment(session, trade_date, segment_code)
     if not row:
         raise HTTPException(
             status_code=409,
             detail=(
                 f"Cannot retry segment={segment_code} on {trade_date}: "
-                f"segment is not currently in FAILED/SKIPPED status"
+                f"segment not found or not in FAILED/SKIPPED status"
             ),
         )
     logger.info(f"Segment {segment_code} retried on {trade_date}")
@@ -119,12 +113,6 @@ async def skip_segment(trade_date: date, segment_code: str, body: SkipRequest):
     Cannot be applied to segments that are already COMPLETED / SKIPPED / FAILED.
     """
     async with get_session() as session:
-        existing = await get_one(session, trade_date, segment_code)
-        if not existing:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No segment={segment_code} record exists for trade_date={trade_date}",
-            )
         row = await skip_segment_manually(
             session, trade_date, segment_code,
             reason=body.reason,
@@ -135,7 +123,7 @@ async def skip_segment(trade_date: date, segment_code: str, body: SkipRequest):
             status_code=409,
             detail=(
                 f"Cannot skip segment={segment_code} on {trade_date}: "
-                f"segment is already in a terminal state (COMPLETED/SKIPPED/FAILED)"
+                f"segment not found or already in a terminal state"
             ),
         )
     logger.info(f"Segment {segment_code} manually skipped on {trade_date} by {body.skipped_by}")

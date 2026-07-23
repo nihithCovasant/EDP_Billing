@@ -39,18 +39,16 @@ class Settings(BaseSettings):
     gcp_service_account_json: Optional[str] = None  # Path to service account JSON file
     pinecone_api_key: Optional[str] = None
 
-    # Rate limiting and Prometheus metrics were part of the original generic
-    # scaffold template but src/middleware/rate_limiting.py and
-    # src/utils/metrics.py were never carried into this EDP-specific build —
-    # defaulting these to False keeps /health honest (the modules genuinely
-    # don't exist here, so leaving them enabled by default made every
-    # /health call report a permanent false-positive "degraded").
-    rate_limit_enabled: bool = False
+    # PostgreSQL connection string (set when postgresql feature is selected)
+
+    # Rate limiting (optional) - can be overridden in config
+    rate_limit_enabled: bool = True
     rate_limit_per_minute: int = 60
     rate_limit_per_hour: int = 1000
     rate_limit_burst_size: int = 10
 
-    metrics_enabled: bool = False
+    # Metrics (optional) - can be overridden in config
+    metrics_enabled: bool = True
 
     # Multi-tenant support (False when feature not selected, True when selected via MULTI_TENANT_ENABLED=true)
     multi_tenant_enabled: bool = False
