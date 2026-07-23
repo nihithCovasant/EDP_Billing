@@ -42,8 +42,10 @@ class TradeSegmentTransitionFactory:
           DOWNLOADING                           -> FAILED
           UPLOADING                             -> WAITING_FOR_FILE_UPLOAD
           UPLOADING                             -> FAILED
-          WAITING_FOR_FILE_UPLOAD               -> TRIGGERED
+          WAITING_FOR_FILE_UPLOAD               -> WAITING_FOR_INSTI_TRADE
           WAITING_FOR_FILE_UPLOAD               -> FAILED
+          WAITING_FOR_INSTI_TRADE               -> TRIGGERED
+          WAITING_FOR_INSTI_TRADE               -> FAILED
           TRIGGERED                             -> WAITING_FOR_BILLPOSTING
           TRIGGERED                             -> FAILED
           WAITING_FOR_BILLPOSTING               -> WAITING_FOR_RECON
@@ -77,8 +79,15 @@ class TradeSegmentTransitionFactory:
             m.add_allowed_transition(seg, SegmentState.UPLOADING, SegmentState.WAITING_FOR_FILE_UPLOAD)
             m.add_allowed_transition(seg, SegmentState.UPLOADING, SegmentStatus.FAILED)
 
-            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentState.TRIGGERED)
+            # V6 Step-10 gate: FILEUPLOAD=TRUE no longer reaches TRIGGERED
+            # directly — Insti Trade Transfer must confirm first. The direct
+            # WAITING_FOR_FILE_UPLOAD -> TRIGGERED edge is deliberately
+            # ABSENT so a handler bug cannot skip the gate.
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentState.WAITING_FOR_INSTI_TRADE)
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentStatus.FAILED)
+
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_INSTI_TRADE, SegmentState.TRIGGERED)
+            m.add_allowed_transition(seg, SegmentState.WAITING_FOR_INSTI_TRADE, SegmentStatus.FAILED)
 
             m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentState.WAITING_FOR_BILLPOSTING)
             m.add_allowed_transition(seg, SegmentState.TRIGGERED, SegmentStatus.FAILED)

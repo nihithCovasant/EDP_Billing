@@ -1,12 +1,16 @@
-"""CBOS v5 contract constants and payload builders
-(EDP_Trade_Process_API_Documentation_V5.docx; OpenAPI mirror in
+"""CBOS v6 contract constants and payload builders
+(EDP_Trade_Process_API_Documentation_V6.docx; OpenAPI mirror in
 EDPBilling_FIle_Upload/docs/postman/edp_trade_process_openapi.json).
 
 Services keep their own HTTP clients (sync in the uploader, async in the
 engine) — what they share is the WIRE SHAPE, declared once here. V5's headline
-change: file_process_status carries TradeDate immediately after Segment
-("Shape A"); getNewTradeProcess with a real PROCESSID re-fetches instead of
-minting; getdropdown(EXISTINGPROCESSID) filters by segment + trade date.
+change (retained in V6): file_process_status carries TradeDate immediately
+after Segment ("Shape A"); getNewTradeProcess with a real PROCESSID re-fetches
+instead of minting; getdropdown(EXISTINGPROCESSID) filters by segment + trade
+date. V6's headline change: a new Step 10 — Insti Trade Status GTG
+(ProcessName=CHECKINSTITRADE, Shape A) — must answer TRUE after FILEUPLOAD
+does and before the trade-process trigger fires; old doc Steps 10–39
+renumber to 11–40, with no other payload change.
 """
 
 from __future__ import annotations
@@ -27,6 +31,12 @@ GET_EXPECTED_FILENAME_PATH = "/api/edp/get_expected_filename"
 PROCESS_BEGIN_FILE_UPLOAD = "BeginFileUpload"
 PROCESS_CHECK_PROCESS_ID = "CheckProcessIDExist"
 PROCESS_FILE_UPLOAD_STATUS = "FILEUPLOAD"
+# V6 Step 10: Insti Trade Status GTG — TRUE = Institutional Trade Transfer
+# complete, safe to trigger; FALSE = still in progress. CBOS does NOT
+# enforce this gate server-side (the doc warns early triggers "may cause
+# pipeline step failures"), so the engine polls it between FILEUPLOAD and
+# the trigger call.
+PROCESS_CHECK_INSTI_TRADE = "CHECKINSTITRADE"
 BEGIN_UPLOAD_PROCEED = "SKIP"   # counter-intuitive: SKIP means "not a holiday, proceed"
 MSG_TRUE = "TRUE"
 MSG_FALSE = "FALSE"
@@ -35,9 +45,10 @@ MSG_FALSE = "FALSE"
 def file_process_status_payload(
     segment: str, trade_date_iso: str, process_name: str, user_id: str,
 ) -> dict[str, str]:
-    """V5 "Shape A": TradeDate is required, immediately after Segment. Every
-    file_process_status call (Steps 1/3/9 and the downstream BILLPOSTING /
-    RECON / CONTRACTNOTEGENERATION polls) uses this shape."""
+    """V5 "Shape A" (retained in V6): TradeDate is required, immediately
+    after Segment. Every segment-scoped file_process_status call (Steps
+    1/3/9, V6's new Step-10 CHECKINSTITRADE gate, and the downstream
+    BILLPOSTING / RECON / CONTRACTNOTEGENERATION polls) uses this shape."""
     return {
         "Segment": segment,
         "TradeDate": trade_date_iso,
@@ -79,9 +90,11 @@ def existing_process_id_payload(
 def file_process_status_payload_b(
     trade_date_iso: str, process_name: str, user_id: str,
 ) -> dict[str, str]:
-    """V5 "Shape B" — the file_process_status steps WITHOUT a Segment field
-    (post-trade GTG/already-triggered/completion checks: V5 doc steps 13,
-    15-16, 19-20, 22-23, 30-31, 37-38). TradeDate leads."""
+    """V5 "Shape B" (retained in V6) — the file_process_status steps WITHOUT
+    a Segment field (post-trade GTG/already-triggered/completion checks:
+    V6 doc steps 14, 16-17, 20-21, 23-24, 31-32, 38-39; the V6 summary
+    table's own Shape A/B lists are self-contradictory — the per-step
+    payload examples are the authority). TradeDate leads."""
     return {
         "TradeDate": trade_date_iso,
         "ProcessName": process_name,

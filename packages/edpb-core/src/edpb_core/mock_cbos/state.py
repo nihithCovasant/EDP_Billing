@@ -153,6 +153,10 @@ class MockState:
             # date (FILTER1/FILTER2), so the mock must resolve per (segment,
             # date), not just "latest for the segment".
             self.pid_by_seg_date: dict[tuple[str, str], str] = {}
+            # V6 Step 10: CHECKINSTITRADE poll counter per (segment, date) —
+            # Insti Trade Transfer runs independently of any PROCESSID, so
+            # the counter lives here rather than on a Process.
+            self.insti_trade_polls: dict[tuple[str, str], int] = {}
 
     # --- process lifecycle ----------------------------------------------------
     def reserve_process(self, segment: str, login_id: str, trade_date: str) -> Process:

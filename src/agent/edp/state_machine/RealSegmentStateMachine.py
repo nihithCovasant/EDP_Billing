@@ -5,9 +5,16 @@ every one of the 9 files under segments/ is a ~5-line subclass that just
 sets SEGMENT_CODE; all step logic lives once, here.
 
 flow states (no "phases" — see models.SegmentState):
-  INIT -> [DOWNLOADING -> UPLOADING ->] WAITING_FOR_FILE_UPLOAD -> TRIGGERED
+  INIT -> [DOWNLOADING -> UPLOADING ->] WAITING_FOR_FILE_UPLOAD
+  -> WAITING_FOR_INSTI_TRADE -> TRIGGERED
   -> WAITING_FOR_BILLPOSTING -> WAITING_FOR_RECON ->
   WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
+
+WAITING_FOR_INSTI_TRADE is V6's new Step 10 (CHECKINSTITRADE): once
+FILEUPLOAD is TRUE, Institutional Trade Transfer must also confirm
+complete before the trigger fires. The V6 doc is explicit that triggering
+early "may cause pipeline step failures" — CBOS does NOT enforce this
+server-side, so this state is the enforcement.
 
 DOWNLOADING/UPLOADING (engine-owned saga, BATCH_HANDOFF_CONTRACT.md) are
 taken only by config.download_segments (MCX + EQ today): DOWNLOADING asks
@@ -96,6 +103,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             SegmentState.DOWNLOADING: self.handle_downloading,
             SegmentState.UPLOADING: self.handle_uploading,
             SegmentState.WAITING_FOR_FILE_UPLOAD: self.handle_waiting_for_file_upload,
+            SegmentState.WAITING_FOR_INSTI_TRADE: self.handle_waiting_for_insti_trade,
             SegmentState.TRIGGERED: self.handle_triggered,
             SegmentState.WAITING_FOR_BILLPOSTING: self.handle_waiting_for_billposting,
             SegmentState.WAITING_FOR_RECON: self.handle_waiting_for_recon,
@@ -501,11 +509,36 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-            "All exchange files uploaded — proceeding to TRIGGERED",
+            "All exchange files uploaded — proceeding to WAITING_FOR_INSTI_TRADE (V6 Step-10 gate)",
             response=result.response, ready_at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_step_done(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, "FILEUPLOAD_STATUS", result.response, now)
-        return SegmentHandlerResult(outcome=ADVANCE, next_state=SegmentState.TRIGGERED, next_process=None)
+        return SegmentHandlerResult(
+            outcome=ADVANCE, next_state=SegmentState.WAITING_FOR_INSTI_TRADE, next_process="CHECKINSTITRADE",
+        )
+
+    # ---------------------------------------------------------------
+    # WAITING_FOR_INSTI_TRADE — V6 Step 10: poll CHECKINSTITRADE until
+    # Institutional Trade Transfer confirms complete, then trigger.
+    # ---------------------------------------------------------------
+
+    async def handle_waiting_for_insti_trade(
+        self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
+    ) -> SegmentHandlerResult:
+        """POST file_process_status(CHECKINSTITRADE) — V6's new Step 10,
+        inserted between the FILEUPLOAD check and the trigger. FALSE means
+        Insti Trade Transfer is still in progress (wait — the segment window
+        is the timeout backstop, same posture as FILEUPLOAD); TRUE means safe
+        to trigger. The V6 doc documents only FALSE/TRUE here, so any other
+        answer (incl. SKIP) is treated as a CBOS error like every other
+        mid-pipeline poll."""
+        return await self._poll_confirmation(
+            cbos, row, session, login_id, now,
+            process_name="CHECKINSTITRADE",
+            stage_key=SegmentState.WAITING_FOR_INSTI_TRADE.value,
+            next_state=SegmentState.TRIGGERED, next_process=None,
+            state_name=SegmentState.WAITING_FOR_INSTI_TRADE.value,
+        )
 
     # ---------------------------------------------------------------
     # TRIGGERED — the one genuine crash-safety-critical wait: fire
@@ -754,7 +787,8 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         process_name: str,
         stage_key: str,
         next_state: SegmentState,
-        next_process: str,
+        next_process: str | None,
+        state_name: str | None = None,
     ) -> SegmentHandlerResult:
         step_key = f"{process_name}_STATUS"
         result = await cbos.file_process_status(
@@ -764,7 +798,9 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         record_poll(row, stage_key, step_key, result.response, now)
         await session.flush()
 
-        state_name = f"WAITING_FOR_{process_name}"
+        # Default display name works for the polls whose state is literally
+        # WAITING_FOR_<ProcessName>; WAITING_FOR_INSTI_TRADE passes its own.
+        state_name = state_name or f"WAITING_FOR_{process_name}"
 
         if result.is_error:
             if result.is_transient:

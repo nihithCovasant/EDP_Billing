@@ -8,16 +8,17 @@ full segment/post-trade-process lifecycle, using the real EdpOrchestrator +
 real DB (tests/helpers.py conventions), same as the rest of the suite.
 
 Per src/tools/cbos_client.py's module docstring, the segment pipeline is
-always these 7 CBOS-touching steps:
+always these 8 CBOS-touching steps:
   1. file_process_status(BeginFileUpload)        -> holiday check (INIT)
   2. getdropdown(EXISTINGPROCESSID); if not found,
      get_new_trade_process(PROCESSID="0")        -> reserve (UPLOADER-only call;
                                                     the agent must never fire it)
   3. file_process_status(FILEUPLOAD)             -> poll (WAITING_FOR_FILE_UPLOAD)
-  4. get_new_trade_process(PROCESSID=<actual>)   -> trigger (TRIGGERED)
-  5. file_process_status(BILLPOSTING)            -> poll (WAITING_FOR_BILLPOSTING)
-  6. file_process_status(RECON)                  -> poll (WAITING_FOR_RECON)
-  7. file_process_status(CONTRACTNOTEGENERATION) -> poll (WAITING_FOR_CONTRACT_NOTE_GENERATION)
+  4. file_process_status(CHECKINSTITRADE)        -> poll (WAITING_FOR_INSTI_TRADE, V6 Step-10 gate)
+  5. get_new_trade_process(PROCESSID=<actual>)   -> trigger (TRIGGERED)
+  6. file_process_status(BILLPOSTING)            -> poll (WAITING_FOR_BILLPOSTING)
+  7. file_process_status(RECON)                  -> poll (WAITING_FOR_RECON)
+  8. file_process_status(CONTRACTNOTEGENERATION) -> poll (WAITING_FOR_CONTRACT_NOTE_GENERATION)
 
 and the post-trade pipeline (PostTradeStateMachine) is always:
   WAITING_FOR_GTG (poll, doubles as holiday check) -> "already triggered"
@@ -58,8 +59,8 @@ class SequenceRecordingCbosClient(CbosClient):
     be asserted precisely.
 
     api_tag values:
-      "BeginFileUpload" / "FILEUPLOAD" / "BILLPOSTING" / "RECON" /
-      "CONTRACTNOTEGENERATION"  -> file_process_status, tagged by process_name
+      "BeginFileUpload" / "FILEUPLOAD" / "CHECKINSTITRADE" / "BILLPOSTING" /
+      "RECON" / "CONTRACTNOTEGENERATION"  -> file_process_status, tagged by process_name
       "getExistingProcessId"                -> get_existing_process_id
       "getNewTradeProcess:reserve"          -> get_new_trade_process(PROCESSID="0")
       "getNewTradeProcess:trigger"          -> get_new_trade_process(PROCESSID=<actual>)
@@ -146,6 +147,7 @@ EXPECTED_FULL_PIPELINE_SEQUENCE = [
                                     # sole reserver; the mock's uploader-sim provisions
                                     # the PID on this first lookup, delay 0)
     "FILEUPLOAD",                   # WAITING_FOR_FILE_UPLOAD poll
+    "CHECKINSTITRADE",              # WAITING_FOR_INSTI_TRADE poll (V6 Step-10 gate)
     "getNewTradeProcess:trigger",   # TRIGGERED
     "BILLPOSTING",                  # WAITING_FOR_BILLPOSTING poll
     "RECON",                        # WAITING_FOR_RECON poll
@@ -212,8 +214,8 @@ async def test_full_pipeline_segment_exact_call_sequence_minimum_polls(cfg, sess
     possible happy path) must produce EXACTLY the ordered CBOS call
     sequence documented in cbos_client.py's module docstring, with no
     extras and no gaps: BeginFileUpload -> getExistingProcessId ->
-    FILEUPLOAD -> getNewTradeProcess(trigger) -> BILLPOSTING -> RECON ->
-    CONTRACTNOTEGENERATION. No reserve-mode call anywhere: the uploader is
+    FILEUPLOAD -> CHECKINSTITRADE -> getNewTradeProcess(trigger) ->
+    BILLPOSTING -> RECON -> CONTRACTNOTEGENERATION. No reserve-mode call anywhere: the uploader is
     the sole PID reserver, the agent only reads.
     """
     cbos = SequenceRecordingCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
@@ -235,7 +237,7 @@ async def test_full_pipeline_segment_exact_call_sequence_minimum_polls(cfg, sess
         "the agent must NEVER fire the reserve-mode getNewTradeProcess call -- "
         "the uploader is the sole PROCESSID reserver (single-writer contract)"
     )
-    assert len(eq_calls) == len(EXPECTED_FULL_PIPELINE_SEQUENCE) == 7, (
+    assert len(eq_calls) == len(EXPECTED_FULL_PIPELINE_SEQUENCE) == 8, (
         "total call count must match exactly what the sequence implies -- no extras, no gaps"
     )
 
@@ -249,14 +251,15 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
     mock_set_ready_after(3): CBOS says "not ready" twice before succeeding on
     the 3rd poll, for EVERY polling stage. Confirm the recorded sequence
     shows the SAME process_name repeated exactly 3 times in a row before
-    advancing, uniformly across ALL FOUR polling stages (BeginFileUpload
-    INIT check, FILEUPLOAD, BILLPOSTING, RECON, CONTRACTNOTEGENERATION) --
-    not just one stage already covered by existing tests.
+    advancing, uniformly across ALL SIX polling stages (BeginFileUpload
+    INIT check, FILEUPLOAD, CHECKINSTITRADE, BILLPOSTING, RECON,
+    CONTRACTNOTEGENERATION) -- not just one stage already covered by
+    existing tests.
 
     Note: BeginFileUpload (INIT) is a boolean holiday gate (SKIP/TRUE/FALSE)
     that also uses _mock_ready_after's counter in the shared in-process
     mock (see CbosClient._mock_file_status) -- so it too retries exactly
-    N times before returning TRUE, just like the 4 confirmation polls.
+    N times before returning TRUE, just like the 5 confirmation polls.
     getExistingProcessId / getNewTradeProcess(trigger) are NOT retried
     (each fires exactly once) -- only file_process_status polls repeat.
     No reserve-mode call: the uploader is the sole reserver.
@@ -268,20 +271,21 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
 
     await helpers.seed_day(session_factory, test_date, cfg)
     rows = await helpers.drive_until_terminal(
-        orchestrator, session_factory, test_date, max_cycles=6 * POLLS_BEFORE_READY + 10,
+        orchestrator, session_factory, test_date, max_cycles=7 * POLLS_BEFORE_READY + 10,
     )
     by_code = {r.segment_code: r for r in rows}
     assert by_code["EQ"].segment_status == SegmentStatus.COMPLETED
 
     eq_calls = cbos.calls_for("EQ")
 
-    # Expected sequence: each of the 5 polling stages repeats exactly
+    # Expected sequence: each of the 6 polling stages repeats exactly
     # POLLS_BEFORE_READY times in a row; getExistingProcessId and
     # getNewTradeProcess(trigger) fire exactly once each, uniformly.
     expected = (
         ["BeginFileUpload"] * POLLS_BEFORE_READY
         + ["getExistingProcessId"]
         + ["FILEUPLOAD"] * POLLS_BEFORE_READY
+        + ["CHECKINSTITRADE"] * POLLS_BEFORE_READY
         + ["getNewTradeProcess:trigger"]
         + ["BILLPOSTING"] * POLLS_BEFORE_READY
         + ["RECON"] * POLLS_BEFORE_READY
@@ -293,10 +297,10 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
         f"Expected: {expected}\nActual:   {eq_calls}"
     )
 
-    # Explicitly confirm each of the 5 polling stages individually shows
+    # Explicitly confirm each of the 6 polling stages individually shows
     # exactly POLLS_BEFORE_READY consecutive repeats (not just that the
     # overall sequence happens to match).
-    for process_name in ("BeginFileUpload", "FILEUPLOAD", "BILLPOSTING", "RECON", "CONTRACTNOTEGENERATION"):
+    for process_name in ("BeginFileUpload", "FILEUPLOAD", "CHECKINSTITRADE", "BILLPOSTING", "RECON", "CONTRACTNOTEGENERATION"):
         run_length = eq_calls.count(process_name)
         assert run_length == POLLS_BEFORE_READY, (
             f"polling stage {process_name!r} expected exactly {POLLS_BEFORE_READY} calls "
@@ -344,6 +348,7 @@ async def test_existing_process_id_path_skips_reserve_mode_call(cfg, session_fac
         "getExistingProcessId",
         # NO "getNewTradeProcess:reserve" here -- existing.found short-circuits it.
         "FILEUPLOAD",
+        "CHECKINSTITRADE",
         "getNewTradeProcess:trigger",
         "BILLPOSTING",
         "RECON",

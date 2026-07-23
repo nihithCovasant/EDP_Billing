@@ -30,6 +30,7 @@ from src.agent.edp.utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER
 REAL_SEGMENT_HAPPY_PATH = (
     SegmentState.INIT,
     SegmentState.WAITING_FOR_FILE_UPLOAD,
+    SegmentState.WAITING_FOR_INSTI_TRADE,  # V6 Step-10 gate
     SegmentState.TRIGGERED,
     SegmentState.WAITING_FOR_BILLPOSTING,
     SegmentState.WAITING_FOR_RECON,

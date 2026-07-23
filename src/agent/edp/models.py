@@ -59,15 +59,20 @@ class SegmentState(str, enum.Enum):
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
     (1) Real-segment pipeline (9x): INIT -> [DOWNLOADING -> UPLOADING ->]
-    WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING ->
-    WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION ->
+    WAITING_FOR_FILE_UPLOAD -> WAITING_FOR_INSTI_TRADE -> TRIGGERED ->
+    WAITING_FOR_BILLPOSTING -> WAITING_FOR_RECON ->
+    WAITING_FOR_CONTRACT_NOTE_GENERATION ->
     (SUCCEEDED). DOWNLOADING/UPLOADING are the engine-owned saga's left
     extension (BATCH_HANDOFF_CONTRACT.md): DOWNLOADING calls the RPA bot's
     /edpb/*/download (which finalizes a checksummed manifest), UPLOADING
     hands that manifest to the uploader's POST /batches — taken only by
     segments the bot can download (config.download_segments, MCX + EQ
     today); every other segment keeps the INIT ->
-    WAITING_FOR_FILE_UPLOAD edge. TRIGGERED is the one genuine
+    WAITING_FOR_FILE_UPLOAD edge. WAITING_FOR_INSTI_TRADE is V6's new
+    Step-10 gate (file_process_status CHECKINSTITRADE): Institutional
+    Trade Transfer must confirm complete AFTER FILEUPLOAD goes TRUE and
+    BEFORE the trigger — CBOS does not enforce it server-side, so this
+    state is what stops a premature trigger. TRIGGERED is the one genuine
     crash-safety wait (getNewTradeProcess with the real PID); the rest
     are pure gate/poll waits — CBOS auto-runs each step, the agent only
     observes.
@@ -93,6 +98,7 @@ class SegmentState(str, enum.Enum):
     DOWNLOADING = "DOWNLOADING"
     UPLOADING = "UPLOADING"
     WAITING_FOR_FILE_UPLOAD = "WAITING_FOR_FILE_UPLOAD"
+    WAITING_FOR_INSTI_TRADE = "WAITING_FOR_INSTI_TRADE"
     TRIGGERED = "TRIGGERED"
     WAITING_FOR_BILLPOSTING = "WAITING_FOR_BILLPOSTING"
     WAITING_FOR_RECON = "WAITING_FOR_RECON"
@@ -240,12 +246,13 @@ class SegmentExecution(Base):
     "COMPLETED". current_state on the row (not this JSON) drives control
     flow; no poll count is tracked, only the latest response.
 
-    processes_json shape, 9 real segments (6 keys — insertion order
+    processes_json shape, 9 real segments (7 keys — insertion order
     matches pipeline order, since each key is only ever created when that
     state is first entered):
     {
       "INIT":                                  {"status"?: "COMPLETED", "steps": {"BeginFileUpload_STATUS": {"last_response": ..., "last_checked_at"|"checked_at": ...}}},
       "WAITING_FOR_FILE_UPLOAD":                {"status"?: "COMPLETED", "steps": {"reserve_process_id"?: {"process_id_reserved": ..., "process_id_source": "EXISTING", "reserved_at": ...}, "FILEUPLOAD_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
+      "WAITING_FOR_INSTI_TRADE":                {"status"?: "COMPLETED", "steps": {"CHECKINSTITRADE_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
       "TRIGGERED":                              {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
       "WAITING_FOR_BILLPOSTING":                {"status"?: "COMPLETED", "steps": {"BILLPOSTING_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
       "WAITING_FOR_RECON":                      {"status"?: "COMPLETED", "steps": {"RECON_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
@@ -257,7 +264,8 @@ class SegmentExecution(Base):
     from it once it genuinely fires. TRIGGERED has no "steps" wrapper —
     it's a single atomic action described by its own flat fields. CBOS
     ProcessName -> state key: BeginFileUpload->INIT,
-    FILEUPLOAD->WAITING_FOR_FILE_UPLOAD, BILLPOSTING->WAITING_FOR_BILLPOSTING,
+    FILEUPLOAD->WAITING_FOR_FILE_UPLOAD, CHECKINSTITRADE->WAITING_FOR_INSTI_TRADE,
+    BILLPOSTING->WAITING_FOR_BILLPOSTING,
     RECON->WAITING_FOR_RECON, CONTRACTNOTEGENERATION->WAITING_FOR_CONTRACT_NOTE_GENERATION.
 
     processes_json shape, 5 post-trade processes (3 keys). The step key

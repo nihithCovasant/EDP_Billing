@@ -1,9 +1,10 @@
 """
 Fixed constants for the EDP segment pipeline.
 
-9 segments run independently through the generic 6-state pipeline (INIT's
+9 segments run independently through the generic 7-state pipeline (INIT's
 holiday check -> WAITING_FOR_FILE_UPLOAD's reserve-PID/upload poll ->
-TRIGGERED -> WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION
+WAITING_FOR_INSTI_TRADE's V6 Step-10 gate -> TRIGGERED ->
+WAITING_FOR_BILLPOSTING/_RECON/_CONTRACT_NOTE_GENERATION
 polls); none are special-cased. Then 5 T+1 post-trade processes run through
 a shorter 3-state pipeline (WAITING_FOR_GTG -> [TRIGGERED ->]
 WAITING_FOR_COMPLETION), stored as extra segment_execution rows for the

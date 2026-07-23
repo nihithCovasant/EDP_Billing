@@ -6,16 +6,18 @@ Two separate base URLs:
   PROCESS_URL (port 8003) — process management (read PID, trigger)
 
 Segment pipeline — identical for all 9 segments (CASH/EQ, F&O/DR, CD/CUR,
-SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM), 7 steps:
+SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM), 8 steps:
   1. file_process_status(BeginFileUpload)        → holiday check
   2. getdropdown(EXISTINGPROCESSID)              → READ the uploader-reserved
      process_id (the uploader is the sole reserver — a miss means "wait",
      never "mint one"; see RealSegmentStateMachine's module docstring)
   3. file_process_status(FILEUPLOAD)             → poll until exchange files uploaded
-  4. get_new_trade_process(PROCESSID=<actual>)   → trigger billing processing (once)
-  5. file_process_status(BILLPOSTING)            → poll until bill posting done
-  6. file_process_status(RECON)                  → poll until reconciliation done
-  7. file_process_status(CONTRACTNOTEGENERATION) → poll until contract notes done
+  4. file_process_status(CHECKINSTITRADE)        → poll until Insti Trade Transfer
+     complete (V6 Step-10 gate — CBOS does not enforce it; we do)
+  5. get_new_trade_process(PROCESSID=<actual>)   → trigger billing processing (once)
+  6. file_process_status(BILLPOSTING)            → poll until bill posting done
+  7. file_process_status(RECON)                  → poll until reconciliation done
+  8. file_process_status(CONTRACTNOTEGENERATION) → poll until contract notes done
 
 Post-trade pipeline (T+1) — 5 processes, run once per trade_date after all
 segments, each through WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION:
@@ -347,15 +349,17 @@ class CbosClient:
         POST {STATUS_URL}/api/edp/file_process_status
         Returns TRUE (ready), FALSE (not yet), or SKIP (holiday/not applicable).
 
-        V5: TradeDate (YYYY-MM-DD) is REQUIRED in every file_process_status
-        call. Shape A (include_segment=True — real-segment steps 1/3/9 and
-        the BILLPOSTING/RECON/CONTRACTNOTEGENERATION polls) carries Segment;
-        Shape B (include_segment=False — the post-trade GTG/completion/
-        already-triggered checks, V5 doc steps 13/15-16/19-20/22-23/30-31/
-        37-38) does not. Payload shapes come from edpb_core.cbos so all
-        three repos agree by construction. trade_date=None is tolerated only
-        for legacy callers and logs loudly — real V5 CBOS may resolve the
-        WRONG DAY's process without it.
+        V5 (retained in V6): TradeDate (YYYY-MM-DD) is REQUIRED in every
+        file_process_status call. Shape A (include_segment=True —
+        real-segment steps 1/3/9, V6's new Step-10 CHECKINSTITRADE gate,
+        and the BILLPOSTING/RECON/CONTRACTNOTEGENERATION polls) carries
+        Segment; Shape B (include_segment=False — the post-trade GTG/
+        completion/already-triggered checks, V6 doc steps 14/16-17/20-21/
+        23-24/31-32/38-39) does not. Payload shapes come from
+        edpb_core.cbos so all three repos agree by construction.
+        trade_date=None is tolerated only for legacy callers and logs
+        loudly — real V5+ CBOS may resolve the WRONG DAY's process
+        without it.
         """
         if self.use_mock:
             result = self._mock_file_status(segment, process_name)

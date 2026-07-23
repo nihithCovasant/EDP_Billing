@@ -1,7 +1,7 @@
-"""Mock CBOS v5 server.
+"""Mock CBOS v6 server.
 
 A standalone FastAPI app that mimics the real CBOS trade-process API
-(EDP_Trade_Process_API_Documentation_V5.docx + docs/postman/
+(EDP_Trade_Process_API_Documentation_V6.docx + docs/postman/
 edp_trade_process_openapi.json) closely enough that this repo's CBOSClient can
 run end-to-end against it with zero code changes - point both
 CBOS base URLs at this server:
@@ -21,6 +21,10 @@ Scenario knobs (env):
                               once the process is otherwise ready (default 1).
     MOCK_CBOS_HOLIDAYS        comma-separated YYYY-MM-DD dates treated as holidays
                               (Step 1 returns HOLIDAY instead of SKIP).
+    MOCK_CBOS_INSTI_TRADE_POLLS
+                              V6 Step 10: CHECKINSTITRADE returns FALSE for the
+                              first N polls per (segment, date), then TRUE
+                              (default 1 — the engine visibly waits one cycle).
 
 Business-failure scenario: any uploaded filename containing "fail" (case-
 insensitive) makes that file's Step-7 register return Status=FAILED, mirroring a
@@ -43,7 +47,7 @@ from pydantic import BaseModel, ConfigDict
 from edpb_core.mock_cbos import data
 from edpb_core.mock_cbos.state import STATE, Process
 
-app = FastAPI(title="Mock CBOS v5", version="5.0.0")
+app = FastAPI(title="Mock CBOS v6", version="6.0.0")
 
 
 def _pending_polls() -> int:
@@ -56,6 +60,13 @@ def _pending_polls() -> int:
 def _holidays() -> set[str]:
     raw = os.getenv("MOCK_CBOS_HOLIDAYS", "")
     return {d.strip() for d in raw.split(",") if d.strip()}
+
+
+def _insti_trade_polls() -> int:
+    try:
+        return int(os.getenv("MOCK_CBOS_INSTI_TRADE_POLLS", "1"))
+    except ValueError:
+        return 1
 
 
 def _ok(**extra: Any) -> dict[str, Any]:
@@ -77,7 +88,7 @@ class _CBOSRequest(BaseModel):
 
 
 class TradeProcessRequest(_CBOSRequest):
-    """POST getNewTradeProcess - Step 2 (and Step 10, same endpoint)."""
+    """POST getNewTradeProcess - Step 2 (and the Step-11 trigger, same endpoint; V6 renumbering)."""
     GROUPNAME: str = ""
     LOGINID: str = ""
     TRADEDATE: str = ""
@@ -120,7 +131,7 @@ class UploadSettingsRequest(_CBOSRequest):
 
 
 class ExpectedFilenameRequest(_CBOSRequest):
-    """POST get_expected_filename - Step 39."""
+    """POST get_expected_filename - Step 40 (V6 renumbering)."""
     uploadid: str = ""
 
 
@@ -172,7 +183,7 @@ async def get_new_trade_process(payload: TradeProcessRequest):
     *re-fetches* that process - Table2 then reports each slot's real
     STATUS/STATUSDESC instead of resetting to PENDING, and Table1's
     ISAUTOUPLOAD flips to False (a real-CBOS quirk the client deliberately
-    stopped gating on; ISRUNNABLE is the signal now). The Step-10 trigger
+    stopped gating on; ISRUNNABLE is the signal now). The Step-11 trigger (V6; was Step 10)
     (EDP_Billing's call, same endpoint) only takes effect once every mandatory
     upload slot is satisfied - an early re-fetch by the uploader must not
     start billing."""
@@ -286,7 +297,7 @@ async def get_dropdown(payload: DropdownRequest):
                         "_DESC": f"{proc.process_id} - {payload.LOGINID} - {proc.trade_date}"}])
 
 
-# --- Collateral / MTF / Margin trigger endpoints (Steps 17-36) -----------------
+# --- Collateral / MTF / Margin trigger endpoints (V6 Steps 18-37) --------------
 # Canned "process started" responses so the full pipeline can be exercised.
 @app.post("/v1/api/process/GetCollateralValuation")
 async def collateral_valuation(payload: TriggerRequest):
@@ -361,13 +372,26 @@ async def file_process_status(payload: FileProcessStatusRequest):
             return _ok(Data=[{"MSG": "FALSE"}])
         return _ok(Data=[{"MSG": "TRUE" if proc.gtg_ready() else "FALSE"}])
 
+    if process_name == "CHECKINSTITRADE":
+        # V6 Step 10 - Insti Trade Status GTG. Insti Trade Transfer is an
+        # institutional back-office process independent of any PROCESSID, so
+        # the mock models it as a per-(segment, date) delay: FALSE for the
+        # first N polls, then TRUE. NOTE the real server does NOT gate the
+        # trigger on this (the doc warns early triggers "may cause pipeline
+        # step failures") - the mock deliberately mirrors that: the caller
+        # must gate, exactly as in production.
+        key = (segment.upper(), trade_date)
+        polls = STATE.insti_trade_polls.get(key, 0) + 1
+        STATE.insti_trade_polls[key] = polls
+        return _ok(Data=[{"MSG": "FALSE" if polls <= _insti_trade_polls() else "TRUE"}])
+
     # Downstream GTG checks - canned TRUE.
     return _ok(Data=[{"MSG": "TRUE"}])
 
 
 @app.post("/api/edp/get_expected_filename")
 async def get_expected_filename(payload: ExpectedFilenameRequest):
-    """Step 39 - expected filename pattern for a segment/upload id."""
+    """Step 40 (V6) - expected filename pattern for a segment/upload id."""
     upload_id = payload.uploadid
     return _ok(Data=[{"UploadID": upload_id, "ExpectedFileNamePattern1": data.expected_pattern(upload_id)}])
 
@@ -378,7 +402,7 @@ async def get_expected_filename(payload: ExpectedFilenameRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "mock-cbos-v5"}
+    return {"status": "ok", "service": "mock-cbos-v6"}
 
 
 @app.get("/__mock/state")

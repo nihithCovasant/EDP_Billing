@@ -50,7 +50,11 @@ _CONFIRM_STAGES = {
     SegmentState.WAITING_FOR_COMPLETION.value,
 }
 # States whose step completes with a "ready_at" timestamp
-_READY_STAGES = {SegmentState.WAITING_FOR_FILE_UPLOAD.value, SegmentState.WAITING_FOR_GTG.value}
+_READY_STAGES = {
+    SegmentState.WAITING_FOR_FILE_UPLOAD.value,
+    SegmentState.WAITING_FOR_INSTI_TRADE.value,  # V6 Step-10 gate: "ready to trigger"
+    SegmentState.WAITING_FOR_GTG.value,
+}
 # All others (INIT) get "checked_at"
 
 
