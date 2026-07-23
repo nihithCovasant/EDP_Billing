@@ -275,6 +275,30 @@ def test_validate_workflow_json_accepts_valid_config():
     _validate_workflow_json(good)  # must not raise
 
 
+def test_validate_workflow_json_rejects_explicit_null_post_trade_processes():
+    """
+    Regression coverage: an uploaded workflow_json with an explicit
+    "post_trade_processes": null (vs. the key being absent entirely, which
+    is a valid backward-compat default) must be rejected at upload time —
+    otherwise it reaches the orchestrator's per-cycle post-trade loop,
+    which list-comprehends over it and crashes every wake cycle.
+    """
+    bad = _simple_workflow_json()
+    bad["post_trade_processes"] = None
+    with pytest.raises(Exception) as exc_info:
+        _validate_workflow_json(bad)
+    assert "post_trade_processes" in str(exc_info.value)
+    assert "null" in str(exc_info.value)
+
+
+def test_validate_workflow_json_still_allows_omitted_post_trade_processes_key():
+    """Contrast case: the key being absent entirely (not present at all) is
+    the documented backward-compat default and must still be accepted."""
+    good = _simple_workflow_json()
+    good.pop("post_trade_processes", None)
+    _validate_workflow_json(good)  # must not raise
+
+
 # =============================================================================
 # API layer -- version endpoints (list / get / apply / delete)
 # =============================================================================

@@ -37,14 +37,39 @@ DEFAULT_GTG_PROCESS_NAME: dict[str, str] = {
 }
 
 # Fixed CBOS trigger endpoint path per process_code (not config-driven —
-# there's no CBOS integration for an arbitrary 6th process).
+# there's no CBOS integration for an arbitrary 6th process). DMRPT shares
+# CombinedMarginProcess with its own already-triggered/REFRESH check
+# (BUTTONNAME-dispatched, same as GetCollateralValuation). DMSTMT has no
+# PROCESS-API trigger endpoint at all — it fires through the STATUS API
+# (file_process_status ProcessName=DAILYMARGINSTATEMENT, see
+# ALREADY_TRIGGERED_PROCESS_NAME below), so it's intentionally absent here.
 TRIGGER_ENDPOINT: dict[str, str] = {
     "COLVAL": "/v1/api/process/GetCollateralValuation",
     "COLALLOC": "/v1/api/process/MTFTradeProcessCollateralAllocation",
     "MTFFT": "/v1/api/process/MTFTradeProcessFundTransfer",
-    "DMRPT": "/v1/api/process/DailyMarginReporting",
-    "DMSTMT": "/v1/api/process/DailyMarginStatements",
+    "DMRPT": "/v1/api/process/CombinedMarginProcess",
 }
+
+# ProcessName values used ONLY by the 3 "already triggered" pre-checks that
+# share file_process_status instead of a REFRESH-style PROCESS-API call
+# (COLALLOC/MTFFT/DMSTMT — see src/tools/cbos_client.py
+# _already_triggered_via_file_status()). These must reflect actual trigger
+# state (state.post_trade_triggered), not the generic poll-count GTG logic,
+# or the check answer is decoupled from reality (agent could skip a trigger
+# that never fired, or refuse one that already did).
+ALREADY_TRIGGERED_PROCESS_NAME: dict[str, str] = {
+    "MTFCOLLALLOC": "COLALLOC",
+    "MTFFUNDTRAN": "MTFFT",
+    "CHECKDAILYMARGINSTATEMENT": "DMSTMT",
+}
+
+# The one-shot DMSTMT trigger ProcessName (STATUS API, ALL CAPS, distinct
+# from POST_TRADE_GTG_PROCESS_NAME's "DailyMarginStatements" used for the
+# WAITING_FOR_COMPLETION poll) — confirmed against EDP_Trade_Process_API_v3
+# Step 38. Real CBOS fires-and-acks immediately here; it is NOT a
+# poll-until-ready gate like the other ProcessNames, so it must not share
+# the generic poll-count logic either.
+DMSTMT_TRIGGER_PROCESS_NAME = "DAILYMARGINSTATEMENT"
 
 
 def resolve_gtg_process_name(process_code: str, override: str | None = None) -> str:
@@ -63,7 +88,9 @@ def post_trade_reference() -> dict:
                 "process_code": code,
                 "display_name": POST_TRADE_NAMES[code],
                 "default_gtg_process_name": DEFAULT_GTG_PROCESS_NAME[code],
-                "trigger_endpoint": TRIGGER_ENDPOINT[code],
+                "trigger_endpoint": TRIGGER_ENDPOINT.get(
+                    code, f"file_process_status(ProcessName={DMSTMT_TRIGGER_PROCESS_NAME})"
+                ),
             }
             for code in POST_TRADE_ORDER
         ],
@@ -71,7 +98,11 @@ def post_trade_reference() -> dict:
             "GTG/confirm polls use file_process_status with "
             "Segment=<process_code> and ProcessName=<gtg_process_name from "
             "workflow config, or default_gtg_process_name above>. "
-            "Triggers always hit the fixed trigger_endpoint for each "
-            "process_code; only LOGINID is config-driven on those calls."
+            "Triggers hit the fixed trigger_endpoint for each process_code "
+            "(BUTTONNAME-dispatched for COLVAL/DMRPT — see "
+            "ALREADY_TRIGGERED_PROCESS_NAME for their REFRESH-variant "
+            "already-triggered check), except DMSTMT which has no PROCESS-API "
+            "trigger endpoint and instead fires via file_process_status "
+            f"(ProcessName={DMSTMT_TRIGGER_PROCESS_NAME})."
         ),
     }

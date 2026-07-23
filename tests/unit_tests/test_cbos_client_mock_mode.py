@@ -57,7 +57,9 @@ async def test_file_process_status_begin_file_upload_returns_expected_mock_value
     """
     cbos = CbosClient("http://status", "http://process", use_mock=True)
 
-    result = await cbos.file_process_status(segment="EQ", process_name="BeginFileUpload", user_id="CV0001")
+    result = await cbos.file_process_status(
+        segment="EQ", process_name="BeginFileUpload", user_id="CV0001", trade_date=date(2026, 6, 29),
+    )
 
     assert isinstance(result, FileStatusResult)
     assert result.error is None
@@ -70,7 +72,9 @@ async def test_file_process_status_skip_segment_returns_skip():
     regardless of poll count — simulates the holiday gate."""
     cbos = CbosClient("http://status", "http://process", use_mock=True)
 
-    result = await cbos.file_process_status(segment="EQ_SKIP", process_name="BeginFileUpload", user_id="CV0001")
+    result = await cbos.file_process_status(
+        segment="EQ_SKIP", process_name="BeginFileUpload", user_id="CV0001", trade_date=date(2026, 6, 29),
+    )
 
     assert result.response == "SKIP"
     assert result.is_skip is True
@@ -85,8 +89,12 @@ async def test_file_process_status_becomes_ready_after_configured_poll_count():
     """
     cbos = CbosClient("http://status", "http://process", use_mock=True)
 
-    first = await cbos.file_process_status(segment="EQ", process_name="FILEUPLOAD", user_id="CV0001")
-    second = await cbos.file_process_status(segment="EQ", process_name="FILEUPLOAD", user_id="CV0001")
+    first = await cbos.file_process_status(
+        segment="EQ", process_name="FILEUPLOAD", user_id="CV0001", trade_date=date(2026, 6, 29),
+    )
+    second = await cbos.file_process_status(
+        segment="EQ", process_name="FILEUPLOAD", user_id="CV0001", trade_date=date(2026, 6, 29),
+    )
 
     assert first.response == "FALSE"
     assert first.is_pending is True
@@ -397,7 +405,9 @@ def test_use_mock_reads_back_as_true_when_constructed_with_use_mock_true():
 async def test_file_process_status_never_hits_network_with_unreachable_url():
     cbos = CbosClient(UNREACHABLE_STATUS_URL, UNREACHABLE_PROCESS_URL, use_mock=True)
 
-    result = await cbos.file_process_status(segment="EQ", process_name="BeginFileUpload", user_id="CV0001")
+    result = await cbos.file_process_status(
+        segment="EQ", process_name="BeginFileUpload", user_id="CV0001", trade_date=date(2026, 6, 29),
+    )
 
     assert isinstance(result, FileStatusResult)
     assert result.error is None

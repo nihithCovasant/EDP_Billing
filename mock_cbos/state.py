@@ -21,16 +21,23 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from .constants import resolve_gtg_process_name
+from .constants import (
+    ALREADY_TRIGGERED_PROCESS_NAME,
+    DMSTMT_TRIGGER_PROCESS_NAME,
+    resolve_gtg_process_name,
+)
 
 
 @dataclass
 class MockCbosState:
-    # How many polls a (segment, process_name) pair needs before returning TRUE
+    # How many polls a (segment, process_name, trade_date) triple needs before returning TRUE
     ready_after: int = 2
 
-    # (segment, process_name) -> poll count so far
-    poll_counts: Dict[Tuple[str, str], int] = field(default_factory=dict)
+    # (segment, process_name, trade_date) -> poll count so far. trade_date is
+    # part of the key (not just segment/process_name) so a second day's run
+    # in the same server process starts its own poll count from zero instead
+    # of instantly reading as "already ready" from the first day's counter.
+    poll_counts: Dict[Tuple[str, str, str], int] = field(default_factory=dict)
 
     # (group_name, trade_date) -> reserved PROCESSID
     reserved_pids: Dict[Tuple[str, str], str] = field(default_factory=dict)
@@ -67,21 +74,53 @@ class MockCbosState:
     # file_process_status (Good-to-Go polling)
     # -------------------------------------------------------------------------
 
-    def file_status(self, segment: str, process_name: str, user_id: str = "") -> str:
-        """Return TRUE | FALSE | SKIP for the given (segment, process_name)."""
+    def file_status(
+        self, segment: str, process_name: str, user_id: str = "", trade_date: str = "",
+    ) -> str:
+        """Return TRUE | FALSE | SKIP (or an already-triggered sentence) for
+        the given (segment, process_name, trade_date)."""
         with self._lock:
             seg = segment.upper()
             if process_name == "BeginFileUpload" and seg in self.holiday_segments:
                 return "SKIP"
 
-            key = (seg, process_name)
+            # DMSTMT's one-shot STATUS-API trigger (Step 38): real CBOS
+            # fires and acks immediately here — it is NOT a poll-until-ready
+            # gate, so it must not share the generic poll-count logic below
+            # (which would spuriously return FALSE on the first call and
+            # make the trigger look like it failed).
+            if process_name == DMSTMT_TRIGGER_PROCESS_NAME:
+                self._record_file_status_call(seg, process_name, user_id)
+                self.post_trade_triggered["DMSTMT"] = {
+                    "login_id": user_id or "",
+                    "triggered_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                return "TRUE"
+
+            # The 3 "already triggered" pre-checks that share
+            # file_process_status instead of a REFRESH-style PROCESS-API
+            # call (COLALLOC/MTFFT/DMSTMT) — must reflect real trigger
+            # state, not an independent poll counter, or the check answer
+            # is decoupled from whether a trigger actually fired.
+            process_code = ALREADY_TRIGGERED_PROCESS_NAME.get(process_name)
+            if process_code is not None:
+                self._record_file_status_call(seg, process_name, user_id)
+                if process_code in self.post_trade_triggered:
+                    return "TRUE"
+                return (
+                    "DAILYMARGINSTATEMENT IS NOT TRIGGERED"
+                    if process_code == "DMSTMT"
+                    else "PROCESS TRIGGERED IS PENDING"
+                )
+
+            key = (seg, process_name, trade_date)
 
             self._record_file_status_call(seg, process_name, user_id)
 
-            if key in self.stuck_keys:
+            if (seg, process_name) in self.stuck_keys:
                 return "FALSE"
 
-            if key in self.force_ready_keys:
+            if (seg, process_name) in self.force_ready_keys:
                 return "TRUE"
 
             self.poll_counts[key] = self.poll_counts.get(key, 0) + 1
@@ -208,7 +247,7 @@ class MockCbosState:
         with self._lock:
             return {
                 "ready_after": self.ready_after,
-                "poll_counts": {f"{k[0]}::{k[1]}": v for k, v in self.poll_counts.items()},
+                "poll_counts": {f"{k[0]}::{k[1]}::{k[2]}": v for k, v in self.poll_counts.items()},
                 "reserved_pids": {f"{k[0]}::{k[1]}": v for k, v in self.reserved_pids.items()},
                 "executed_pids": dict(self.executed_pids),
                 "holiday_segments": sorted(self.holiday_segments),
@@ -248,14 +287,29 @@ UPLOAD_STEP_NAMES += [
 ]
 
 
+# How many of the leading (file-upload) steps are done synchronously as
+# part of the trigger call itself before the calculation/bill-posting tail
+# (async in real CBOS) starts — see build_table2(all_success=True).
+_SYNC_UPLOAD_STEP_COUNT = 12
+
+
 def build_table2(all_success: bool) -> List[dict]:
-    """Build the Table2 step list for getNewTradeProcess responses."""
-    status = "SUCCESS" if all_success else "PENDING"
+    """
+    Build the Table2 step list for getNewTradeProcess responses.
+
+    all_success=False (reserve-PID call): nothing has started yet, every
+    step PENDING.
+    all_success=True (trigger call): only the synchronous file-upload
+    steps (1-12) are done by the time this response returns — the
+    calculation/bill-posting tail (13-28) is kicked off async by real CBOS
+    and is still PENDING, matching the API doc's sample Table2 snapshot
+    right after a trigger (not an unrealistic instant-all-SUCCESS).
+    """
     return [
         {
             "STEPNO": step_no,
             "NAME": name,
-            "STATUS": status,
+            "STATUS": "SUCCESS" if (all_success and step_no <= _SYNC_UPLOAD_STEP_COUNT) else "PENDING",
             "UPLOADID": upload_id,
         }
         for step_no, name, upload_id in UPLOAD_STEP_NAMES

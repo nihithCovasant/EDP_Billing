@@ -318,9 +318,25 @@ def test_send_alert_email_multi_row_dry_run_default_subject_breakdown():
     assert "1 FAILED" in result.subject
 
 
-def test_send_alert_email_requires_recipients_when_none_configured():
+def test_send_alert_email_real_send_requires_recipients_when_none_configured():
+    """A real (non-dry-run) send with no resolvable recipients must fail
+    loudly — nothing to actually send to."""
     with pytest.raises(InvalidPayloadError):
-        send_alert_email({"row": MCX_RECON_ROW}, config=dry_run_config(default_to=[]))
+        send_alert_email({"row": MCX_RECON_ROW}, config=dry_run_config(dry_run=False, default_to=[]))
+
+
+def test_send_alert_email_dry_run_succeeds_even_with_no_recipients_configured():
+    """
+    Regression coverage: with the shipped defaults (no EMAIL_DEFAULT_TO
+    configured), dry_run mode must still succeed — dry_run exists
+    specifically so the pipeline can be exercised/tested without needing
+    real recipient config wired up. Previously the recipient check ran
+    before the dry_run branch, so every dry-run alert failed out of the
+    box.
+    """
+    result = send_alert_email({"row": MCX_RECON_ROW}, config=dry_run_config(default_to=[]))
+    assert result.success is True
+    assert result.dry_run is True
 
 
 # ---------------------------------------------------------------------------

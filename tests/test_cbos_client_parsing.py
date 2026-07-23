@@ -24,6 +24,7 @@ from src.tools.cbos_client import (
     _is_transient_http_status,
     _parse_already_triggered_sentence,
     _parse_new_trade_process,
+    _parse_post_trade_trigger,
 )
 
 
@@ -71,19 +72,39 @@ async def test_already_triggered_via_file_status_uses_sentence_parser_not_is_rea
     """
     cbos = CbosClient("http://status", "http://process", use_mock=False)
 
-    async def fake_pending(*, segment, process_name, user_id):
+    async def fake_pending(*, segment, process_name, user_id, trade_date, include_segment=True):
         return FileStatusResult(response="PROCESS TRIGGERED IS PENDING")
 
     monkeypatch.setattr(cbos, "file_process_status", fake_pending)
-    result = await cbos._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", "G_LID")
+    result = await cbos._already_triggered_via_file_status(
+        "COLALLOC", "MTFCOLLALLOC", "G_LID", date(2026, 6, 29),
+    )
     assert result.already_triggered is False
 
-    async def fake_already_triggered(*, segment, process_name, user_id):
+    async def fake_already_triggered(*, segment, process_name, user_id, trade_date, include_segment=True):
         return FileStatusResult(response="PROCESS ALREADY TRIGGERED")
 
     monkeypatch.setattr(cbos, "file_process_status", fake_already_triggered)
-    result = await cbos._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", "G_LID")
+    result = await cbos._already_triggered_via_file_status(
+        "DMSTMT", "CHECKDAILYMARGINSTATEMENT", "G_LID", date(2026, 6, 29),
+    )
     assert result.already_triggered is True
+
+
+async def test_already_triggered_via_file_status_omits_segment(monkeypatch):
+    """MTFCOLLALLOC/MTFFUNDTRAN/CHECKDAILYMARGINSTATEMENT (doc steps 20/23/37)
+    are documented WITHOUT a Segment field — confirm the shared helper
+    passes include_segment=False through to file_process_status()."""
+    cbos = CbosClient("http://status", "http://process", use_mock=False)
+    captured = {}
+
+    async def fake_file_process_status(*, segment, process_name, user_id, trade_date, include_segment=True):
+        captured["include_segment"] = include_segment
+        return FileStatusResult(response="PROCESS TRIGGERED IS PENDING")
+
+    monkeypatch.setattr(cbos, "file_process_status", fake_file_process_status)
+    await cbos._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", "G_LID", date(2026, 6, 29))
+    assert captured["include_segment"] is False
 
 
 async def test_check_collateral_valuation_triggered_sends_documented_payload(monkeypatch):
@@ -129,6 +150,105 @@ async def test_check_daily_margin_reporting_triggered_sends_documented_payload(m
 
     assert captured["endpoint_name"] == "CombinedMarginProcess"
     assert captured["payload"] == {"BUTTONNAME": "REFRESH", "LOGINID": "CV0001"}
+
+
+async def _captured_file_process_status_payload(cbos: CbosClient, **kwargs) -> dict:
+    """Drives file_process_status() through the real (non-mock) HTTP path
+    with httpx.AsyncClient faked out, and returns exactly the JSON body
+    that would have been POSTed — used to assert the documented Shape A
+    (Segment present) vs Shape B (Segment omitted) request shapes."""
+    import httpx
+
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+        text = '{"Status":"Success","Data":[{"MSG":"TRUE"}]}'
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None):
+            captured["payload"] = json
+            return _FakeResponse()
+
+    original_async_client = httpx.AsyncClient
+    httpx.AsyncClient = _FakeAsyncClient
+    try:
+        await cbos.file_process_status(**kwargs)
+    finally:
+        httpx.AsyncClient = original_async_client
+    return captured["payload"]
+
+
+async def test_file_process_status_includes_segment_by_default_shape_a():
+    """Real-segment calls (BeginFileUpload/FILEUPLOAD/BILLPOSTING/RECON/
+    CONTRACTNOTEGENERATION) are documented Shape A — Segment present."""
+    cbos = CbosClient("http://status", "http://process", use_mock=False)
+    payload = await _captured_file_process_status_payload(
+        cbos, segment="EQ", process_name="BeginFileUpload", user_id="CV0001", trade_date=date(2026, 6, 29),
+    )
+    assert payload == {
+        "Segment": "EQ", "TradeDate": "2026-06-29", "ProcessName": "BeginFileUpload", "UserID": "CV0001",
+    }
+
+
+async def test_file_process_status_omits_segment_when_include_segment_false_shape_b():
+    """The post-trade "Shape B" ProcessNames (CollateralValuation,
+    MTFCOLLALLOC, MTFFUNDTRAN, CHECKDAILYMARGINSTATEMENT,
+    DAILYMARGINSTATEMENT) are documented WITHOUT a Segment field."""
+    cbos = CbosClient("http://status", "http://process", use_mock=False)
+    payload = await _captured_file_process_status_payload(
+        cbos, segment="DMSTMT", process_name="DAILYMARGINSTATEMENT", user_id="CV0001",
+        trade_date=date(2026, 6, 29), include_segment=False,
+    )
+    assert payload == {"TradeDate": "2026-06-29", "ProcessName": "DAILYMARGINSTATEMENT", "UserID": "CV0001"}
+    assert "Segment" not in payload
+
+
+async def test_trigger_daily_margin_statements_omits_segment(monkeypatch):
+    """trigger_daily_margin_statements() reuses file_process_status() —
+    confirm it passes include_segment=False (doc Step 38 has no Segment)."""
+    cbos = CbosClient("http://status", "http://process", use_mock=False)
+    captured = {}
+
+    async def fake_file_process_status(*, segment, process_name, user_id, trade_date, include_segment=True):
+        captured["include_segment"] = include_segment
+        from src.tools.cbos_client import FileStatusResult
+        return FileStatusResult(response="TRUE")
+
+    monkeypatch.setattr(cbos, "file_process_status", fake_file_process_status)
+    await cbos.trigger_daily_margin_statements("CV0001", date(2026, 6, 29))
+    assert captured["include_segment"] is False
+
+
+async def test_documented_step24_mtf_fund_transfer_failure_is_not_read_as_success():
+    """
+    EDP_Trade_Process_API_v3 Step 24's documented failure keeps top-level
+    Status="Success" but nests the real error in Result[].Result — e.g.
+    {"Status":"Success","Result":[{"Result":"The specified @job_name
+    ('MTF_RISK_UPDATE') does not exist."}]}. Regression coverage for a bug
+    where _parse_post_trade_trigger only looked at Data[]/MSG/Message,
+    found nothing, and fell through to "assume success."
+    """
+    body = (
+        '{"Status":"Success","Result":[{"Result":'
+        '"The specified @job_name (\'MTF_RISK_UPDATE\') does not exist."}]}'
+    )
+    success, message, is_transient = _parse_post_trade_trigger(body)
+    assert success is False
+    assert "does not exist" in message
+    assert is_transient is False
+
+
+def test_normal_data_msg_success_shape_still_recognized():
+    """Contrast case: the documented HAPPY-path shape must still work."""
+    success, message, _ = _parse_post_trade_trigger(
+        '{"Status":"Success","Data":[{"MSG":"Process started successfully"}]}'
+    )
+    assert success is True
+    assert message == "Process started successfully"
 
 
 def test_http_429_is_transient_not_permanent():

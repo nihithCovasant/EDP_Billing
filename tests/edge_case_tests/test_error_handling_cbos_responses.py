@@ -16,6 +16,7 @@ _is_transient_http_status, transient-vs-permanent classification).
 from __future__ import annotations
 
 import time
+from datetime import date
 
 import pytest
 
@@ -370,18 +371,21 @@ async def test_already_triggered_sentence_non_string_is_absorbed_by_its_only_cal
         response = None
         raw_body = ""
 
-    async def fake_file_process_status(*, segment, process_name, user_id):
+    async def fake_file_process_status(*, segment, process_name, user_id, trade_date, include_segment=True):
         return _BadFileStatusResult()
 
     import types
     cbos.file_process_status = types.MethodType(
-        lambda self, *, segment, process_name, user_id: fake_file_process_status(
-            segment=segment, process_name=process_name, user_id=user_id
+        lambda self, *, segment, process_name, user_id, trade_date, include_segment=True: fake_file_process_status(
+            segment=segment, process_name=process_name, user_id=user_id, trade_date=trade_date,
+            include_segment=include_segment,
         ),
         cbos,
     )
 
-    result = await cbos._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", "G_LID")
+    result = await cbos._already_triggered_via_file_status(
+        "DMSTMT", "CHECKDAILYMARGINSTATEMENT", "G_LID", date(2026, 6, 29),
+    )
     assert result.already_triggered is True
 
 

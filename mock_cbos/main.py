@@ -70,13 +70,14 @@ async def file_process_status(payload: dict):
     (segment, process_name) triple the agent sends (ProcessName is now
     config-driven; UserID/login_id is echoed in /mock/state for verification).
 
-    Body: {"Segment": "EQ", "ProcessName": "BeginFileUpload", "UserID": "CV0001"}
+    Body: {"Segment": "EQ", "ProcessName": "BeginFileUpload", "UserID": "CV0001", "TradeDate": "2026-06-29"}
     """
     segment = str(payload.get("Segment", ""))
     process_name = str(payload.get("ProcessName", ""))
     user_id = str(payload.get("UserID", ""))
+    trade_date = str(payload.get("TradeDate", ""))
 
-    msg = state.file_status(segment, process_name, user_id)
+    msg = state.file_status(segment, process_name, user_id, trade_date)
     return {"Status": "Success", "Data": [{"MSG": msg}]}
 
 
@@ -111,6 +112,9 @@ async def get_new_trade_process(payload: dict):
     return {
         "Status": "Success",
         "Result": {
+            # build_table2(all_success=True) -> sync upload steps (1-12)
+            # SUCCESS, async calculation/bill-posting tail (13-28) still
+            # PENDING — a realistic snapshot, not instant all-SUCCESS.
             "Table1": [{"PROCESSID": int(process_id), "ISRUNNABLE": True}],
             "Table2": build_table2(all_success=True),
         },
@@ -145,18 +149,52 @@ async def getdropdown(payload: dict):
 
 # =============================================================================
 # T+1 post-trade triggers — Collateral Valuation/Allocation, MTF Fund
-#     Transfer, Daily Margin Reporting/Statements (Processes 1-5)
+#     Transfer, Daily Margin Reporting (Processes 1-4; DMSTMT/Process 5 has
+#     no PROCESS-API endpoint at all — it fires via file_process_status,
+#     see file_process_status() above and DMSTMT_TRIGGER_PROCESS_NAME)
 #     Main Process API — port 8003 in real CBOS
 # =============================================================================
 
 @app.post("/v1/api/process/GetCollateralValuation")
 async def get_collateral_valuation(payload: dict):
     """
-    Post-trade Process 1 trigger.
-    Body: {"BUTTONNAME":"COLLATERAL_VALUATION_DATEWISE","LOGINID":"<from config>","MARGINDATE":"29-Jun-2026"}
+    Post-trade Process 1 — BUTTONNAME-dispatched, same endpoint used for
+    both the trigger AND its "already triggered" REFRESH pre-check
+    (confirmed against EDP_Trade_Process_API_v3 steps 16/17):
+      BUTTONNAME="COLLATERAL_VALUATION_DATEWISE" -> fire the trigger.
+      BUTTONNAME="REFRESH"                       -> already-triggered check;
+        non-empty Result.Table1 means a run for this date already exists.
     """
+    button = str(payload.get("BUTTONNAME", "")).upper()
     login_id = str(payload.get("LOGINID", ""))
+
+    if button == "REFRESH":
+        triggered = state.is_post_trade_triggered("COLVAL")
+        table1 = [{"PROCESSID": 1, "STATUS": "RUNNING"}] if triggered else []
+        return {"Status": "Success", "Result": {"Table1": table1}}
+
     state.mark_post_trade_triggered("COLVAL", login_id)
+    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
+
+
+@app.post("/v1/api/process/CombinedMarginProcess")
+async def combined_margin_process(payload: dict):
+    """
+    Post-trade Process 4 (DMRPT) — BUTTONNAME-dispatched, same shape as
+    GetCollateralValuation above (confirmed against
+    EDP_Trade_Process_API_v3 steps 34/35):
+      BUTTONNAME="COMBINEDMARGIN_PROCESS" -> fire the trigger.
+      BUTTONNAME="REFRESH"                -> already-triggered check.
+    """
+    button = str(payload.get("BUTTONNAME", "")).upper()
+    login_id = str(payload.get("LOGINID", ""))
+
+    if button == "REFRESH":
+        triggered = state.is_post_trade_triggered("DMRPT")
+        table1 = [{"PROCESSID": 1, "STATUS": "RUNNING"}] if triggered else []
+        return {"Status": "Success", "Result": {"Table1": table1}}
+
+    state.mark_post_trade_triggered("DMRPT", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 
@@ -173,22 +211,6 @@ async def mtf_trade_process_fund_transfer(payload: dict):
     """Post-trade Process 3 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
     login_id = str(payload.get("LOGINID", ""))
     state.mark_post_trade_triggered("MTFFT", login_id)
-    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
-
-
-@app.post("/v1/api/process/DailyMarginReporting")
-async def daily_margin_reporting(payload: dict):
-    """Post-trade Process 4 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
-    login_id = str(payload.get("LOGINID", ""))
-    state.mark_post_trade_triggered("DMRPT", login_id)
-    return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
-
-
-@app.post("/v1/api/process/DailyMarginStatements")
-async def daily_margin_statements(payload: dict):
-    """Post-trade Process 5 trigger. Body: {"LOGINID":"<from config>","TRADEDATE":"29-Jun-2026"}"""
-    login_id = str(payload.get("LOGINID", ""))
-    state.mark_post_trade_triggered("DMSTMT", login_id)
     return {"Status": "Success", "Data": [{"MSG": "Process started successfully"}]}
 
 

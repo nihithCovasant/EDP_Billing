@@ -69,10 +69,10 @@ class SequenceRecordingCbosClient(CbosClient):
         self.calls: list[tuple[str, str]] = []
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date: date, include_segment: bool = True,
     ) -> FileStatusResult:
         self.calls.append((segment.upper(), process_name))
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment)
 
     async def get_existing_process_id(
         self, segment: str, login_id: str, trade_date: date,
@@ -95,9 +95,11 @@ class SequenceRecordingCbosClient(CbosClient):
         self.calls.append((segment.upper(), f"alreadyTriggeredCheck:{endpoint_name}"))
         return await super()._already_triggered_check(endpoint_name, payload, segment=segment)
 
-    async def _already_triggered_via_file_status(self, segment: str, process_name: str, user_id: str):
+    async def _already_triggered_via_file_status(
+        self, segment: str, process_name: str, user_id: str, trade_date: date,
+    ):
         self.calls.append((segment.upper(), f"alreadyTriggeredCheck:{process_name}"))
-        return await super()._already_triggered_via_file_status(segment, process_name, user_id)
+        return await super()._already_triggered_via_file_status(segment, process_name, user_id, trade_date)
 
     def calls_for(self, segment: str) -> list[str]:
         seg = segment.upper()
@@ -171,11 +173,15 @@ async def test_holiday_skipped_segment_makes_exactly_one_cbos_call_ever(cfg, ses
             self._skip_segment = skip_segment.upper()
             self._skip_process = skip_process
 
-        async def file_process_status(self, segment: str, process_name: str, user_id: str) -> FileStatusResult:
+        async def file_process_status(
+            self, segment: str, process_name: str, user_id: str, trade_date: date, include_segment: bool = True,
+        ) -> FileStatusResult:
             self.calls.append((segment.upper(), process_name))
             if segment.upper() == self._skip_segment and process_name == self._skip_process:
                 return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
-            return await CbosClient.file_process_status(self, segment, process_name, user_id)
+            return await CbosClient.file_process_status(
+                self, segment, process_name, user_id, trade_date, include_segment,
+            )
 
     cbos = RecordingSkippingCbosClient(
         cfg.cbos_status_url, cfg.cbos_process_url, skip_segment="EQ", skip_process="BeginFileUpload",
@@ -376,11 +382,15 @@ async def test_full_day_all_segments_and_post_trade_call_count_audit(cfg, sessio
             super().__init__(status_url, process_url)
             self._skip_segments = {s.upper() for s in skip_segments}
 
-        async def file_process_status(self, segment: str, process_name: str, user_id: str) -> FileStatusResult:
+        async def file_process_status(
+            self, segment: str, process_name: str, user_id: str, trade_date: date, include_segment: bool = True,
+        ) -> FileStatusResult:
             self.calls.append((segment.upper(), process_name))
             if segment.upper() in self._skip_segments and process_name == "BeginFileUpload":
                 return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
-            return await CbosClient.file_process_status(self, segment, process_name, user_id)
+            return await CbosClient.file_process_status(
+                self, segment, process_name, user_id, trade_date, include_segment,
+            )
 
     cbos = RecordingMultiSkippingCbosClient(
         cfg.cbos_status_url, cfg.cbos_process_url, skip_segments=HOLIDAY_SEGMENTS,
