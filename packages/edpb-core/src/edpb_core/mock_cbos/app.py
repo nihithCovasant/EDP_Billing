@@ -50,11 +50,15 @@ from edpb_core.mock_cbos.state import STATE, Process
 app = FastAPI(title="Mock CBOS v6", version="6.0.0")
 
 
-def _pending_polls() -> int:
+def _int_env(name: str, default: int) -> int:
     try:
-        return int(os.getenv("MOCK_CBOS_PENDING_POLLS", "1"))
+        return int(os.getenv(name, str(default)))
     except ValueError:
-        return 1
+        return default
+
+
+def _pending_polls() -> int:
+    return _int_env("MOCK_CBOS_PENDING_POLLS", 1)
 
 
 def _holidays() -> set[str]:
@@ -63,10 +67,7 @@ def _holidays() -> set[str]:
 
 
 def _insti_trade_polls() -> int:
-    try:
-        return int(os.getenv("MOCK_CBOS_INSTI_TRADE_POLLS", "1"))
-    except ValueError:
-        return 1
+    return _int_env("MOCK_CBOS_INSTI_TRADE_POLLS", 1)
 
 
 def _ok(**extra: Any) -> dict[str, Any]:

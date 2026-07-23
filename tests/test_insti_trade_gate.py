@@ -8,8 +8,10 @@ tests pin the engine as the enforcement point:
 
   - the happy path traverses WAITING_FOR_INSTI_TRADE (state + audit JSON),
   - the trigger NEVER fires while CHECKINSTITRADE answers FALSE,
-  - an unexpected SKIP mid-pipeline fails the segment (same posture as
-    every other non-INIT poll).
+  - ANY non-TRUE answer (SKIP, values outside the V6 FALSE/TRUE vocabulary)
+    holds the gate closed rather than advancing OR failing — ticket 15 and
+    CBOS_HANDOFF_CONTRACT both fix the posture as "non-TRUE = wait", with
+    the segment window as the timeout backstop.
 """
 
 from __future__ import annotations
@@ -55,6 +57,25 @@ class InstiTradeNeverReadyCbosClient(CbosClient):
         if group_name.upper() == self._segment and process_id != "0":
             self.trigger_calls += 1
         return await super().get_new_trade_process(group_name, login_id, trade_date, process_id)
+
+
+class _FixedAnswerCbosClient(CbosClient):
+    """Normal in-process mock EXCEPT one (segment, process) pair always gets
+    a fixed literal answer — used to probe out-of-vocabulary responses."""
+
+    def __init__(self, status_url: str, process_url: str, *, segment: str, process: str, answer: str):
+        super().__init__(status_url, process_url, use_mock=True)
+        self._segment, self._process, self._answer = segment.upper(), process, answer
+
+    async def file_process_status(
+        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+    ) -> FileStatusResult:
+        if segment.upper() == self._segment and process_name == self._process:
+            return FileStatusResult(
+                response=self._answer,
+                raw_body=f'{{"Status":"Success","Data":[{{"MSG":"{self._answer}"}}]}}',
+            )
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
 
 async def test_happy_path_traverses_insti_trade_gate(cfg, session_factory, test_date):
@@ -105,24 +126,36 @@ async def test_trigger_never_fires_while_insti_trade_false(cfg, session_factory,
     assert step["last_response"] == "FALSE"
 
 
-async def test_unexpected_skip_at_insti_trade_gate_fails_segment(cfg, session_factory, test_date):
-    """SKIP is a holiday-check vocabulary word; mid-pipeline it means CBOS
-    answered something the V6 doc never defines for CHECKINSTITRADE
-    (FALSE/TRUE only) — treated as a CBOS error, same as every other
-    non-INIT poll."""
-    cbos = SkippingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        skip_segment=SEGMENT, skip_process="CHECKINSTITRADE",
-    )
-    cbos.mock_set_ready_after(1)
-    orchestrator = EdpOrchestrator(cfg, cbos)
+async def test_any_non_true_answer_holds_the_gate(cfg, session_factory, test_date):
+    """Review finding: the generic _poll_confirmation helper ADVANCES on any
+    answer that isn't TRUE/FALSE/SKIP — at this gate that would fire the
+    premature trigger V6 explicitly warns about (MSG="HOLIDAY" would have
+    triggered billing). The gate handler must treat every non-TRUE answer —
+    SKIP and out-of-vocabulary values alike — as "hold and wait", never
+    advance and never fail: ticket 15 and CBOS_HANDOFF_CONTRACT both pin
+    the posture as non-TRUE = wait (window timeout backstops)."""
+    for weird_answer_client in (
+        SkippingCbosClient(  # answers SKIP for CHECKINSTITRADE
+            cfg.cbos_status_url, cfg.cbos_process_url,
+            skip_segment=SEGMENT, skip_process="CHECKINSTITRADE",
+        ),
+        _FixedAnswerCbosClient(  # answers an out-of-vocabulary value
+            cfg.cbos_status_url, cfg.cbos_process_url,
+            segment=SEGMENT, process="CHECKINSTITRADE", answer="HOLIDAY",
+        ),
+    ):
+        weird_answer_client.mock_set_ready_after(1)
+        orchestrator = EdpOrchestrator(cfg, weird_answer_client)
 
-    await helpers.seed_day(session_factory, test_date, cfg)
-    rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
-    row = {r.segment_code: r for r in rows}[SEGMENT]
+        await helpers.cleanup_day(session_factory, test_date)
+        await helpers.seed_day(session_factory, test_date, cfg)
+        for _ in range(6):
+            await helpers.run_one_cycle(orchestrator, session_factory, test_date)
 
-    assert row.segment_status == SegmentStatus.FAILED
-    assert row.skip_category == "CBOS_ERROR"  # skip_category doubles as the FAILED category
-    assert row.current_state == SegmentState.WAITING_FOR_INSTI_TRADE, (
-        "FAILED rows freeze at the state they died in, for diagnostics"
-    )
+        row = {r.segment_code: r for r in await helpers.get_rows(session_factory, test_date)}[SEGMENT]
+        assert row.current_state == SegmentState.WAITING_FOR_INSTI_TRADE, (
+            f"non-TRUE answer must hold the gate, got state={row.current_state}"
+        )
+        assert row.segment_status not in (SegmentStatus.COMPLETED, SegmentStatus.FAILED), (
+            "non-TRUE must neither advance (premature trigger) nor fail (contract says wait)"
+        )

@@ -10,8 +10,8 @@ The shared EDPB pipeline **contract**, consumed by all three repos
 | `edpb_core.correlation` | `X-Request-ID` convention + per-run id mint |
 | `edpb_core.manifest` | THE `manifest.schema.json` + load/validate helpers |
 | `edpb_core.batch_api` | uploader batch statuses + endpoint paths |
-| `edpb_core.cbos` | CBOS **v5** endpoint paths + payload builders (Shape A etc.) |
-| `edpb_core.mock_cbos` | THE mock CBOS server (v5) — `uvicorn edpb_core.mock_cbos.app:app --port 8009` (needs the `[mock]` extra) |
+| `edpb_core.cbos` | CBOS **v6** endpoint paths + payload builders (Shape A/B, CHECKINSTITRADE) |
+| `edpb_core.mock_cbos` | THE mock CBOS server (v6) — `uvicorn edpb_core.mock_cbos.app:app --port 8009` (needs the `[mock]` extra) |
 
 Design rule: this package owns **wire shapes and vocabulary**, never
 transport. Each service keeps its own thin HTTP client (sync/async as it

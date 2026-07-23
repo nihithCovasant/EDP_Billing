@@ -354,8 +354,9 @@ class CbosClient:
         real-segment steps 1/3/9, V6's new Step-10 CHECKINSTITRADE gate,
         and the BILLPOSTING/RECON/CONTRACTNOTEGENERATION polls) carries
         Segment; Shape B (include_segment=False — the post-trade GTG/
-        completion/already-triggered checks, V6 doc steps 14/16-17/20-21/
-        23-24/31-32/38-39) does not. Payload shapes come from
+        completion/already-triggered checks, V6 doc steps 17/20-21/
+        23-24/29/31-32/38-39 per the authoritative per-step examples) does
+        not. Payload shapes come from
         edpb_core.cbos so all three repos agree by construction.
         trade_date=None is tolerated only for legacy callers and logs
         loudly — real V5+ CBOS may resolve the WRONG DAY's process

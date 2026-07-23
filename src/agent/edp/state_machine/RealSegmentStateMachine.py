@@ -526,19 +526,58 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """POST file_process_status(CHECKINSTITRADE) — V6's new Step 10,
-        inserted between the FILEUPLOAD check and the trigger. FALSE means
-        Insti Trade Transfer is still in progress (wait — the segment window
-        is the timeout backstop, same posture as FILEUPLOAD); TRUE means safe
-        to trigger. The V6 doc documents only FALSE/TRUE here, so any other
-        answer (incl. SKIP) is treated as a CBOS error like every other
-        mid-pipeline poll."""
-        return await self._poll_confirmation(
-            cbos, row, session, login_id, now,
-            process_name="CHECKINSTITRADE",
-            stage_key=SegmentState.WAITING_FOR_INSTI_TRADE.value,
-            next_state=SegmentState.TRIGGERED, next_process=None,
-            state_name=SegmentState.WAITING_FOR_INSTI_TRADE.value,
+        inserted between the FILEUPLOAD check and the trigger.
+
+        TRUE is the ONLY answer that opens the gate. Everything else —
+        FALSE (transfer in progress), SKIP, or any value outside the V6
+        vocabulary — waits, with the segment window as the timeout backstop
+        (ticket 15 + CBOS_HANDOFF_CONTRACT: "the engine treats any non-TRUE
+        as wait"). Deliberately NOT routed through _poll_confirmation: that
+        helper advances on any non-FALSE/SKIP answer, which here would fire
+        the exact premature trigger the V6 doc warns about ("Triggering
+        execution before Insti Trade Transfer is complete may cause pipeline
+        step failures") — and CBOS does not enforce the gate server-side.
+        Only transport errors keep the usual transient/permanent split."""
+        stage_key = SegmentState.WAITING_FOR_INSTI_TRADE.value
+        result = await cbos.file_process_status(
+            segment=row.segment_code, process_name="CHECKINSTITRADE", user_id=login_id,
+            trade_date=row.trade_date,
         )
+        record_poll(row, stage_key, "CHECKINSTITRADE_STATUS", result.response, now)
+        await session.flush()
+
+        if result.is_error:
+            if result.is_transient:
+                logger.warning(stage_log(
+                    row.segment_code, stage_key,
+                    "Transient CBOS error — will retry next cycle", error=result.error,
+                ))
+                return SegmentHandlerResult(outcome=BLOCKED)
+            logger.error(stage_log(
+                row.segment_code, stage_key,
+                "Permanent CBOS error — marking FAILED", error=result.error,
+            ))
+            return self._fail_result(row, "CBOS_ERROR", f"CHECKINSTITRADE check error: {result.error}", now)
+
+        if result.is_ready:
+            logger.info(stage_log(
+                row.segment_code, stage_key,
+                "CHECKINSTITRADE CONFIRMED — advancing to TRIGGERED",
+                response=result.response, confirmed_at=now.strftime("%H:%M:%S %Z"),
+            ))
+            mark_step_done(row, stage_key, "CHECKINSTITRADE_STATUS", result.response, now)
+            return SegmentHandlerResult(outcome=ADVANCE, next_state=SegmentState.TRIGGERED, next_process=None)
+
+        # FALSE is the normal in-progress answer; anything else is outside
+        # the V6 vocabulary — log louder, but still hold the gate closed.
+        log = logger.info if result.is_pending else logger.warning
+        log(stage_log(
+            row.segment_code, stage_key,
+            "Insti Trade Transfer not yet complete — holding the trigger gate"
+            + ("" if result.is_pending else " (answer outside the V6 FALSE/TRUE vocabulary)"),
+            response=result.response,
+        ))
+        return SegmentHandlerResult(outcome=BLOCKED)
 
     # ---------------------------------------------------------------
     # TRIGGERED — the one genuine crash-safety-critical wait: fire
@@ -787,8 +826,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         process_name: str,
         stage_key: str,
         next_state: SegmentState,
-        next_process: str | None,
-        state_name: str | None = None,
+        next_process: str,
     ) -> SegmentHandlerResult:
         step_key = f"{process_name}_STATUS"
         result = await cbos.file_process_status(
@@ -798,9 +836,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         record_poll(row, stage_key, step_key, result.response, now)
         await session.flush()
 
-        # Default display name works for the polls whose state is literally
-        # WAITING_FOR_<ProcessName>; WAITING_FOR_INSTI_TRADE passes its own.
-        state_name = state_name or f"WAITING_FOR_{process_name}"
+        state_name = f"WAITING_FOR_{process_name}"
 
         if result.is_error:
             if result.is_transient:

@@ -92,9 +92,11 @@ def file_process_status_payload_b(
 ) -> dict[str, str]:
     """V5 "Shape B" (retained in V6) — the file_process_status steps WITHOUT
     a Segment field (post-trade GTG/already-triggered/completion checks:
-    V6 doc steps 14, 16-17, 20-21, 23-24, 31-32, 38-39; the V6 summary
-    table's own Shape A/B lists are self-contradictory — the per-step
-    payload examples are the authority). TradeDate leads."""
+    V6 doc steps 17, 20-21, 23-24, 29, 31-32, 38-39, per the per-step
+    payload examples — the doc's own Shape A/B summary lists are
+    self-contradictory, and its steps 14/16 examples DO carry Segment
+    despite being listed as Shape B; the per-step examples are the
+    authority). TradeDate leads."""
     return {
         "TradeDate": trade_date_iso,
         "ProcessName": process_name,
