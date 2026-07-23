@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .registry import ToolRegistry
-from cams_otel_lib import Logger as logger, otel_trace, Otel_Client
+from cams_otel_lib import otel_trace, Otel_Client
 
 
 def _read_agent_instance_id() -> str:

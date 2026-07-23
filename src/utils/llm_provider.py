@@ -24,6 +24,7 @@ from cams_otel_lib import Logger as logger, otel_trace
 _cached_config = None
 _cached_litellm_config = None
 
+
 @otel_trace
 def _get_litellm_config():
     """Get LiteLLM configuration from config.secrets.litellm"""

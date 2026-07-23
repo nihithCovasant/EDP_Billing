@@ -16,7 +16,7 @@ import base64
 import os
 import uuid
 import json
-from contextvars import ContextVar, Token
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, Optional
 

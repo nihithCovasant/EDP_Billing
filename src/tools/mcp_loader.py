@@ -57,6 +57,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from cams_otel_lib import Logger as logger
 
@@ -116,7 +117,6 @@ async def load_mcp_tools() -> List[Any]:
 
     # Group by unique mcp_url — one SSE connection per server, not per tool.
     # Multiple tools can share the same server; connecting twice duplicates all tools.
-    from urllib.parse import urlparse
 
     seen_urls: Dict[str, str] = {}  # mcp_url → unique server alias
     alias_counts: Dict[str, int] = {}  # base alias → count (handles same-host different-path)

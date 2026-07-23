@@ -4,7 +4,7 @@ edpb_properties table — daily config upload and retrieval.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import func, select

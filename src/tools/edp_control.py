@@ -25,7 +25,6 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from langchain_core.tools import tool
-from cams_otel_lib import Logger as logger
 
 try:
     from cams_otel_lib import get_request_context

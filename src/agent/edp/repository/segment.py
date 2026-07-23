@@ -25,6 +25,8 @@ from ..models import (
 )
 from ..utils.constants import get_sequence_order, POST_TRADE_ORDER, SEGMENT_ORDER
 from ..utils.datetime_utils import now_ist
+from ..utils.serializers import serialize_segment_alert, serialize_segment_summary
+from ..alert_health import record_alert_attempt
 from cams_otel_lib import Logger as logger, otel_trace
 
 # Terminal statuses — once here, a row is "handled" and won't be revisited.
@@ -285,11 +287,11 @@ async def move_to_state(
 
 async def _send_terminal_alert(row: SegmentExecution) -> None:
     """Best-effort email alert — failures are logged, never raised."""
-    from ..alert_health import record_alert_attempt
-
     try:
+        # Deliberately lazy: global_email_service is a sibling top-level
+        # package whose absence (stripped deployment) must degrade to a
+        # logged warning, never break importing the repository module.
         from global_email_service import send_segment_alert
-        from ..utils.serializers import serialize_segment_alert
 
         payload = serialize_segment_alert(row)
         await asyncio.to_thread(send_segment_alert, payload)
@@ -476,8 +478,6 @@ async def get_day_summary(
     Aggregated summary for all segments on a given date.
     Used by GET /edp/status/{date}.
     """
-    from ..utils.serializers import serialize_segment_summary
-
     rows = await get_all_for_date(session, trade_date)
     counts = {"pending": 0, "in_progress": 0, "completed": 0, "skipped": 0, "failed": 0}
     for r in rows:

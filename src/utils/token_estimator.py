@@ -8,7 +8,7 @@ from the LLM provider (e.g., during streaming or with certain APIs).
 import re
 from typing import Dict
 
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import otel_trace
 
 
 @otel_trace

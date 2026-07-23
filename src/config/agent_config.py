@@ -13,7 +13,6 @@ from cams_otel_lib import Logger as logger, otel_trace
 _MULTI_TENANT = settings.multi_tenant_enabled
 
 
-
 def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> None:
     """Merge overrides into base in-place. Nested dicts are merged; other types are overwritten."""
     for key, value in overrides.items():
@@ -57,7 +56,6 @@ def load_agent_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
 
         # Convert CAMS schema to internal format
         internal_config = load_cams_config(cams_config)
-
 
         return internal_config
     except FileNotFoundError:

@@ -5,7 +5,7 @@ This node allows the LLM to decide which tools to call and when.
 
 from typing import Dict, Any, List
 
-from langchain_core.messages import AIMessage, ToolMessage, SystemMessage
+from langchain_core.messages import ToolMessage, SystemMessage
 from src.utils.llm_provider import get_llm_model, get_provider_from_model
 from src.utils.langfuse_decorator import trace_node
 from cams_otel_lib import Logger as logger, otel_trace

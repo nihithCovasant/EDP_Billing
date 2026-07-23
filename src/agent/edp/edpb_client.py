@@ -30,6 +30,8 @@ from edpb_core.batch_api import BATCHES_PATH, DownloadOutcome
 
 from cams_otel_lib import Logger as logger, otel_trace
 
+from .config import load_edp_config
+
 # Which bot endpoint + body serves each download segment (keys must stay a
 # subset of edpb_core.DOWNLOAD_SEGMENTS - the vocabulary lives there; this
 # table only adds the transport detail). EQ's full-segment run is the BSE
@@ -252,8 +254,6 @@ _client: EdpbClient | None = None
 def get_edpb_client() -> EdpbClient:
     global _client
     if _client is None:
-        from .config import load_edp_config
-
         cfg = load_edp_config()
         _client = EdpbClient(
             download_url=cfg.edpb_download_url,

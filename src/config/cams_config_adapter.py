@@ -3,7 +3,7 @@ CAMS Configuration Adapter
 Converts CAMS agent config schema to internal format for backward compatibility.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from cams_otel_lib import Logger as logger, otel_trace
 

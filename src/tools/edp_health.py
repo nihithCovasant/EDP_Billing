@@ -23,7 +23,6 @@ from typing import Any, Dict
 
 import httpx
 from langchain_core.tools import tool
-from cams_otel_lib import Logger as logger
 
 
 def _base_url() -> str:

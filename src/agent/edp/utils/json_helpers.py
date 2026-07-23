@@ -38,7 +38,6 @@ dict — SQLAlchemy doesn't detect in-place mutations on JSON columns.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from ..models import SegmentExecution, SegmentState
 

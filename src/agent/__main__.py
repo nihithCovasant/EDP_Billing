@@ -71,7 +71,10 @@ _root_logger.setLevel(_logging.INFO)
 _logging.basicConfig = lambda *a, **k: None  # noqa: E731
 
 import uvicorn
-from fastapi import Request, Body, FastAPI
+import uuid
+
+from fastapi import Request, Body, FastAPI, Response
+from langchain_core.messages import HumanMessage
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -82,7 +85,10 @@ from a2a.types import AgentCard, AgentCapabilities, AgentProvider, AgentSkill
 from .executor import AgentExecutor
 from src.agent.edp.loop import EdpWakeLoop
 from src.agent.edp.api import router as edp_router
+from src.config.cams_config_adapter import CAMSConfigAdapter
 from src.config.settings import settings
+from src.agent.edp.alert_health import get_alert_health
+from src.agent.edp.database import check_connectivity as check_db_connectivity
 from src.middleware.claims_middleware import OtelContextMiddleware
 from src.utils.health import get_health_checker
 from cams_otel_lib import Logger as logger, Otel_Client, otel_trace
@@ -120,7 +126,11 @@ def _resolve_request_user_id(default: str) -> str:
     call with no auth header at all, or outside a real HTTP request.
     """
     try:
+        # Deliberately imported here, inside try: older cams_otel_lib
+        # versions lack get_request_context, and that must degrade to the
+        # config fallback - not break importing this module.
         from cams_otel_lib import get_request_context
+
         ctx = get_request_context()
     except Exception:
         ctx = None
@@ -128,16 +138,9 @@ def _resolve_request_user_id(default: str) -> str:
     return userid if userid and userid != "N/A" else default
 
 
-
-
-
-
-
 @otel_trace
 def create_agent_card() -> AgentCard:
     """Build the A2A agent card from agent_config.json agent_definition."""
-    from src.config.cams_config_adapter import CAMSConfigAdapter
-
     agent_def = {}
     capabilities_cfg = {}
     provider_cfg = {}
@@ -147,8 +150,7 @@ def create_agent_card() -> AgentCard:
         ext = os.getenv("APP_CONFIG_PATH")
         cfg_path = Path(ext) if ext else Path(__file__).parent.parent / "config" / "agent_config.json"
         if cfg_path.exists():
-            import json as _json
-            raw = _json.loads(cfg_path.read_text())
+            raw = json.loads(cfg_path.read_text())
             adapter = CAMSConfigAdapter(raw)
             agent_def = adapter.get_agent_definition()
             capabilities_cfg = agent_def.get("capabilities", {})
@@ -294,7 +296,6 @@ def build_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-
     app.add_middleware(OtelContextMiddleware)
 
     health_checker = get_health_checker()
@@ -304,7 +305,6 @@ def build_app() -> FastAPI:
     async def health_check():
         health_status = await health_checker.get_health_status()
         status_code = 503 if health_status["status"] == "unhealthy" else 200
-        from fastapi import Response
         return Response(
             content=json.dumps(health_status),
             status_code=status_code,
@@ -316,7 +316,6 @@ def build_app() -> FastAPI:
         is_ready = await health_checker.is_ready()
         if is_ready:
             return {"status": "ready"}
-        from fastapi import Response
         return Response(
             content='{"status": "not ready"}',
             status_code=503,
@@ -328,7 +327,6 @@ def build_app() -> FastAPI:
         is_alive = await health_checker.is_alive()
         if is_alive:
             return {"status": "alive"}
-        from fastapi import Response
         return Response(
             content='{"status": "not alive"}',
             status_code=503,
@@ -358,12 +356,6 @@ def build_app() -> FastAPI:
         503 is the standard code for exactly this case and is what
         Kubernetes/most LB health checks expect for "not ready").
         """
-        from datetime import datetime as _dt
-        from zoneinfo import ZoneInfo as _ZI
-        from fastapi import Response as _Response
-        from src.agent.edp.database import check_connectivity as check_db_connectivity
-        from src.agent.edp.alert_health import get_alert_health
-
         loop_snapshot = edp_loop.health_snapshot()
         loop_alive, loop_alive_reason = await edp_loop.liveness_check()
 
@@ -381,7 +373,7 @@ def build_app() -> FastAPI:
         overall_ok = billing_loop_ok and db_ok and cbos_ok
         payload = {
             "status": "healthy" if overall_ok else "unhealthy",
-            "checked_at": _dt.now(_ZI("Asia/Kolkata")).isoformat(),
+            "checked_at": _datetime.now(_IST).isoformat(),
             "billing_loop": {
                 **loop_snapshot,
                 "enabled": edp_loop_enabled,
@@ -392,7 +384,7 @@ def build_app() -> FastAPI:
             "cbos": cbos_result,
             "alerts": get_alert_health(),
         }
-        return _Response(
+        return Response(
             content=json.dumps(payload),
             status_code=200 if overall_ok else 503,
             media_type="application/json",
@@ -418,9 +410,6 @@ def build_app() -> FastAPI:
         }
         """
         try:
-            import uuid
-            from langchain_core.messages import HumanMessage
-
             query = body.get("query", "")
             if not query:
                 return {"error": "Query is required"}

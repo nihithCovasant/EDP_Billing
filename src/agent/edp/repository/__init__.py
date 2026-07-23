@@ -25,8 +25,8 @@ from .segment import (
     move_to_state,
     touch_heartbeat,
     retry_segment,
-    activate_segment_run,
-    get_manually_activated_rows,
+    activate_segment_run as activate_segment_run,  # re-export: package API
+    get_manually_activated_rows as get_manually_activated_rows,  # re-export: package API
     skip_segment_manually,
     has_processing_started,
 )

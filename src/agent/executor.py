@@ -24,8 +24,6 @@ from cams_otel_lib import Logger as logger, otel_trace
 from langgraph.checkpoint.memory import MemorySaver
 
 
-
-
 def _stringify_message_content(content: Any) -> str:
     """
     Normalize a LangChain message's .content to plain text.
@@ -93,8 +91,6 @@ class AgentExecutor(A2AAgentExecutor):
         self.observability = None   # default; overridden below when langfuse is selected
         self.error_tracker = None   # default; overridden below when sentry is selected
 
-
-
         logger.info(f"Agent executor initialised with {len(self.tools)} local tools")
 
         # MCP tools from agent_config.tools are loaded lazily on first request.
@@ -109,7 +105,6 @@ class AgentExecutor(A2AAgentExecutor):
         # Compiled graph cache — keyed by tenant_id to avoid rebuilding LLM clients per request
         self._compiled_graphs: Dict[str, Any] = {}
         self._graph_cache_lock = asyncio.Lock()
-
 
     @otel_trace
     def build_graph(self, tenant_id: str = "default") -> StateGraph:
@@ -246,7 +241,6 @@ class AgentExecutor(A2AAgentExecutor):
 
         except Exception as e:
             logger.error(f"Error processing agent request: {type(e).__name__}: {str(e)}")
-
 
             await event_queue.enqueue_event(
                 new_agent_text_message(

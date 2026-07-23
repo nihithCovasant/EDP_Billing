@@ -17,6 +17,8 @@ Usage:
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from typing import Any
 
 
@@ -72,7 +74,6 @@ def elapsed(start_iso: str | None, end_iso: str | None) -> str | None:
     if not start_iso or not end_iso:
         return None
     try:
-        from datetime import datetime
         fmt = "%Y-%m-%dT%H:%M:%S.%f%z" if "+" in end_iso or end_iso.endswith("Z") else "%Y-%m-%dT%H:%M:%S.%f"
         s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
         e = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
