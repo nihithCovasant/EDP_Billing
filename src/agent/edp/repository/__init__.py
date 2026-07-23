@@ -25,6 +25,8 @@ from .segment import (
     move_to_state,
     touch_heartbeat,
     retry_segment,
+    activate_segment_run,
+    get_manually_activated_rows,
     skip_segment_manually,
     has_processing_started,
 )

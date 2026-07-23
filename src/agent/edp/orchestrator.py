@@ -21,7 +21,7 @@ AbstractSegmentStateMachine subclasses), all DB operations in repository.*.
 from __future__ import annotations
 
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -188,10 +188,35 @@ class EdpOrchestrator:
             _log_segment_outcome(seg_row.segment_code, active_date, outcome, elapsed_ms)
             summary[f"segments_{outcome}"] = summary.get(f"segments_{outcome}", 0) + 1
 
+        # ------ Manually (re)activated rows for OTHER dates ------------------
+        # Backfills and past-day retries (wayfinder ticket 13): rows ops
+        # marked via retry / POST /edp/run whose trade_date is not today's.
+        await self._process_manually_activated(summary)
+
         # Drive the 5 T+1 post-trade processes, independent of the segments above.
         await self._process_post_trade_chain(summary)
 
         return summary
+
+    async def _process_manually_activated(self, summary: dict) -> None:
+        """Drive every non-terminal manually_activated row for past dates
+        (bounded lookback), window gating bypassed. Terminal transitions
+        clear the marker (repository.move_to_state), so a finished backfill
+        drops out of this sweep on its own."""
+        active_date = self._cycle_active_date
+        min_date = active_date - timedelta(days=self.config.manual_activation_lookback_days)
+        async with get_session() as session:
+            rows = await repository.get_manually_activated_rows(session, active_date, min_date)
+
+        for row in rows:
+            summary["manual_runs_processed"] = summary.get("manual_runs_processed", 0) + 1
+            t0 = time.monotonic()
+            outcome = await self._process_one_segment(
+                row.segment_code, trade_date=row.trade_date, bypass_window=True,
+            )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            _log_segment_outcome(row.segment_code, row.trade_date, outcome, elapsed_ms)
+            summary[f"manual_runs_{outcome}"] = summary.get(f"manual_runs_{outcome}", 0) + 1
 
     # -------------------------------------------------------------------------
     # Per-segment orchestration
@@ -201,12 +226,20 @@ class EdpOrchestrator:
     async def _process_one_segment(
         self,
         segment_code: str,
+        trade_date=None,
+        bypass_window: bool = False,
     ) -> str:
         """
         Run the pipeline executor for one cycle's worth of progress on this
         segment. Returns: "completed"|"skipped"|"failed"|"advanced"|"blocked"
+
+        trade_date defaults to the cycle's active date; a different date +
+        bypass_window=True is the manual-activation path (backfills/past-day
+        retries, wayfinder ticket 13): wall-clock windows are meaningless for
+        a past day, so gating is skipped - loudly - and execute_handler gets
+        no window_end deadline (ops is watching a manual run by definition).
         """
-        active_date = self._cycle_active_date
+        active_date = trade_date or self._cycle_active_date
         now = self._cycle_now
         async with get_session() as session:
             row = await repository.get_one(session, active_date, segment_code)
@@ -235,8 +268,16 @@ class EdpOrchestrator:
             )
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
+            if bypass_window:
+                logger.warning(seg_log(
+                    segment_code, active_date,
+                    "MANUAL ACTIVATION - window gating BYPASSED for this run "
+                    "(ops-requested backfill/retry; no window deadline applies)",
+                ))
+                window_end = None
+
             # Window not yet open
-            if not state_machine.is_my_time_window(now, window_start):
+            if not bypass_window and not state_machine.is_my_time_window(now, window_start):
                 logger.info(seg_log(
                     segment_code, active_date,
                     "Segment window not yet open — skipping this cycle",
@@ -248,7 +289,8 @@ class EdpOrchestrator:
             # Window deadline missed (PENDING only) — a local timeout, not a
             # CBOS-driven skip signal, so this is FAILED/TIMEOUT, not SKIPPED.
             if (
-                state_machine.is_my_window_over(now, window_end)
+                not bypass_window
+                and state_machine.is_my_window_over(now, window_end)
                 and row.segment_status == SegmentStatus.PENDING
             ):
                 logger.warning(seg_log(
@@ -405,7 +447,8 @@ class EdpOrchestrator:
             # Window deadline missed (PENDING only) — mirrors
             # _process_one_segment()'s same check; without it a process
             # that never even started would sit PENDING forever past its
-            # deadline instead of failing loudly.
+            # deadline instead of failing loudly. (No bypass here: manual
+            # activation covers real segments only, not post-trade.)
             if (
                 state_machine.is_my_window_over(now, window_end)
                 and row.segment_status == SegmentStatus.PENDING

@@ -132,3 +132,70 @@ async def agent_status():
             for r in history_rows
         ],
     }
+
+
+# =============================================================================
+# On-demand segment run (wayfinder ticket 13) — backfill / arbitrary trade date
+# =============================================================================
+
+from datetime import date as _date  # noqa: E402
+
+from fastapi import HTTPException, Request  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+
+from ..repository import activate_segment_run  # noqa: E402
+from ..repository import workflow as workflow_repo  # noqa: E402
+from ..utils.constants import SEGMENT_ORDER  # noqa: E402
+from .auth import require_admin_role  # noqa: E402
+
+
+class RunSegmentRequest(BaseModel):
+    trade_date: _date = Field(description="Trade date to run (YYYY-MM-DD) — any date, not just today")
+    segment_code: str = Field(description=f"One of {', '.join(SEGMENT_ORDER)}")
+
+
+@router.post("/run", status_code=202)
+@otel_trace
+async def run_segment(body: RunSegmentRequest, request: Request):
+    """Create-or-reset the (trade_date, segment) row and mark it
+    manually_activated: the wake loop then drives it on its next cycle even
+    though the date isn't the active one, with window gating bypassed
+    (logged loudly). Admin-gated — this can start billing for an arbitrary
+    day. A COMPLETED segment is NOT re-runnable here (409): re-running
+    finished billing is the double-trigger disaster."""
+    require_admin_role(request)
+
+    code = body.segment_code.upper()
+    if code not in SEGMENT_ORDER:
+        raise HTTPException(status_code=404, detail=f"Unknown segment_code {body.segment_code!r}")
+
+    async with get_session() as session:
+        wf = await workflow_repo.get_active(session, body.trade_date)
+        if not wf:
+            wf = await workflow_repo.get_latest_effective(session, body.trade_date)
+        if not wf:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No workflow config exists on or before {body.trade_date} — upload one first",
+            )
+        outcome, row = await activate_segment_run(session, wf, body.trade_date, code)
+        if outcome == "completed":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{code} {body.trade_date} is COMPLETED — re-running finished billing is not "
+                    "allowed via this endpoint"
+                ),
+            )
+        await session.commit()
+
+    logger.info(
+        f"[OPS] segment={code} trade_date={body.trade_date} | POST /edp/run -> {outcome}"
+    )
+    return {
+        "trade_date": body.trade_date.isoformat(),
+        "segment_code": code,
+        "outcome": outcome,
+        "manually_activated": True,
+        "note": "The wake loop drives this row on its next cycle; window gating is bypassed.",
+    }

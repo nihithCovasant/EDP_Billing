@@ -80,6 +80,11 @@ async def retry_failed_segment(trade_date: date, segment_code: str):
     Reset a FAILED or SKIPPED segment back to PENDING so the pipeline retries
     it on the next wake cycle.
 
+    Works for ANY trade date, not just the active one: the reset row is
+    marked manually_activated, so the wake loop's manual sweep drives it
+    even after date rollover, with window gating bypassed (ticket 13 -
+    previously a past-date retry was a silent no-op).
+
     Use after a transient CBOS outage, a missed window, or a manual data fix.
     Only works if the segment is currently in FAILED or SKIPPED status.
     """

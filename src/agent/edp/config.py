@@ -175,6 +175,9 @@ class EdpBootstrapConfig:
     edpb_download_timeout_seconds: int = 240
     edpb_download_max_attempts: int = 3
     download_segments: tuple = ("MCX", "EQ")
+    # How many days back the manual-activation sweep (backfills/past-day
+    # retries, ticket 13) looks for marked rows - a bound, not a feature.
+    manual_activation_lookback_days: int = 30
 
     # Database (PostgreSQL only — always resolved explicitly by load_edp_config(),
     # this default is never actually used at runtime).
@@ -336,6 +339,10 @@ def load_edp_config() -> EdpBootstrapConfig:
             os.getenv("EDPB_DOWNLOAD_MAX_ATTEMPTS", edp_raw.get("edpb_download_max_attempts", 3))
         ),
         download_segments=download_segments,
+        manual_activation_lookback_days=int(os.getenv(
+            "EDP_MANUAL_ACTIVATION_LOOKBACK_DAYS",
+            edp_raw.get("manual_activation_lookback_days", 30),
+        )),
         cbos_login_id=os.getenv("CBOS_LOGIN_ID", edp_raw.get("cbos_login_id", "CV0001")),
         post_trade_login_id=os.getenv(
             "POST_TRADE_LOGIN_ID", edp_raw.get("post_trade_login_id", "G_LID")

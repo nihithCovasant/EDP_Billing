@@ -314,6 +314,15 @@ class SegmentExecution(Base):
         DateTime(timezone=True), nullable=True,
     )
 
+    # Manual (re)activation marker (wayfinder ticket 13): set by the retry /
+    # POST /edp/run endpoints so the wake loop drives this row even when its
+    # trade_date is NOT the active date (backfills, past-day retries). The
+    # loop bypasses window gating for marked rows (logged loudly) and the
+    # marker clears on any terminal transition.
+    manually_activated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+
     processes_json: Mapped[dict] = mapped_column(
         _MutableJSON, nullable=False, default=dict,
         comment="Per-stage state — see class docstring for shape"

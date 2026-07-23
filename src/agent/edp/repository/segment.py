@@ -263,6 +263,9 @@ async def move_to_state(
         # FAILED deliberately leaves current_state/current_process untouched
         # (frozen where the pipeline broke) for diagnostics.
         row.completed_at = now
+        # A terminal outcome consumes the manual-activation marker - the
+        # wake loop stops driving this row; ops re-marks via retry/run.
+        row.manually_activated = False
     if category is not None:
         row.skip_category = category
     if reason is not None:
@@ -346,6 +349,21 @@ async def retry_segment(
     if not row or row.segment_status not in (SegmentStatus.FAILED, SegmentStatus.SKIPPED):
         return None
 
+    _reset_to_pending(row)
+    # Mark for the wake loop: without this, retrying a PAST date is a silent
+    # no-op — the loop only drives the active date plus marked rows
+    # (wayfinder ticket 13).
+    row.manually_activated = True
+    await session.flush()
+    logger.info(
+        f"[OPS] segment={segment_code} trade_date={trade_date} | "
+        f"Segment RETRIED — reset to PENDING (processes_json cleared, "
+        f"manually_activated=True)"
+    )
+    return row
+
+
+def _reset_to_pending(row: SegmentExecution) -> None:
     row.segment_status = SegmentStatus.PENDING
     row.current_state = None
     row.current_process = None
@@ -356,12 +374,64 @@ async def retry_segment(
     row.started_at = None
     row.completed_at = None
     row.processes_json = {}
+
+
+@otel_trace
+async def activate_segment_run(
+    session: AsyncSession,
+    workflow,
+    trade_date: date,
+    segment_code: str,
+) -> tuple[str, Optional[SegmentExecution]]:
+    """POST /edp/run: create-or-reset a (trade_date, segment) row and mark it
+    manually_activated so the wake loop drives it regardless of the active
+    date (window gating bypassed - see orchestrator).
+
+    Returns (outcome, row): "activated" | "already_running" | "completed" -
+    a COMPLETED segment is deliberately NOT re-runnable through this endpoint
+    (re-running finished billing is the double-trigger disaster; if that is
+    ever truly needed it is a DB-level decision, not one API call away)."""
+    row = await get_or_create(session, workflow, trade_date, segment_code)
+    if row.segment_status == SegmentStatus.COMPLETED:
+        return "completed", row
+    if row.segment_status == SegmentStatus.IN_PROGRESS:
+        # Already being driven; just make sure the loop keeps seeing it even
+        # after date rollover.
+        row.manually_activated = True
+        await session.flush()
+        return "already_running", row
+
+    if row.segment_status in (SegmentStatus.FAILED, SegmentStatus.SKIPPED):
+        _reset_to_pending(row)
+    row.manually_activated = True
     await session.flush()
     logger.info(
         f"[OPS] segment={segment_code} trade_date={trade_date} | "
-        f"Segment RETRIED — reset to PENDING (processes_json cleared)"
+        f"Segment manually ACTIVATED for on-demand run"
     )
-    return row
+    return "activated", row
+
+
+@otel_trace
+async def get_manually_activated_rows(
+    session: AsyncSession,
+    exclude_date: date,
+    min_date: date,
+) -> list[SegmentExecution]:
+    """Non-terminal rows ops explicitly (re)activated for dates OTHER than
+    the active one (that date's rows are driven by the normal path). min_date
+    bounds the lookback so the sweep never scans unbounded history."""
+    result = await session.execute(
+        select(SegmentExecution)
+        .where(
+            SegmentExecution.manually_activated.is_(True),
+            SegmentExecution.trade_date != exclude_date,
+            SegmentExecution.trade_date >= min_date,
+            SegmentExecution.segment_status.notin_(list(_TERMINAL_STATUSES)),
+        )
+        .order_by(SegmentExecution.trade_date, SegmentExecution.id)
+    )
+    return list(result.scalars().all())
 
 
 @otel_trace
