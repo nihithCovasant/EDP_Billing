@@ -88,8 +88,11 @@ class EdpbClient:
         self._mock_batch_counter = itertools.count(1)
         self._mock_batches: dict[str, str] = {}  # batch_id -> status
 
-    def _headers(self) -> dict[str, str]:
-        return {"X-Request-ID": self.request_id}
+    def _headers(self, correlation_id: str | None = None) -> dict[str, str]:
+        """Per-run correlation id when the caller has one (the engine mints
+        one per segment-day, see RealSegmentStateMachine._run_correlation_id);
+        the client's own id is only the fallback."""
+        return {"X-Request-ID": correlation_id or self.request_id}
 
     @staticmethod
     def supports_segment(segment: str) -> bool:
@@ -100,7 +103,9 @@ class EdpbClient:
     # ------------------------------------------------------------------
 
     @otel_trace
-    async def request_download(self, segment: str, trade_date: date) -> DownloadResult:
+    async def request_download(
+        self, segment: str, trade_date: date, correlation_id: str | None = None,
+    ) -> DownloadResult:
         seg = segment.upper()
         if seg not in _SEGMENT_ROUTES:
             return DownloadResult(status="error", message=f"no download route for segment {seg}")
@@ -113,7 +118,7 @@ class EdpbClient:
         url = f"{self.download_url}{path}"
         try:
             async with httpx.AsyncClient(timeout=self.download_timeout) as client:
-                resp = await client.post(url, json=payload, headers=self._headers())
+                resp = await client.post(url, json=payload, headers=self._headers(correlation_id))
         except httpx.HTTPError as exc:
             return DownloadResult(status="error", message=f"bot unreachable: {exc}", is_transient=True)
 
@@ -150,7 +155,9 @@ class EdpbClient:
     # ------------------------------------------------------------------
 
     @otel_trace
-    async def submit_batch(self, manifest_path: str) -> BatchSubmitResult:
+    async def submit_batch(
+        self, manifest_path: str, correlation_id: str | None = None,
+    ) -> BatchSubmitResult:
         if self.use_mock:
             return self._mock_submit(manifest_path)
 
@@ -158,7 +165,8 @@ class EdpbClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    url, json={"manifest_path": manifest_path}, headers=self._headers()
+                    url, json={"manifest_path": manifest_path},
+                    headers=self._headers(correlation_id),
                 )
         except httpx.HTTPError as exc:
             return BatchSubmitResult(
@@ -189,14 +197,16 @@ class EdpbClient:
         return BatchSubmitResult(accepted=True, batch_id=batch_id, batch_status="queued")
 
     @otel_trace
-    async def get_batch_status(self, batch_id: str) -> BatchStatusResult:
+    async def get_batch_status(
+        self, batch_id: str, correlation_id: str | None = None,
+    ) -> BatchStatusResult:
         if self.use_mock:
             return BatchStatusResult(found=True, status=self._mock_batches.get(batch_id, "confirmed"))
 
         url = f"{self.uploader_url}/batches/{batch_id}"
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, headers=self._headers())
+                resp = await client.get(url, headers=self._headers(correlation_id))
         except httpx.HTTPError as exc:
             return BatchStatusResult(found=False, error=f"uploader unreachable: {exc}")
 

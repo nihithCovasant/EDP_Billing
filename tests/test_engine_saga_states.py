@@ -36,21 +36,31 @@ class ScriptedEdpbClient(EdpbClient):
         self._statuses: dict[str, BatchStatusResult] = statuses or {}
         self.download_calls: list[tuple[str, date]] = []
         self.submit_calls: list[str] = []
+        self.correlation_ids: dict[str, list[str | None]] = {"download": [], "submit": [], "status": []}
 
-    async def request_download(self, segment: str, trade_date: date) -> DownloadResult:
+    async def request_download(
+        self, segment: str, trade_date: date, correlation_id: str | None = None,
+    ) -> DownloadResult:
         self.download_calls.append((segment.upper(), trade_date))
+        self.correlation_ids["download"].append(correlation_id)
         script = self._downloads.get(segment.upper())
         if not script:
             return self._mock_download(segment.upper(), trade_date)
         return script.pop(0) if len(script) > 1 else script[0]
 
-    async def submit_batch(self, manifest_path: str) -> BatchSubmitResult:
+    async def submit_batch(
+        self, manifest_path: str, correlation_id: str | None = None,
+    ) -> BatchSubmitResult:
         self.submit_calls.append(manifest_path)
+        self.correlation_ids["submit"].append(correlation_id)
         if not self._submits:
             return self._mock_submit(manifest_path)
         return self._submits.pop(0) if len(self._submits) > 1 else self._submits[0]
 
-    async def get_batch_status(self, batch_id: str) -> BatchStatusResult:
+    async def get_batch_status(
+        self, batch_id: str, correlation_id: str | None = None,
+    ) -> BatchStatusResult:
+        self.correlation_ids["status"].append(correlation_id)
         return self._statuses.get(batch_id, BatchStatusResult(found=True, status="confirmed"))
 
 
@@ -183,3 +193,29 @@ async def test_incomplete_batch_fails_segment_loudly(cfg, session_factory, test_
     assert row.skip_category == "BATCH_INCOMPLETE"
     assert "127" in (row.skip_reason or "")
     assert "MCX Product Master Upload" in (row.skip_reason or "")
+
+
+async def test_one_correlation_id_per_segment_run(cfg, session_factory, test_date):
+    """Ticket 11: the id minted at the first DOWNLOADING entry is persisted in
+    processes_json and sent on EVERY call of that segment's run — download,
+    submit, and batch-status alike — so one grep traces the whole journey."""
+    client = ScriptedEdpbClient()
+    edpb_client_module.set_edpb_client(client)
+
+    orchestrator = _orchestrator(cfg)
+    await helpers.seed_day(session_factory, test_date, cfg)
+    rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
+    by_code = {r.segment_code: r for r in rows}
+
+    per_segment_ids = set()
+    for code in ("MCX", "EQ"):
+        cid = by_code[code].processes_json[SegmentState.DOWNLOADING.value]["correlation_id"]
+        assert cid.startswith(f"edp-{code.lower()}-"), cid
+        per_segment_ids.add(cid)
+    assert len(per_segment_ids) == 2, "each segment-day run gets its OWN id"
+
+    sent = set(client.correlation_ids["download"] + client.correlation_ids["submit"]
+               + client.correlation_ids["status"])
+    assert sent == per_segment_ids, (
+        f"every client call must carry a per-run id (sent={sent}, expected={per_segment_ids})"
+    )

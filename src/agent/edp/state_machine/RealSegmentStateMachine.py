@@ -44,6 +44,7 @@ applies the resulting single state transition; there is no internal loop.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,6 +55,7 @@ from ..utils.json_helpers import (
     get_download_result,
     get_state,
     mark_step_done,
+    set_state,
     record_download_result,
     record_pid_reservation,
     record_poll,
@@ -166,6 +168,21 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
     # UPLOADING — hand that manifest to the uploader's POST /batches.
     # ---------------------------------------------------------------
 
+    @staticmethod
+    def _run_correlation_id(row: SegmentExecution) -> str:
+        """One correlation id per (segment, trade date) run, minted on the
+        first DOWNLOADING entry and persisted in processes_json so every
+        later call — download, submit, batch-status — and every service's
+        log (engine, bot via X-Request-ID, uploader via the manifest and its
+        audit rows) carries the SAME id. One grep traces the whole journey."""
+        state = get_state(row, SegmentState.DOWNLOADING.value)
+        cid = state.get("correlation_id")
+        if not cid:
+            cid = f"edp-{row.segment_code.lower()}-{row.trade_date.isoformat()}-{uuid.uuid4().hex[:8]}"
+            state["correlation_id"] = cid
+            set_state(row, SegmentState.DOWNLOADING.value, state)
+        return cid
+
     async def handle_downloading(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
@@ -183,7 +200,9 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             "Requesting full-segment download from the RPA bot",
             trade_date=str(row.trade_date),
         ))
-        result = await client.request_download(row.segment_code, row.trade_date)
+        result = await client.request_download(
+            row.segment_code, row.trade_date, correlation_id=self._run_correlation_id(row),
+        )
         record_poll(row, SegmentState.DOWNLOADING.value, "edpb_download",
                     f"{result.status}: {result.message[:200]}", now)
         await session.flush()
@@ -209,7 +228,6 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         state = get_state(row, SegmentState.DOWNLOADING.value)
         attempts = int(state.get("failed_attempts", 0)) + 1
         state["failed_attempts"] = attempts
-        from ..utils.json_helpers import set_state
         set_state(row, SegmentState.DOWNLOADING.value, state)
 
         max_attempts = load_edp_config().edpb_download_max_attempts
@@ -247,7 +265,9 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             return self._fail_result(row, "UPLOAD_ERROR", "no manifest_path recorded by DOWNLOADING", now)
 
         client = get_edpb_client()
-        result = await client.submit_batch(manifest_path)
+        result = await client.submit_batch(
+            manifest_path, correlation_id=self._run_correlation_id(row),
+        )
         record_poll(row, SegmentState.UPLOADING.value, "submit_batch",
                     f"accepted={result.accepted} {result.batch_status or result.message}"[:200], now)
         await session.flush()
@@ -379,7 +399,9 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         decision) instead of a silent window-expiry hours later."""
         batch_id = get_download_result(row).get("batch_id")
         if batch_id:
-            batch = await get_edpb_client().get_batch_status(batch_id)
+            batch = await get_edpb_client().get_batch_status(
+                batch_id, correlation_id=self._run_correlation_id(row),
+            )
             if batch.found and batch.status == "incomplete":
                 missing = ", ".join(
                     f"{slot.get('upload_id')} ({slot.get('name')})" for slot in batch.missing_slots
