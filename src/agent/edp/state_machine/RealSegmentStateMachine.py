@@ -9,12 +9,21 @@ flow states (no "phases" — see models.SegmentState):
   WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
 
 INIT's handler does the holiday-check operation; WAITING_FOR_FILE_UPLOAD's
-handler does the reserve/confirm-PID operation on its first entry (no
-process_id yet, recorded as a "reserve_process_id" step nested inside its
-own processes_json["WAITING_FOR_FILE_UPLOAD"]["steps"] dict), then polls
-FILEUPLOAD on every later entry — neither "holiday check" nor "reserve
+handler READS the process ID on its first entries (no process_id yet,
+recorded as a "reserve_process_id" step nested inside its own
+processes_json["WAITING_FOR_FILE_UPLOAD"]["steps"] dict), then polls
+FILEUPLOAD on every later entry — neither "holiday check" nor "resolve
 process id" is its own state, both are operations folded into the state
-that owns them, per the happy-flow tables. Every processes_json top-level
+that owns them, per the happy-flow tables.
+
+PROCESSID ownership (see EDPBilling_FIle_Upload/docs/CBOS_HANDOFF_CONTRACT.md):
+the UPLOADER is the sole reserver — it mints (or reuses) the PID as part of
+uploading the exchange files. This agent only ever READS the PID back via
+getdropdown(EXISTINGPROCESSID); "no PID yet" simply means the uploader
+hasn't gotten there yet and is a normal wait, never a reason to mint. The
+old fallback that reserved via getNewTradeProcess(PROCESSID="0") was the
+dual-writer race behind the 2026-07-21 PID-mismatch incident and was
+removed deliberately — do not reintroduce it. Every processes_json top-level
 key is exactly a SegmentState.value string (see json_helpers.py's module
 docstring).
 TRIGGERED is the one genuine crash-safety-critical wait in this pipeline.
@@ -120,35 +129,39 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         )
 
     # ---------------------------------------------------------------
-    # WAITING_FOR_FILE_UPLOAD — operation on entry: reserve/confirm PID
-    # (once); then poll FILEUPLOAD on every later entry.
+    # WAITING_FOR_FILE_UPLOAD — operation on entry: READ the PID the
+    # uploader reserved (retrying until it appears); then poll
+    # FILEUPLOAD on every later entry.
     # ---------------------------------------------------------------
 
     async def handle_waiting_for_file_upload(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """
-        First entry (row.process_id not yet resolved): reserve/confirm the
-        process ID so RPA/Ops can reference it during upload — one action,
-        stays in this same state (BLOCKED — no transition). Every later
-        entry: poll file_process_status(FILEUPLOAD) until exchange files
-        are uploaded, then advance to TRIGGERED.
+        First entries (row.process_id not yet resolved): read back the
+        process ID the uploader reserved — one action, stays in this same
+        state (BLOCKED — no transition) whether it resolved or the uploader
+        hasn't reserved yet. Every later entry: poll
+        file_process_status(FILEUPLOAD) until exchange files are uploaded,
+        then advance to TRIGGERED.
         """
         if not row.process_id:
-            return await self._reserve_process_id(cbos, row, login_id, now)
+            return await self._resolve_process_id(cbos, row, login_id, now)
         return await self._poll_file_upload(cbos, row, session, login_id, now)
 
-    async def _reserve_process_id(
+    async def _resolve_process_id(
         self, cbos: CbosClient, row: SegmentExecution, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
         """
-        1. POST getdropdown(EXISTINGPROCESSID) — reuse an existing PID if RPA
-           already reserved one.
-        2. Else POST getNewTradeProcess(PROCESSID="0") — reserve a new PID.
+        POST getdropdown(EXISTINGPROCESSID) — read the PID the uploader
+        reserved for this segment/date. READ-ONLY by contract: the uploader
+        is the sole reserver (single-writer, see module docstring), so a
+        miss just means "uploader hasn't reserved yet" and we wait — this
+        handler must never mint a PID of its own.
         """
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-            "Checking for an existing process ID (getdropdown EXISTINGPROCESSID)",
+            "Reading the uploader-reserved process ID (getdropdown EXISTINGPROCESSID)",
             trade_date=str(row.trade_date),
         ))
 
@@ -159,53 +172,42 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         if existing.found and existing.process_id:
             logger.info(stage_log(
                 row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-                "Existing process ID found — reusing it, skipping reservation",
+                "Process ID found — uploader has reserved it",
                 pid=existing.process_id, desc=existing.description,
             ))
             return self._pid_resolved(row, existing.process_id, "EXISTING", now)
 
-        if existing.error and existing.is_transient:
-            logger.warning(stage_log(
-                row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-                "Transient CBOS error on getdropdown(EXISTINGPROCESSID) — will retry next cycle",
-                error=existing.error,
-            ))
-            return SegmentHandlerResult(outcome=BLOCKED)
-
-        logger.info(stage_log(
-            row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-            "No existing process ID — reserving a new one (PROCESSID=0)",
-            trade_date=str(row.trade_date),
-        ))
-
-        result = await cbos.get_new_trade_process(
-            group_name=row.segment_code, login_id=login_id, trade_date=row.trade_date, process_id="0",
-        )
-
-        if not result.success or not result.process_id:
-            if result.is_transient:
+        if existing.error:
+            if existing.is_transient:
                 logger.warning(stage_log(
                     row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-                    "Transient CBOS error — will retry next cycle", error=result.error,
+                    "Transient CBOS error on getdropdown(EXISTINGPROCESSID) — will retry next cycle",
+                    error=existing.error,
                 ))
                 return SegmentHandlerResult(outcome=BLOCKED)
             logger.error(stage_log(
                 row.segment_code, "WAITING_FOR_FILE_UPLOAD",
-                "Failed to allocate process ID — marking FAILED", error=result.error,
+                "Permanent CBOS error on getdropdown(EXISTINGPROCESSID) — marking FAILED",
+                error=existing.error,
             ))
             return self._fail_result(
-                row, "CBOS_ERROR", f"getNewTradeProcess(PROCESSID=0) failed: {result.error}", now,
+                row, "CBOS_ERROR", f"getdropdown(EXISTINGPROCESSID) failed: {existing.error}", now,
             )
 
-        return self._pid_resolved(row, result.process_id, "RESERVED_NEW", now)
+        logger.info(stage_log(
+            row.segment_code, "WAITING_FOR_FILE_UPLOAD",
+            "No process ID yet — uploader hasn't reserved; waiting for the next cycle",
+            trade_date=str(row.trade_date),
+        ))
+        return SegmentHandlerResult(outcome=BLOCKED)
 
     def _pid_resolved(
         self, row: SegmentExecution, process_id: str, source: str, now: datetime,
     ) -> SegmentHandlerResult:
-        """Shared bookkeeping once the process_id resolves, either way.
+        """Shared bookkeeping once the process_id resolves.
         Stays in WAITING_FOR_FILE_UPLOAD (BLOCKED — no state change); the
         next entry to this handler will see row.process_id set and poll
-        FILEUPLOAD instead of reserving again."""
+        FILEUPLOAD instead of looking the PID up again."""
         row.process_id = process_id
         row.process_id_reserved_at = now
         record_pid_reservation(row, process_id, source, now)

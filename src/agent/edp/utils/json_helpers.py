@@ -167,7 +167,7 @@ def record_trigger(
     now: datetime,
 ) -> None:
     """Record a successful trigger call, preserving process_id_source
-    ("EXISTING"|"RESERVED_NEW") and attempt_started_at, both carried
+    ("EXISTING") and attempt_started_at, both carried
     forward from record_trigger_attempt() — otherwise the moment a trigger
     confirms, the timestamp of when the attempt actually started (and thus
     how long CBOS took to confirm it) would be silently lost."""

@@ -314,7 +314,7 @@ async def _prime_triggering_row(session_factory, orchestrator, trade_date: date,
             SegmentState.TRIGGERED.value: {
                 "status": "TRIGGERING",
                 "attempt_started_at": at.isoformat(),
-                "process_id_source": "RESERVED_NEW",
+                "process_id_source": "EXISTING",
             },
         }
         await session.commit()

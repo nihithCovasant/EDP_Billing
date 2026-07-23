@@ -193,16 +193,28 @@ async def test_get_new_trade_process_trigger_mode_second_call_reports_in_progres
 # 3. get_existing_process_id
 # =============================================================================
 
-async def test_get_existing_process_id_not_found_before_any_reservation():
-    """Before any PID has been reserved for this (segment, trade_date), the
-    mock must correctly report found=False with no process_id/description."""
+async def test_get_existing_process_id_uploader_sim_miss_then_provision():
+    """The mock plays the UPLOADER (the sole PID reserver): with
+    mock_set_uploader_reserve_delay(1) the first lookup for a
+    (segment, trade_date) must correctly miss (found=False, no
+    process_id), and the next lookup must return a provisioned PID —
+    as if the uploader reserved it between the agent's cycles. The same
+    PID is then stable across further lookups."""
     cbos = CbosClient("http://status", "http://process", use_mock=True)
+    cbos.mock_set_uploader_reserve_delay(1)
+    trade_date = date(2026, 6, 29)
 
-    result = await cbos.get_existing_process_id("EQ", "CV0001", date(2026, 6, 29))
+    first = await cbos.get_existing_process_id("EQ", "CV0001", trade_date)
+    assert isinstance(first, ExistingProcessResult)
+    assert first.found is False
+    assert first.process_id is None
 
-    assert isinstance(result, ExistingProcessResult)
-    assert result.found is False
-    assert result.process_id is None
+    second = await cbos.get_existing_process_id("EQ", "CV0001", trade_date)
+    assert second.found is True
+    assert second.process_id
+
+    third = await cbos.get_existing_process_id("EQ", "CV0001", trade_date)
+    assert third.process_id == second.process_id
 
 
 async def test_get_existing_process_id_found_after_reservation():

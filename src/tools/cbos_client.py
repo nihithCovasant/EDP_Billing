@@ -3,13 +3,14 @@ CBOS HTTP client — exact MOFSL API contract.
 
 Two separate base URLs:
   STATUS_URL  (port 8087) — Good-to-Go / completion checks via file_process_status
-  PROCESS_URL (port 8003) — process management (get-or-reserve PID, trigger)
+  PROCESS_URL (port 8003) — process management (read PID, trigger)
 
 Segment pipeline — identical for all 9 segments (CASH/EQ, F&O/DR, CD/CUR,
 SLB, NCDEX, NCDEXPHY, MCX, MCXPHY, NSECOM), 7 steps:
   1. file_process_status(BeginFileUpload)        → holiday check
-  2. getdropdown(EXISTINGPROCESSID); if not found,
-     get_new_trade_process(PROCESSID="0")        → get-or-reserve process_id
+  2. getdropdown(EXISTINGPROCESSID)              → READ the uploader-reserved
+     process_id (the uploader is the sole reserver — a miss means "wait",
+     never "mint one"; see RealSegmentStateMachine's module docstring)
   3. file_process_status(FILEUPLOAD)             → poll until exchange files uploaded
   4. get_new_trade_process(PROCESSID=<actual>)   → trigger billing processing (once)
   5. file_process_status(BILLPOSTING)            → poll until bill posting done
@@ -45,13 +46,14 @@ CBOS API request / response shapes
     3, or it would always read "not yet triggered" regardless of CBOS's
     actual state, defeating the double-trigger guard entirely.
 
-  getdropdown EXISTINGPROCESSID  (Step 2 — check before reserving)
+  getdropdown EXISTINGPROCESSID  (Step 2 — read the uploader-reserved PID)
     POST {PROCESS_URL}/v1/api/brokerage/getdropdown
     Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ","FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
     OK:   {"Status":"Success","Result":[{"_KEY":17658,"_DESC":"17658 - CV0001 - Jun 29 2026 2:19PM"}]}
-    Empty Result → no process ID exists yet; reserve a new one.
+    Empty Result → uploader hasn't reserved yet; wait and re-check next cycle.
 
-  getNewTradeProcess  (reserve → PROCESSID="0", trigger → PROCESSID=actual)
+  getNewTradeProcess  (trigger → PROCESSID=actual; PROCESSID="0" reserve mode
+    is the UPLOADER's call, kept here only for tests playing the uploader)
     POST {PROCESS_URL}/v1/api/process/getNewTradeProcess
     Body: {"GROUPNAME":"EQ","LOGINID":"CV0001","TRADEDATE":"2026-06-29","PROCESSID":"0"}
     OK:   {"Status":"Success","Result":{"Table1":[{"PROCESSID":17658,"ISRUNNABLE":true,...}],"Table2":[...]}}
@@ -241,6 +243,11 @@ class CbosClient:
         # correctly reports "found" only once one is actually reserved.
         self._mock_reserved_pids: dict[tuple[str, str], str] = {}
         self._mock_pid_counter = itertools.count(17001)
+        # (segment, trade_date_iso) -> getdropdown(EXISTINGPROCESSID) lookup
+        # count; with _mock_uploader_reserve_delay it simulates the uploader
+        # reserving the PID some cycles after the agent starts asking.
+        self._mock_existing_pid_lookups: dict[tuple[str, str], int] = {}
+        self._mock_uploader_reserve_delay = 0
         # (segment, trade_date_iso) -> trigger-mode call count, so Table2
         # progresses from empty (1st call) to IN_PROGRESS (2nd+), letting
         # tests exercise RealSegmentStateMachine.handle_triggered()'s
@@ -902,14 +909,29 @@ class CbosClient:
         )
 
     def _mock_existing_pid(self, segment: str, trade_date: date) -> ExistingProcessResult:
-        """Simulates getdropdown EXISTINGPROCESSID: reports "found" only
-        once a PID has been reserved for this (segment, trade_date) via
-        _mock_new_trade_process, so Step 2's get-or-reserve branch is
-        exercised faithfully in mock mode."""
+        """Simulates getdropdown EXISTINGPROCESSID.
+
+        The UPLOADER is the sole PID reserver in the real pipeline (the
+        agent only reads — see RealSegmentStateMachine's module docstring),
+        so the mock plays the uploader's part: after
+        _mock_uploader_reserve_delay misses for a (segment, trade_date),
+        it provisions a PID as if the uploader had just reserved one, and
+        reports "found" from then on. Delay 0 (default) provisions on the
+        first lookup — the fastest happy path. Tests exercise the agent's
+        waiting behaviour via mock_set_uploader_reserve_delay(n).
+
+        A PID already present (a test pre-reserved it via
+        get_new_trade_process(PROCESSID="0"), playing the uploader
+        explicitly) is returned as-is, never re-minted."""
         key = (segment.upper(), trade_date.isoformat())
         pid = self._mock_reserved_pids.get(key)
         if not pid:
-            return ExistingProcessResult(found=False, raw_body='{"Status":"Success","Result":[]}')
+            lookups = self._mock_existing_pid_lookups.get(key, 0) + 1
+            self._mock_existing_pid_lookups[key] = lookups
+            if lookups <= self._mock_uploader_reserve_delay:
+                return ExistingProcessResult(found=False, raw_body='{"Status":"Success","Result":[]}')
+            pid = str(next(self._mock_pid_counter))
+            self._mock_reserved_pids[key] = pid
         return ExistingProcessResult(
             found=True,
             process_id=pid,
@@ -937,12 +959,19 @@ class CbosClient:
         """Set how many polls must occur before file_process_status returns TRUE."""
         self._mock_ready_after = n
 
+    def mock_set_uploader_reserve_delay(self, n: int) -> None:
+        """Set how many getdropdown(EXISTINGPROCESSID) lookups miss before the
+        mock provisions a PID as if the uploader had reserved it (default 0 —
+        provisioned on the first lookup)."""
+        self._mock_uploader_reserve_delay = n
+
     def mock_reset_counts(self) -> None:
         """Reset all poll counters and reserved PIDs (useful between test cases)."""
         self._mock_call_counts.clear()
         self._mock_reserved_pids.clear()
         self._mock_trigger_calls.clear()
         self._mock_already_triggered_segments.clear()
+        self._mock_existing_pid_lookups.clear()
 
     def mock_mark_already_triggered(self, segment: str) -> None:
         """Opt a post-trade process into the "already triggered" branch —

@@ -141,10 +141,10 @@ def test_mark_step_done_sets_state_status_completed():
 
 def test_pid_reservation_round_trip():
     row = FakeRow()
-    record_pid_reservation(row, "PID123", "RESERVED_NEW", NOW)
+    record_pid_reservation(row, "PID123", "EXISTING", NOW)
     reservation = get_pid_reservation(row)
     assert reservation["process_id_reserved"] == "PID123"
-    assert reservation["process_id_source"] == "RESERVED_NEW"
+    assert reservation["process_id_source"] == "EXISTING"
     assert reservation["reserved_at"] == NOW.isoformat()
 
 
@@ -169,7 +169,7 @@ def test_record_trigger_carries_forward_process_id_source_and_attempt_started_at
 
 def test_record_trigger_failed_carries_forward_fields_and_sets_status_failed():
     row = FakeRow()
-    record_pid_reservation(row, "PID123", "RESERVED_NEW", NOW)
+    record_pid_reservation(row, "PID123", "EXISTING", NOW)
     record_trigger_attempt(row, NOW)
 
     later = datetime(2026, 7, 11, 12, 5, 0)
@@ -178,7 +178,7 @@ def test_record_trigger_failed_carries_forward_fields_and_sets_status_failed():
     state = get_state(row, SegmentState.TRIGGERED.value)
     assert state["status"] == "FAILED"
     assert state["attempt_started_at"] == NOW.isoformat()
-    assert state["process_id_source"] == "RESERVED_NEW"
+    assert state["process_id_source"] == "EXISTING"
     assert state["error"] == "CBOS rejected"
     assert state["at"] == later.isoformat()
 

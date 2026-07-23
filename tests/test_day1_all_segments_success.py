@@ -102,9 +102,11 @@ async def test_reserve_pid_step2_reuses_existing_process_id(cfg, session_factory
     assert cur_row.process_id == pre_reserved.process_id
     assert cur_row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "EXISTING"
 
-    # A segment with nothing pre-reserved must still resolve its own new PID.
+    # A segment with nothing pre-reserved also resolves via read-back: the
+    # mock's uploader-sim provisions its PID on the first getdropdown lookup
+    # (the agent never mints one itself - the uploader is the sole reserver).
     eq_row = by_code["EQ"]
-    assert eq_row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert eq_row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "EXISTING"
 
 
 async def test_day_summary_and_serializers_have_no_removed_fields(cfg, session_factory, test_date):

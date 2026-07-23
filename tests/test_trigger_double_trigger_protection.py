@@ -52,7 +52,7 @@ async def _seed_and_prime_triggering_row(
             SegmentState.TRIGGERED.value: {
                 "status": "TRIGGERING",
                 "attempt_started_at": fixed_now.isoformat(),
-                "process_id_source": "RESERVED_NEW",
+                "process_id_source": "EXISTING",
             },
         }
         await session.commit()
@@ -84,7 +84,7 @@ async def test_recovery_retriggers_when_cbos_never_received_the_call(cfg, sessio
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
     assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
-    assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "EXISTING"
     assert row.processes_json[SegmentState.TRIGGERED.value]["attempt_started_at"] is not None, (
         "record_trigger() must carry attempt_started_at forward from the pre-commit "
         "TRIGGERING marker, not drop it once the trigger confirms"
@@ -129,7 +129,7 @@ async def test_recovery_does_not_retrigger_when_cbos_already_has_it(cfg, session
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.current_state == SegmentState.WAITING_FOR_BILLPOSTING
     assert row.processes_json[SegmentState.TRIGGERED.value]["status"] == "TRIGGERED"
-    assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "RESERVED_NEW"
+    assert row.processes_json[SegmentState.TRIGGERED.value]["process_id_source"] == "EXISTING"
 
     rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
     by_code = {r.segment_code: r for r in rows}

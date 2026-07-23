@@ -11,7 +11,8 @@ Per src/tools/cbos_client.py's module docstring, the segment pipeline is
 always these 7 CBOS-touching steps:
   1. file_process_status(BeginFileUpload)        -> holiday check (INIT)
   2. getdropdown(EXISTINGPROCESSID); if not found,
-     get_new_trade_process(PROCESSID="0")        -> get-or-reserve process_id
+     get_new_trade_process(PROCESSID="0")        -> reserve (UPLOADER-only call;
+                                                    the agent must never fire it)
   3. file_process_status(FILEUPLOAD)             -> poll (WAITING_FOR_FILE_UPLOAD)
   4. get_new_trade_process(PROCESSID=<actual>)   -> trigger (TRIGGERED)
   5. file_process_status(BILLPOSTING)            -> poll (WAITING_FOR_BILLPOSTING)
@@ -111,7 +112,7 @@ class ExistingPidSequenceCbosClient(SequenceRecordingCbosClient):
     an earlier agent cycle) having already reserved a process_id via
     CBOS's getdropdown(EXISTINGPROCESSID) before this segment-day's pipeline
     ever runs. Used to prove the "existing PID" code path
-    (RealSegmentStateMachine._reserve_process_id's `if existing.found`
+    (RealSegmentStateMachine._resolve_process_id's `if existing.found`
     branch) never ALSO fires the reserve-mode getNewTradeProcess call —
     the two "get a process_id" paths are mutually exclusive per
     segment-day.
@@ -141,8 +142,9 @@ class ExistingPidSequenceCbosClient(SequenceRecordingCbosClient):
 # on its first try). Mirrors cbos_client.py's module-docstring step list.
 EXPECTED_FULL_PIPELINE_SEQUENCE = [
     "BeginFileUpload",              # INIT holiday check
-    "getExistingProcessId",         # WAITING_FOR_FILE_UPLOAD PID step, part 1
-    "getNewTradeProcess:reserve",   # WAITING_FOR_FILE_UPLOAD PID step, part 2 (not found -> reserve)
+    "getExistingProcessId",         # WAITING_FOR_FILE_UPLOAD PID read (uploader is the
+                                    # sole reserver; the mock's uploader-sim provisions
+                                    # the PID on this first lookup, delay 0)
     "FILEUPLOAD",                   # WAITING_FOR_FILE_UPLOAD poll
     "getNewTradeProcess:trigger",   # TRIGGERED
     "BILLPOSTING",                  # WAITING_FOR_BILLPOSTING poll
@@ -210,8 +212,9 @@ async def test_full_pipeline_segment_exact_call_sequence_minimum_polls(cfg, sess
     possible happy path) must produce EXACTLY the ordered CBOS call
     sequence documented in cbos_client.py's module docstring, with no
     extras and no gaps: BeginFileUpload -> getExistingProcessId ->
-    getNewTradeProcess(reserve) -> FILEUPLOAD -> getNewTradeProcess(trigger)
-    -> BILLPOSTING -> RECON -> CONTRACTNOTEGENERATION.
+    FILEUPLOAD -> getNewTradeProcess(trigger) -> BILLPOSTING -> RECON ->
+    CONTRACTNOTEGENERATION. No reserve-mode call anywhere: the uploader is
+    the sole PID reserver, the agent only reads.
     """
     cbos = SequenceRecordingCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
     cbos.mock_set_ready_after(1)
@@ -228,7 +231,11 @@ async def test_full_pipeline_segment_exact_call_sequence_minimum_polls(cfg, sess
         f"EQ's exact CBOS call sequence does not match the expected happy-path "
         f"sequence.\nExpected: {EXPECTED_FULL_PIPELINE_SEQUENCE}\nActual:   {eq_calls}"
     )
-    assert len(eq_calls) == len(EXPECTED_FULL_PIPELINE_SEQUENCE) == 8, (
+    assert "getNewTradeProcess:reserve" not in eq_calls, (
+        "the agent must NEVER fire the reserve-mode getNewTradeProcess call -- "
+        "the uploader is the sole PROCESSID reserver (single-writer contract)"
+    )
+    assert len(eq_calls) == len(EXPECTED_FULL_PIPELINE_SEQUENCE) == 7, (
         "total call count must match exactly what the sequence implies -- no extras, no gaps"
     )
 
@@ -250,8 +257,9 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
     that also uses _mock_ready_after's counter in the shared in-process
     mock (see CbosClient._mock_file_status) -- so it too retries exactly
     N times before returning TRUE, just like the 4 confirmation polls.
-    getExistingProcessId / getNewTradeProcess are NOT retried (each fires
-    exactly once, unconditionally) -- only file_process_status polls repeat.
+    getExistingProcessId / getNewTradeProcess(trigger) are NOT retried
+    (each fires exactly once) -- only file_process_status polls repeat.
+    No reserve-mode call: the uploader is the sole reserver.
     """
     POLLS_BEFORE_READY = 3
     cbos = SequenceRecordingCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
@@ -269,10 +277,10 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
 
     # Expected sequence: each of the 5 polling stages repeats exactly
     # POLLS_BEFORE_READY times in a row; getExistingProcessId and
-    # getNewTradeProcess (both modes) fire exactly once each, uniformly.
+    # getNewTradeProcess(trigger) fire exactly once each, uniformly.
     expected = (
         ["BeginFileUpload"] * POLLS_BEFORE_READY
-        + ["getExistingProcessId", "getNewTradeProcess:reserve"]
+        + ["getExistingProcessId"]
         + ["FILEUPLOAD"] * POLLS_BEFORE_READY
         + ["getNewTradeProcess:trigger"]
         + ["BILLPOSTING"] * POLLS_BEFORE_READY
@@ -525,3 +533,45 @@ async def test_post_trade_already_triggered_short_circuit_zero_trigger_calls(cfg
         f"COLVAL's already-triggered short-circuit call sequence mismatch.\n"
         f"Expected: {expected}\nActual:   {colval_calls}"
     )
+
+
+# =============================================================================
+# Scenario N — Uploader hasn't reserved yet: the agent WAITS, never mints.
+# =============================================================================
+
+async def test_agent_waits_for_uploader_reservation_and_never_mints(cfg, session_factory, test_date):
+    """
+    Single-writer contract (CBOS_HANDOFF_CONTRACT.md): the uploader is the
+    sole PROCESSID reserver. With mock_set_uploader_reserve_delay(2) the
+    first two getdropdown(EXISTINGPROCESSID) lookups miss — the agent must
+    stay in WAITING_FOR_FILE_UPLOAD with no process_id, KEEP asking on later
+    cycles, and resolve the PID as EXISTING once the uploader-sim provides
+    it. At no point may a reserve-mode getNewTradeProcess fire.
+    """
+    UPLOADER_DELAY = 2
+    cbos = SequenceRecordingCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
+    cbos.mock_set_ready_after(1)
+    cbos.mock_set_uploader_reserve_delay(UPLOADER_DELAY)
+    orchestrator = EdpOrchestrator(cfg, cbos)
+
+    await helpers.seed_day(session_factory, test_date, cfg)
+    rows = await helpers.drive_until_terminal(orchestrator, session_factory, test_date)
+    by_code = {r.segment_code: r for r in rows}
+
+    assert by_code["EQ"].segment_status == SegmentStatus.COMPLETED
+    eq_calls = cbos.calls_for("EQ")
+
+    # The PID lookup repeated until the uploader-sim reserved: 2 misses + 1 hit.
+    assert eq_calls.count("getExistingProcessId") == UPLOADER_DELAY + 1, (
+        f"expected {UPLOADER_DELAY + 1} getExistingProcessId lookups (miss x{UPLOADER_DELAY}, "
+        f"then found), got {eq_calls.count('getExistingProcessId')}:\n{eq_calls}"
+    )
+    # The misses must all precede FILEUPLOAD polling: no PID -> no poll yet.
+    assert eq_calls.index("FILEUPLOAD") > eq_calls.index("getExistingProcessId"), eq_calls
+    # And the load-bearing assertion: the agent NEVER minted.
+    assert "getNewTradeProcess:reserve" not in eq_calls, (
+        "agent fired a reserve-mode getNewTradeProcess while waiting for the uploader -- "
+        "the single-writer contract is broken"
+    )
+    # The resolved PID is recorded as read-back, never as self-reserved.
+    assert by_code["EQ"].processes_json["TRIGGERED"]["process_id_source"] == "EXISTING"
