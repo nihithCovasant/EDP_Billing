@@ -33,7 +33,7 @@ class FailingCbosClient(CbosClient):
         self._fail_process = fail_process
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date: date, include_segment: bool = True,
     ) -> FileStatusResult:
         if segment.upper() == self._fail_segment and process_name == self._fail_process:
             return FileStatusResult(
@@ -42,7 +42,7 @@ class FailingCbosClient(CbosClient):
                 error=f"Simulated permanent CBOS failure for {segment}/{process_name}",
                 is_transient=False,
             )
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment)
 
 
 class SkippingCbosClient(CbosClient):
@@ -60,11 +60,11 @@ class SkippingCbosClient(CbosClient):
         self._skip_process = skip_process
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date: date, include_segment: bool = True,
     ) -> FileStatusResult:
         if segment.upper() == self._skip_segment and process_name == self._skip_process:
             return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment)
 
 
 class TransientTriggerFailureCbosClient(CbosClient):
@@ -116,10 +116,10 @@ class RecordingFileStatusCbosClient(CbosClient):
         self.calls: list[tuple[str, str, str]] = []
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date: date, include_segment: bool = True,
     ) -> FileStatusResult:
         self.calls.append((segment, process_name, user_id))
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment)
 
 
 class CountingPostTradeTriggerCbosClient(CbosClient):

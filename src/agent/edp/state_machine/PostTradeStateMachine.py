@@ -112,6 +112,7 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
+            trade_date=row.trade_date, include_segment=False,
         )
         record_poll(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
         await session.flush()
@@ -146,6 +147,14 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
             ))
             mark_step_done(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
             return self._skip_result(row, "CBOS_SKIP", f"{process_name} returned SKIP — market holiday", now)
+
+        if not result.is_ready:
+            logger.warning(stage_log(
+                row.segment_code, "WAITING_FOR_GTG",
+                f"Unrecognized {process_name} GTG response — treating as not-ready, will retry",
+                response=result.response,
+            ))
+            return SegmentHandlerResult(outcome=BLOCKED)
 
         mark_step_done(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
         return await self._decide_direct_or_triggered(cbos, row, login_id, now, process_name)
@@ -318,6 +327,7 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
+            trade_date=row.trade_date, include_segment=False,
         )
         record_poll(row, SegmentState.WAITING_FOR_COMPLETION.value, step_key, result.response, now)
         await session.flush()
@@ -347,6 +357,14 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
                 f"Unexpected SKIP for {process_name} — marking FAILED", response=result.response,
             ))
             return self._fail_result(row, "CBOS_ERROR", f"Unexpected {process_name} SKIP response", now)
+
+        if not result.is_ready:
+            logger.warning(stage_log(
+                row.segment_code, "WAITING_FOR_COMPLETION",
+                f"Unrecognized {process_name} response — treating as not-ready, will retry",
+                response=result.response,
+            ))
+            return SegmentHandlerResult(outcome=BLOCKED)
 
         logger.info(stage_log(
             row.segment_code, "WAITING_FOR_COMPLETION", f"{process_name} CONFIRMED — post-trade process COMPLETED",

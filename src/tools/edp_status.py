@@ -409,8 +409,11 @@ async def update_edp_segment_window(
     NCDEXPHY, MCX, MCXPHY, NSECOM, COLVAL, COLALLOC, MTFFT, DMRPT, DMSTMT)
     or a common name (Cash, F&O, CD, Collateral Valuation, ...).
     `window_start`/`window_end` are times like "17:00" or "5 PM" — at least
-    one is required. `trade_date` is optional (YYYY-MM-DD), defaults to
-    today (IST).
+    one is required. `trade_date` is optional (YYYY-MM-DD) and must resolve
+    to TODAY (IST) — the underlying upload endpoint always applies to
+    today's active config, so passing a past or future date is refused
+    rather than silently overwriting today's config with the wrong day's
+    changes.
     """
     if not window_start and not window_end:
         return 'Please tell me the new start time and/or end time (e.g. "5 PM" or "17:00").'
@@ -424,6 +427,15 @@ async def update_edp_segment_window(
         )
 
     resolved_date = _normalize_date(trade_date) if trade_date else _today_ist()
+    if resolved_date != _today_ist():
+        return (
+            f"⚠️ This tool only edits **today's** ({_today_ist()}) active config — "
+            f"POST /edp/workflow/upload always applies to today (or defers to tomorrow if today's "
+            f"run is already in progress), it has no way to target {resolved_date} specifically. "
+            f"Editing a past/future date here would silently overwrite today's config instead. "
+            f"If you need to fix a historical trade_date's config, that requires a direct DB/ops "
+            f"change, not this tool."
+        )
     status_code, data = await _get(f"/edp/workflow/{resolved_date}")
     if status_code == 404:
         return (
@@ -521,9 +533,14 @@ async def get_edp_status(trade_date: Optional[str] = None, segment_code: Optiona
     resolved_date = _normalize_date(trade_date) if trade_date else _today_ist()
 
     if segment_code:
-        status_code, data = await _get(f"/edp/status/{resolved_date}/{segment_code.upper()}")
+        # Resolve common names/aliases (e.g. "CASH" -> "EQ") the same way
+        # update_edp_segment_window does — falling back to the raw
+        # upper-cased input so an unrecognized-but-valid code still passes
+        # through to the API instead of being silently rejected here.
+        code = _resolve_code(segment_code) or segment_code.strip().upper()
+        status_code, data = await _get(f"/edp/status/{resolved_date}/{code}")
         if status_code == 404:
-            return f"No record found for segment **{segment_code.upper()}** on **{resolved_date}**."
+            return f"No record found for segment **{code}** on **{resolved_date}**."
         if status_code >= 400:
             return f"❌ Could not fetch status (HTTP {status_code}): {data.get('detail', data)}"
         return _format_segment_detail(data)
