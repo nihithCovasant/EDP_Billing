@@ -46,11 +46,11 @@ class MultiSkippingCbosClient(CbosClient):
         self._skip_segments = {s.upper() for s in skip_segments}
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() in self._skip_segments and process_name == "BeginFileUpload":
             return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
 
 class MultiFailingCbosClient(CbosClient):
@@ -66,7 +66,7 @@ class MultiFailingCbosClient(CbosClient):
         self._fail_pairs = {seg.upper(): proc for seg, proc in fail_pairs.items()}
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
     ) -> FileStatusResult:
         if self._fail_pairs.get(segment.upper()) == process_name:
             return FileStatusResult(
@@ -75,7 +75,7 @@ class MultiFailingCbosClient(CbosClient):
                 error=f"Simulated permanent CBOS failure for {segment}/{process_name}",
                 is_transient=False,
             )
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
 
 class CountingFileStatusCbosClient(CbosClient):
@@ -91,11 +91,11 @@ class CountingFileStatusCbosClient(CbosClient):
         self.call_counts: dict[str, int] = {}
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str
+        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
     ) -> FileStatusResult:
         key = segment.upper()
         self.call_counts[key] = self.call_counts.get(key, 0) + 1
-        return await super().file_process_status(segment, process_name, user_id)
+        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
 
 # =============================================================================
@@ -413,7 +413,7 @@ async def test_end_of_day_summary_matches_real_mixed_outcomes_exactly(cfg, sessi
         def __init__(self, status_url: str, process_url: str):
             super().__init__(status_url, process_url, use_mock=True)
 
-        async def file_process_status(self, segment: str, process_name: str, user_id: str) -> FileStatusResult:
+        async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
             seg = segment.upper()
             if seg in END_OF_DAY_HOLIDAY_SEGMENTS and process_name == "BeginFileUpload":
                 return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
@@ -424,7 +424,7 @@ async def test_end_of_day_summary_matches_real_mixed_outcomes_exactly(cfg, sessi
                     error=f"Simulated permanent CBOS failure for {seg}/{process_name}",
                     is_transient=False,
                 )
-            return await super().file_process_status(segment, process_name, user_id)
+            return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
     cbos = MixedOutcomeCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
     cbos.mock_set_ready_after(1)

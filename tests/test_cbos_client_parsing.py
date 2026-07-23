@@ -71,14 +71,14 @@ async def test_already_triggered_via_file_status_uses_sentence_parser_not_is_rea
     """
     cbos = CbosClient("http://status", "http://process", use_mock=False)
 
-    async def fake_pending(*, segment, process_name, user_id):
+    async def fake_pending(*, segment, process_name, user_id, trade_date=None, include_segment=True):
         return FileStatusResult(response="PROCESS TRIGGERED IS PENDING")
 
     monkeypatch.setattr(cbos, "file_process_status", fake_pending)
     result = await cbos._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", "G_LID")
     assert result.already_triggered is False
 
-    async def fake_already_triggered(*, segment, process_name, user_id):
+    async def fake_already_triggered(*, segment, process_name, user_id, trade_date=None, include_segment=True):
         return FileStatusResult(response="PROCESS ALREADY TRIGGERED")
 
     monkeypatch.setattr(cbos, "file_process_status", fake_already_triggered)

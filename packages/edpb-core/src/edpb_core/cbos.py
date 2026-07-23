@@ -74,3 +74,16 @@ def existing_process_id_payload(
         "extraoption2": "",
         "extraoption3": "",
     }
+
+
+def file_process_status_payload_b(
+    trade_date_iso: str, process_name: str, user_id: str,
+) -> dict[str, str]:
+    """V5 "Shape B" — the file_process_status steps WITHOUT a Segment field
+    (post-trade GTG/already-triggered/completion checks: V5 doc steps 13,
+    15-16, 19-20, 22-23, 30-31, 37-38). TradeDate leads."""
+    return {
+        "TradeDate": trade_date_iso,
+        "ProcessName": process_name,
+        "UserID": user_id,
+    }

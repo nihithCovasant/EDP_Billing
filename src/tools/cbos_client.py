@@ -30,9 +30,11 @@ calls to the trigger endpoint itself for COLVAL/DMRPT, file_process_status
 with a dedicated ProcessName for COLALLOC/MTFFT/DMSTMT.
 
 CBOS API request / response shapes
-  file_process_status
+  file_process_status  (V5: TradeDate is REQUIRED in every call — Shape A
+    carries Segment, Shape B (post-trade checks) does not; payload builders
+    live in edpb_core.cbos, shared with the uploader)
     POST {STATUS_URL}/api/edp/file_process_status
-    Body: {"Segment":"EQ","ProcessName":"BeginFileUpload","UserID":"CV0001"}
+    Body: {"Segment":"EQ","TradeDate":"2026-06-29","ProcessName":"BeginFileUpload","UserID":"CV0001"}
     OK:   {"Status":"Success","Data":[{"MSG":"TRUE|FALSE|SKIP"}]}
 
     EXCEPTION: the 3 "already triggered" ProcessNames reused via this same
@@ -100,6 +102,8 @@ from datetime import date
 from typing import List, Optional
 
 import httpx
+
+from edpb_core.cbos import file_process_status_payload, file_process_status_payload_b
 
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -317,10 +321,23 @@ class CbosClient:
         segment: str,
         process_name: str,
         user_id: str,
+        trade_date: date | str | None = None,
+        *,
+        include_segment: bool = True,
     ) -> FileStatusResult:
         """
         POST {STATUS_URL}/api/edp/file_process_status
         Returns TRUE (ready), FALSE (not yet), or SKIP (holiday/not applicable).
+
+        V5: TradeDate (YYYY-MM-DD) is REQUIRED in every file_process_status
+        call. Shape A (include_segment=True — real-segment steps 1/3/9 and
+        the BILLPOSTING/RECON/CONTRACTNOTEGENERATION polls) carries Segment;
+        Shape B (include_segment=False — the post-trade GTG/completion/
+        already-triggered checks, V5 doc steps 13/15-16/19-20/22-23/30-31/
+        37-38) does not. Payload shapes come from edpb_core.cbos so all
+        three repos agree by construction. trade_date=None is tolerated only
+        for legacy callers and logs loudly — real V5 CBOS may resolve the
+        WRONG DAY's process without it.
         """
         if self.use_mock:
             result = self._mock_file_status(segment, process_name)
@@ -331,7 +348,19 @@ class CbosClient:
             return result
 
         url = f"{self.status_url}/api/edp/file_process_status"
-        payload = {"Segment": segment, "ProcessName": process_name, "UserID": user_id}
+        if trade_date is None:
+            logger.error(
+                f"[CBOS] file_process_status({process_name}) called WITHOUT trade_date - "
+                f"sending legacy v3 payload; V5 CBOS may resolve the wrong day's process"
+            )
+            payload = {"Segment": segment, "ProcessName": process_name, "UserID": user_id}
+        else:
+            iso = trade_date if isinstance(trade_date, str) else trade_date.isoformat()
+            payload = (
+                file_process_status_payload(segment, iso, process_name, user_id)
+                if include_segment
+                else file_process_status_payload_b(iso, process_name, user_id)
+            )
         logger.info(
             f"[CBOS] segment={segment} api=file_process_status process={process_name} "
             f"| POST {url}"
@@ -670,24 +699,26 @@ class CbosClient:
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(MTFCOLLALLOC) — CBOS's own check
         endpoint for whether collateral allocation already ran today."""
-        return await self._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", login_id)
+        return await self._already_triggered_via_file_status("COLALLOC", "MTFCOLLALLOC", login_id, trade_date)
 
     @otel_trace
     async def check_mtf_fund_transfer_triggered(
         self, login_id: str, trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(MTFFUNDTRAN)."""
-        return await self._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", login_id)
+        return await self._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", login_id, trade_date)
 
     @otel_trace
     async def check_daily_margin_statements_triggered(
         self, login_id: str, trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(CHECKDAILYMARGINSTATEMENT)."""
-        return await self._already_triggered_via_file_status("DMSTMT", "CHECKDAILYMARGINSTATEMENT", login_id)
+        return await self._already_triggered_via_file_status(
+            "DMSTMT", "CHECKDAILYMARGINSTATEMENT", login_id, trade_date,
+        )
 
     async def _already_triggered_via_file_status(
-        self, segment: str, process_name: str, user_id: str,
+        self, segment: str, process_name: str, user_id: str, trade_date: date | None = None,
     ) -> AlreadyTriggeredResult:
         """
         Real mode: reuses file_process_status(process_name) but does NOT
@@ -704,7 +735,11 @@ class CbosClient:
         """
         if self.use_mock:
             return self._mock_already_triggered(segment)
-        result = await self.file_process_status(segment=segment, process_name=process_name, user_id=user_id)
+        # Shape B: these steps carry no Segment field in V5.
+        result = await self.file_process_status(
+            segment=segment, process_name=process_name, user_id=user_id,
+            trade_date=trade_date, include_segment=False,
+        )
         if result.is_error:
             return AlreadyTriggeredResult(
                 already_triggered=False, raw_body=result.raw_body,

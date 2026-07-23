@@ -110,8 +110,10 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
         process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
         step_key = f"{process_name}_STATUS"
 
+        # V5 Shape B: post-trade status checks carry TradeDate but no Segment.
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
+            trade_date=row.trade_date, include_segment=False,
         )
         record_poll(row, SegmentState.WAITING_FOR_GTG.value, step_key, result.response, now)
         await session.flush()
@@ -316,8 +318,10 @@ class PostTradeStateMachine(AbstractSegmentStateMachine):
         process_name = row.current_process or POST_TRADE_GTG_PROCESS_NAME.get(row.segment_code, row.segment_code)
         step_key = f"{process_name}_STATUS"
 
+        # V5 Shape B: post-trade status checks carry TradeDate but no Segment.
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
+            trade_date=row.trade_date, include_segment=False,
         )
         record_poll(row, SegmentState.WAITING_FOR_COMPLETION.value, step_key, result.response, now)
         await session.flush()

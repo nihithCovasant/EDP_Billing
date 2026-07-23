@@ -102,6 +102,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="BeginFileUpload", user_id=login_id,
+            trade_date=row.trade_date,
         )
         record_poll(row, SegmentState.INIT.value, "BeginFileUpload_STATUS", result.response, now)
         await session.flush()
@@ -433,6 +434,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
 
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="FILEUPLOAD", user_id=login_id,
+            trade_date=row.trade_date,
         )
         record_poll(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, "FILEUPLOAD_STATUS", result.response, now)
         await session.flush()
@@ -667,6 +669,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         """POST file_process_status(CONTRACTNOTEGENERATION) — wait until contract notes complete."""
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="CONTRACTNOTEGENERATION", user_id=login_id,
+            trade_date=row.trade_date,
         )
         record_poll(
             row, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION.value,
@@ -727,6 +730,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         step_key = f"{process_name}_STATUS"
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name=process_name, user_id=login_id,
+            trade_date=row.trade_date,
         )
         record_poll(row, stage_key, step_key, result.response, now)
         await session.flush()
