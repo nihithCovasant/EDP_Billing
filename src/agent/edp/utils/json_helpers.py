@@ -235,3 +235,24 @@ def record_post_trade_trigger_failed(row: SegmentExecution, error: str, now: dat
         "at": now.isoformat(),
         "error": error,
     })
+
+
+def record_download_result(
+    row: SegmentExecution, manifest_path: str, batch_id: str, status: str, now: datetime,
+) -> None:
+    """DOWNLOADING succeeded — persist what the bot handed back. UPLOADING
+    reads manifest_path from here; WAITING_FOR_FILE_UPLOAD's incomplete-batch
+    check reads batch_id. Nested under the DOWNLOADING state key like every
+    other per-state fact."""
+    state = get_state(row, "DOWNLOADING")
+    state["status"] = "COMPLETED"
+    state["manifest_path"] = manifest_path
+    state["batch_id"] = batch_id
+    state["download_status"] = status
+    state["downloaded_at"] = now.isoformat()
+    set_state(row, "DOWNLOADING", state)
+
+
+def get_download_result(row: SegmentExecution) -> dict:
+    """The DOWNLOADING state dict ({} before any download completed)."""
+    return get_state(row, "DOWNLOADING")

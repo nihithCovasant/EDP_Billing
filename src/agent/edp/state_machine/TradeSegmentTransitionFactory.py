@@ -35,8 +35,13 @@ class TradeSegmentTransitionFactory:
         written out explicitly once, then applied to every segment code so
         the same edges are guaranteed for all of them:
 
-          INIT                                  -> WAITING_FOR_FILE_UPLOAD
+          INIT                                  -> DOWNLOADING            (download segments)
+          INIT                                  -> WAITING_FOR_FILE_UPLOAD (all others)
           INIT                                  -> SKIPPED, FAILED
+          DOWNLOADING                           -> UPLOADING
+          DOWNLOADING                           -> FAILED
+          UPLOADING                             -> WAITING_FOR_FILE_UPLOAD
+          UPLOADING                             -> FAILED
           WAITING_FOR_FILE_UPLOAD               -> TRIGGERED
           WAITING_FOR_FILE_UPLOAD               -> FAILED
           TRIGGERED                             -> WAITING_FOR_BILLPOSTING
@@ -58,8 +63,19 @@ class TradeSegmentTransitionFactory:
         m = SegmentTransitionMap(allowed_segments)
         for seg in allowed_segments:
             m.add_allowed_transition(seg, SegmentState.INIT, SegmentState.WAITING_FOR_FILE_UPLOAD)
+            m.add_allowed_transition(seg, SegmentState.INIT, SegmentState.DOWNLOADING)
             m.add_allowed_transition(seg, SegmentState.INIT, SegmentStatus.SKIPPED)
             m.add_allowed_transition(seg, SegmentState.INIT, SegmentStatus.FAILED)
+
+            # Engine-owned saga (BATCH_HANDOFF_CONTRACT.md): download via the
+            # RPA bot, hand the manifest to the uploader, then fall into the
+            # unchanged FILEUPLOAD wait. Declared for every segment so the
+            # map stays uniform; INIT's handler only routes download_segments
+            # (MCX/EQ today) through it.
+            m.add_allowed_transition(seg, SegmentState.DOWNLOADING, SegmentState.UPLOADING)
+            m.add_allowed_transition(seg, SegmentState.DOWNLOADING, SegmentStatus.FAILED)
+            m.add_allowed_transition(seg, SegmentState.UPLOADING, SegmentState.WAITING_FOR_FILE_UPLOAD)
+            m.add_allowed_transition(seg, SegmentState.UPLOADING, SegmentStatus.FAILED)
 
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentState.TRIGGERED)
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentStatus.FAILED)

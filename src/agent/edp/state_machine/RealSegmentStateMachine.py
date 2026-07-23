@@ -5,8 +5,16 @@ every one of the 9 files under segments/ is a ~5-line subclass that just
 sets SEGMENT_CODE; all step logic lives once, here.
 
 flow states (no "phases" — see models.SegmentState):
-  INIT -> WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING ->
-  WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
+  INIT -> [DOWNLOADING -> UPLOADING ->] WAITING_FOR_FILE_UPLOAD -> TRIGGERED
+  -> WAITING_FOR_BILLPOSTING -> WAITING_FOR_RECON ->
+  WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED)
+
+DOWNLOADING/UPLOADING (engine-owned saga, BATCH_HANDOFF_CONTRACT.md) are
+taken only by config.download_segments (MCX + EQ today): DOWNLOADING asks
+the RPA bot for the full-segment download (the bot finalizes a checksummed
+manifest), UPLOADING hands that manifest to the uploader's POST /batches;
+then the unchanged FILEUPLOAD wait takes over. The bot and uploader own
+their own retries/idempotency; these handlers only sequence them.
 
 INIT's handler does the holiday-check operation; WAITING_FOR_FILE_UPLOAD's
 handler READS the process ID on its first entries (no process_id yet,
@@ -40,10 +48,13 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..edpb_client import get_edpb_client
 from ..models import SegmentExecution, SegmentState
 from ..utils.json_helpers import (
+    get_download_result,
     get_state,
     mark_step_done,
+    record_download_result,
     record_pid_reservation,
     record_poll,
     record_trigger,
@@ -65,6 +76,8 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
     def get_state_handler(self, state: SegmentState | None):
         handlers = {
             SegmentState.INIT: self.handle_init,
+            SegmentState.DOWNLOADING: self.handle_downloading,
+            SegmentState.UPLOADING: self.handle_uploading,
             SegmentState.WAITING_FOR_FILE_UPLOAD: self.handle_waiting_for_file_upload,
             SegmentState.TRIGGERED: self.handle_triggered,
             SegmentState.WAITING_FOR_BILLPOSTING: self.handle_waiting_for_billposting,
@@ -118,15 +131,151 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
+        # Engine-owned saga (BATCH_HANDOFF_CONTRACT.md): segments the RPA bot
+        # can download route through DOWNLOADING -> UPLOADING first; everyone
+        # else waits for files exactly as before.
+        next_state = (
+            SegmentState.DOWNLOADING
+            if self._is_download_segment(row.segment_code)
+            else SegmentState.WAITING_FOR_FILE_UPLOAD
+        )
         logger.info(stage_log(
             row.segment_code, "INIT",
-            "Holiday check PASSED — proceeding to WAITING_FOR_FILE_UPLOAD",
+            f"Holiday check PASSED — proceeding to {next_state.value}",
             response=result.response, at=now.strftime("%H:%M:%S %Z"),
         ))
         mark_step_done(row, SegmentState.INIT.value, "BeginFileUpload_STATUS", result.response, now)
-        return SegmentHandlerResult(
-            outcome=ADVANCE, next_state=SegmentState.WAITING_FOR_FILE_UPLOAD, next_process=None,
+        return SegmentHandlerResult(outcome=ADVANCE, next_state=next_state, next_process=None)
+
+    @staticmethod
+    def _is_download_segment(segment_code: str) -> bool:
+        """True when this segment's downloads are engine-driven (config
+        download_segments AND the client actually has a route for it)."""
+        from ..config import load_edp_config
+        from ..edpb_client import EdpbClient
+
+        cfg = load_edp_config()
+        return (
+            segment_code.upper() in cfg.download_segments
+            and EdpbClient.supports_segment(segment_code)
         )
+
+    # ---------------------------------------------------------------
+    # DOWNLOADING — call the RPA bot's full-segment download; the bot
+    # finalizes a checksummed manifest and answers with its path.
+    # UPLOADING — hand that manifest to the uploader's POST /batches.
+    # ---------------------------------------------------------------
+
+    async def handle_downloading(
+        self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
+    ) -> SegmentHandlerResult:
+        """One bot call per entry. success/partial -> record manifest+batch_id,
+        ADVANCE to UPLOADING (partial still advances: the uploader's
+        completeness gate is the authority — the bot/engine only report).
+        no_data -> files not published yet, wait. failed/error -> bounded
+        attempts, then FAILED. Crash-safe by construction: re-running the
+        download supersedes the manifest (fresh batch_id), never duplicates."""
+        from ..config import load_edp_config
+
+        client = get_edpb_client()
+        logger.info(stage_log(
+            row.segment_code, "DOWNLOADING",
+            "Requesting full-segment download from the RPA bot",
+            trade_date=str(row.trade_date),
+        ))
+        result = await client.request_download(row.segment_code, row.trade_date)
+        record_poll(row, SegmentState.DOWNLOADING.value, "edpb_download",
+                    f"{result.status}: {result.message[:200]}", now)
+        await session.flush()
+
+        if result.status in ("success", "partial") and result.manifest_path and result.batch_id:
+            record_download_result(row, result.manifest_path, result.batch_id, result.status, now)
+            logger.info(stage_log(
+                row.segment_code, "DOWNLOADING",
+                f"Download {result.status} — manifest finalized, proceeding to UPLOADING",
+                batch_id=result.batch_id, manifest=result.manifest_path,
+            ))
+            return SegmentHandlerResult(outcome=ADVANCE, next_state=SegmentState.UPLOADING, next_process=None)
+
+        if result.status == "no_data":
+            logger.info(stage_log(
+                row.segment_code, "DOWNLOADING",
+                "Exchange has not published the files yet — will retry next cycle",
+                response=result.message,
+            ))
+            return SegmentHandlerResult(outcome=BLOCKED)
+
+        # failed / error / success-without-manifest: bounded retry budget.
+        state = get_state(row, SegmentState.DOWNLOADING.value)
+        attempts = int(state.get("failed_attempts", 0)) + 1
+        state["failed_attempts"] = attempts
+        from ..utils.json_helpers import set_state
+        set_state(row, SegmentState.DOWNLOADING.value, state)
+
+        max_attempts = load_edp_config().edpb_download_max_attempts
+        if result.is_transient or attempts < max_attempts:
+            logger.warning(stage_log(
+                row.segment_code, "DOWNLOADING",
+                f"Download attempt {attempts}/{max_attempts} failed — will retry next cycle",
+                error=result.message,
+            ))
+            if attempts < max_attempts:
+                return SegmentHandlerResult(outcome=BLOCKED)
+        logger.error(stage_log(
+            row.segment_code, "DOWNLOADING",
+            f"Download failed after {attempts} attempt(s) — marking FAILED",
+            error=result.message,
+        ))
+        return self._fail_result(
+            row, "DOWNLOAD_ERROR", f"edpb download failed after {attempts} attempt(s): {result.message}", now,
+        )
+
+    async def handle_uploading(
+        self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
+    ) -> SegmentHandlerResult:
+        """POST /batches with the manifest DOWNLOADING recorded. Idempotent on
+        the uploader side (batch_id), so re-entry after a crash simply gets
+        200 already-known. 4xx (schema/checksum) is terminal — the manifest
+        itself is bad; transport errors retry next cycle."""
+        download = get_download_result(row)
+        manifest_path = download.get("manifest_path")
+        if not manifest_path:
+            logger.error(stage_log(
+                row.segment_code, "UPLOADING",
+                "No manifest recorded from DOWNLOADING — cannot submit; marking FAILED",
+            ))
+            return self._fail_result(row, "UPLOAD_ERROR", "no manifest_path recorded by DOWNLOADING", now)
+
+        client = get_edpb_client()
+        result = await client.submit_batch(manifest_path)
+        record_poll(row, SegmentState.UPLOADING.value, "submit_batch",
+                    f"accepted={result.accepted} {result.batch_status or result.message}"[:200], now)
+        await session.flush()
+
+        if result.accepted:
+            logger.info(stage_log(
+                row.segment_code, "UPLOADING",
+                "Batch accepted by the uploader — proceeding to WAITING_FOR_FILE_UPLOAD",
+                batch_id=result.batch_id, status=result.batch_status,
+            ))
+            mark_step_done(row, SegmentState.UPLOADING.value, "submit_batch",
+                           result.batch_status or "accepted", now)
+            return SegmentHandlerResult(
+                outcome=ADVANCE, next_state=SegmentState.WAITING_FOR_FILE_UPLOAD, next_process=None,
+            )
+
+        if result.is_transient:
+            logger.warning(stage_log(
+                row.segment_code, "UPLOADING",
+                "Uploader unreachable — will retry next cycle", error=result.message,
+            ))
+            return SegmentHandlerResult(outcome=BLOCKED)
+
+        logger.error(stage_log(
+            row.segment_code, "UPLOADING",
+            "Uploader rejected the batch — marking FAILED", error=result.message,
+        ))
+        return self._fail_result(row, "UPLOAD_ERROR", f"POST /batches rejected: {result.message}", now)
 
     # ---------------------------------------------------------------
     # WAITING_FOR_FILE_UPLOAD — operation on entry: READ the PID the
@@ -222,7 +371,42 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
     async def _poll_file_upload(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
-        """POST file_process_status(FILEUPLOAD) — poll until exchange files are uploaded."""
+        """POST file_process_status(FILEUPLOAD) — poll until exchange files are
+        uploaded. For engine-driven batches, first consult the uploader's own
+        batch status: a batch parked INCOMPLETE (completeness gate) means
+        FILEUPLOAD will stay FALSE forever — fail loudly NOW (the terminal
+        email alert is exactly how ops learns, per the gate's alerting
+        decision) instead of a silent window-expiry hours later."""
+        batch_id = get_download_result(row).get("batch_id")
+        if batch_id:
+            batch = await get_edpb_client().get_batch_status(batch_id)
+            if batch.found and batch.status == "incomplete":
+                missing = ", ".join(
+                    f"{slot.get('upload_id')} ({slot.get('name')})" for slot in batch.missing_slots
+                ) or "unknown"
+                logger.error(stage_log(
+                    row.segment_code, "WAITING_FOR_FILE_UPLOAD",
+                    "Uploader parked the batch INCOMPLETE — mandatory files missing; "
+                    "FILEUPLOAD cannot go TRUE. Failing now so ops is alerted "
+                    "(fix: re-download, or audited POST /batches/{id}/proceed).",
+                    batch_id=batch_id, missing_slots=missing,
+                ))
+                return self._fail_result(
+                    row, "BATCH_INCOMPLETE",
+                    f"uploader batch {batch_id} INCOMPLETE — missing mandatory slots: {missing}", now,
+                )
+            if batch.found and batch.status in ("failed", "rejected"):
+                logger.error(stage_log(
+                    row.segment_code, "WAITING_FOR_FILE_UPLOAD",
+                    f"Uploader reports batch {batch.status} — failing",
+                    batch_id=batch_id,
+                ))
+                return self._fail_result(
+                    row, "BATCH_FAILED", f"uploader batch {batch_id} is {batch.status}", now,
+                )
+            # unreachable / queued / uploading / confirmed / unconfirmed:
+            # fall through to CBOS's own FILEUPLOAD verdict — the authority.
+
         result = await cbos.file_process_status(
             segment=row.segment_code, process_name="FILEUPLOAD", user_id=login_id,
         )

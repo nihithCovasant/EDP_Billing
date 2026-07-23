@@ -164,6 +164,18 @@ class EdpBootstrapConfig:
     # LOGINID for the 5 T+1 post-trade trigger calls, distinct from cbos_login_id.
     post_trade_login_id: str = "G_LID"
 
+    # Engine-owned saga (BATCH_HANDOFF_CONTRACT.md): the RPA download bot and
+    # the uploader's batches API. download_segments = the segments whose
+    # INIT routes through DOWNLOADING/UPLOADING (only ones the bot can
+    # actually download — MCX + EQ today; the rest keep the legacy
+    # INIT -> WAITING_FOR_FILE_UPLOAD edge).
+    edpb_download_url: str = "http://localhost:7000"
+    edpb_uploader_url: str = "http://localhost:8000"
+    edpb_use_mock: bool = True
+    edpb_download_timeout_seconds: int = 240
+    edpb_download_max_attempts: int = 3
+    download_segments: tuple = ("MCX", "EQ")
+
     # Database (PostgreSQL only — always resolved explicitly by load_edp_config(),
     # this default is never actually used at runtime).
     database_url: str = ""
@@ -281,6 +293,24 @@ def load_edp_config() -> EdpBootstrapConfig:
         default_post_trade_processes, config_key="post_trade_processes", code_field="process_code",
     )
 
+    edpb_use_mock_raw = os.getenv("EDPB_USE_MOCK")
+    if edpb_use_mock_raw is not None:
+        edpb_use_mock = _is_truthy_env(edpb_use_mock_raw)
+    else:
+        # Follow cbos_use_mock unless explicitly configured: one switch flips
+        # the whole pipeline between mock and real in local dev.
+        edpb_use_mock = bool(edp_raw.get("edpb_use_mock", cbos_use_mock))
+
+    download_segments_raw = os.getenv("EDPB_DOWNLOAD_SEGMENTS") or edp_raw.get("download_segments")
+    if isinstance(download_segments_raw, str):
+        download_segments = tuple(
+            s.strip().upper() for s in download_segments_raw.split(",") if s.strip()
+        )
+    elif isinstance(download_segments_raw, (list, tuple)):
+        download_segments = tuple(str(s).upper() for s in download_segments_raw)
+    else:
+        download_segments = ("MCX", "EQ")
+
     return EdpBootstrapConfig(
         wake_interval_seconds=wake_interval_seconds,
         active_date_cutoff_hour=active_date_cutoff_hour,
@@ -288,6 +318,24 @@ def load_edp_config() -> EdpBootstrapConfig:
         cbos_status_url=cbos_status_url,
         cbos_process_url=cbos_process_url,
         cbos_use_mock=cbos_use_mock,
+        edpb_download_url=(
+            _env_nonempty("EDPB_DOWNLOAD_API_URL")
+            or edp_raw.get("edpb_download_url")
+            or "http://localhost:7000"
+        ),
+        edpb_uploader_url=(
+            _env_nonempty("EDPB_UPLOADER_API_URL")
+            or edp_raw.get("edpb_uploader_url")
+            or "http://localhost:8000"
+        ),
+        edpb_use_mock=edpb_use_mock,
+        edpb_download_timeout_seconds=int(
+            os.getenv("EDPB_DOWNLOAD_TIMEOUT_SECONDS", edp_raw.get("edpb_download_timeout_seconds", 240))
+        ),
+        edpb_download_max_attempts=int(
+            os.getenv("EDPB_DOWNLOAD_MAX_ATTEMPTS", edp_raw.get("edpb_download_max_attempts", 3))
+        ),
+        download_segments=download_segments,
         cbos_login_id=os.getenv("CBOS_LOGIN_ID", edp_raw.get("cbos_login_id", "CV0001")),
         post_trade_login_id=os.getenv(
             "POST_TRADE_LOGIN_ID", edp_raw.get("post_trade_login_id", "G_LID")

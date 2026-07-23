@@ -24,9 +24,25 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import sessionmaker
 
 import src.agent.edp.database as edp_database
+from src.agent.edp import edpb_client as edpb_client_module
 from src.agent.edp.config import EdpBootstrapConfig, load_edp_config
+from src.agent.edp.edpb_client import EdpbClient
 
 from . import helpers
+
+
+@pytest.fixture(autouse=True)
+def edpb_mock_client():
+    """Every test gets a deterministic in-process EdpbClient mock (mirrors how
+    tests construct CbosClient(use_mock=True) explicitly): downloads succeed
+    with a canned manifest, batch submission is accepted, batch status is
+    confirmed. Tests exercising failure paths swap in their own via
+    set_edpb_client()."""
+    edpb_client_module.set_edpb_client(
+        EdpbClient("http://edpb-bot.mock", "http://edpb-uploader.mock", use_mock=True)
+    )
+    yield
+    edpb_client_module.reset_edpb_client()
 
 
 @pytest.fixture(scope="session")

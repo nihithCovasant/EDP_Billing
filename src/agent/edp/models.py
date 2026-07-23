@@ -58,12 +58,19 @@ class SegmentState(str, enum.Enum):
     takes. Shared by two pipelines, distinguished by segment_code (see
     utils/constants.SEGMENT_ORDER vs POST_TRADE_ORDER):
 
-    (1) Real-segment pipeline (9x): INIT -> WAITING_FOR_FILE_UPLOAD ->
-    TRIGGERED -> WAITING_FOR_BILLPOSTING -> WAITING_FOR_RECON ->
-    WAITING_FOR_CONTRACT_NOTE_GENERATION -> (SUCCEEDED). TRIGGERED is the
-    one genuine crash-safety wait (getNewTradeProcess with the real PID);
-    the rest are pure gate/poll waits — CBOS auto-runs each step, the
-    agent only observes.
+    (1) Real-segment pipeline (9x): INIT -> [DOWNLOADING -> UPLOADING ->]
+    WAITING_FOR_FILE_UPLOAD -> TRIGGERED -> WAITING_FOR_BILLPOSTING ->
+    WAITING_FOR_RECON -> WAITING_FOR_CONTRACT_NOTE_GENERATION ->
+    (SUCCEEDED). DOWNLOADING/UPLOADING are the engine-owned saga's left
+    extension (BATCH_HANDOFF_CONTRACT.md): DOWNLOADING calls the RPA bot's
+    /edpb/*/download (which finalizes a checksummed manifest), UPLOADING
+    hands that manifest to the uploader's POST /batches — taken only by
+    segments the bot can download (config.download_segments, MCX + EQ
+    today); every other segment keeps the INIT ->
+    WAITING_FOR_FILE_UPLOAD edge. TRIGGERED is the one genuine
+    crash-safety wait (getNewTradeProcess with the real PID); the rest
+    are pure gate/poll waits — CBOS auto-runs each step, the agent only
+    observes.
 
     (2) Post-trade pipeline (5x: COLVAL/COLALLOC/MTFFT/DMRPT/DMSTMT):
     WAITING_FOR_GTG -> [TRIGGERED ->] WAITING_FOR_COMPLETION -> (SUCCEEDED).
@@ -83,6 +90,8 @@ class SegmentState(str, enum.Enum):
     """
     # Real-segment pipeline
     INIT = "INIT"
+    DOWNLOADING = "DOWNLOADING"
+    UPLOADING = "UPLOADING"
     WAITING_FOR_FILE_UPLOAD = "WAITING_FOR_FILE_UPLOAD"
     TRIGGERED = "TRIGGERED"
     WAITING_FOR_BILLPOSTING = "WAITING_FOR_BILLPOSTING"
