@@ -34,13 +34,16 @@ async def _fail_segment(session_factory, trade_date, segment_code):
     async with session_factory() as session:
         row = await repository.get_one(session, trade_date, segment_code)
         await repository.move_to_state(
-            session, row, SegmentStatus.FAILED, category="CBOS_ERROR", reason="forced by test",
+            session,
+            row,
+            SegmentStatus.FAILED,
+            category="CBOS_ERROR",
+            reason="forced by test",
         )
         return row
 
 
-async def _sweep_until_terminal(orchestrator, session_factory, active_date, past_date,
-                                segment_code, max_cycles=60):
+async def _sweep_until_terminal(orchestrator, session_factory, active_date, past_date, segment_code, max_cycles=60):
     """Wake cycles on a LATER active date: only the manual sweep may touch
     past_date's rows."""
     orchestrator._cycle_active_date = active_date
@@ -70,7 +73,11 @@ async def test_past_date_retry_actually_runs(cfg, session_factory, test_date):
 
     next_day = test_date + timedelta(days=1)
     row, summary = await _sweep_until_terminal(
-        orchestrator, session_factory, next_day, test_date, "MCX",
+        orchestrator,
+        session_factory,
+        next_day,
+        test_date,
+        "MCX",
     )
     assert row.segment_status == SegmentStatus.COMPLETED
     assert row.manually_activated is False, "terminal transition must clear the marker"
@@ -93,11 +100,13 @@ async def test_sweep_ownership_and_lookback(cfg, session_factory, test_date):
     async with session_factory() as session:
         # Lookback bound still applies at the repository.
         included = await repository.get_manually_activated_rows(
-            session, min_date=test_date - timedelta(days=30),
+            session,
+            min_date=test_date - timedelta(days=30),
         )
         assert any(r.trade_date == test_date and r.segment_code == "MCX" for r in included)
         excluded = await repository.get_manually_activated_rows(
-            session, min_date=test_date + timedelta(days=10),
+            session,
+            min_date=test_date + timedelta(days=10),
         )
         assert not any(r.trade_date == test_date for r in excluded)
 
@@ -201,12 +210,12 @@ async def test_post_trade_rows_never_enter_the_manual_lane(cfg, session_factory,
         from src.agent.edp.repository import seed_from_workflow  # noqa: F401 - post-trade rows
     # Create a post-trade row and fail it, then retry it.
     from src.agent.edp.utils.constants import POST_TRADE_ORDER
+
     code = POST_TRADE_ORDER[0]  # COLVAL
     async with session_factory() as session:
         wf = await repository.get_active(session, test_date)
         row = await repository.get_or_create(session, wf, test_date, code)
-        await repository.move_to_state(session, row, SegmentStatus.FAILED,
-                                       category="CBOS_ERROR", reason="forced")
+        await repository.move_to_state(session, row, SegmentStatus.FAILED, category="CBOS_ERROR", reason="forced")
         retried = await repository.retry_segment(session, test_date, code)
         await session.commit()
 
@@ -214,8 +223,7 @@ async def test_post_trade_rows_never_enter_the_manual_lane(cfg, session_factory,
     assert retried.manually_activated is False, "post-trade rows must not be marked"
 
     async with session_factory() as session:
-        rows = await repository.get_manually_activated_rows(
-            session, min_date=test_date - timedelta(days=30))
+        rows = await repository.get_manually_activated_rows(session, min_date=test_date - timedelta(days=30))
         assert not any(r.segment_code == code for r in rows), "sweep query excludes post-trade"
 
 

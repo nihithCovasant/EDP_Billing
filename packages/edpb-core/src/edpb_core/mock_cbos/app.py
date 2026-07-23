@@ -81,15 +81,18 @@ def _ok(**extra: Any) -> dict[str, Any]:
 # still work), so this only adds structure, never new rejections.
 # ------------------------------------------------------------------------------
 
+
 class _CBOSRequest(BaseModel):
     """Base for every CBOS request model: numbers arrive as JSON numbers or
     strings interchangeably in real traffic (PROCESSID: 17658 vs "17658"),
     so coerce rather than 422."""
+
     model_config = ConfigDict(coerce_numbers_to_str=True)
 
 
 class TradeProcessRequest(_CBOSRequest):
     """POST getNewTradeProcess - Step 2 (and the Step-11 trigger, same endpoint; V6 renumbering)."""
+
     GROUPNAME: str = ""
     LOGINID: str = ""
     TRADEDATE: str = ""
@@ -98,6 +101,7 @@ class TradeProcessRequest(_CBOSRequest):
 
 class DropdownRequest(_CBOSRequest):
     """POST getdropdown - Step 6, TAG=EXISTINGPROCESSID."""
+
     TAG: str = ""
     LOGINID: str = ""
     FILTER1: str = ""  # segment
@@ -106,6 +110,7 @@ class DropdownRequest(_CBOSRequest):
 
 class FileProcessStatusRequest(_CBOSRequest):
     """POST file_process_status - Steps 1/3/9 + downstream GTG checks."""
+
     Segment: str = ""
     TradeDate: str = ""  # V5: right after Segment (Shape A)
     ProcessName: str = ""
@@ -113,6 +118,7 @@ class FileProcessStatusRequest(_CBOSRequest):
 
 class RegisterFileRequest(_CBOSRequest):
     """POST SaveNewTradeProcessPromodalUploadFile - Step 7."""
+
     uploadfoldername: str = ""
     uploadid: str = ""
     paraM9: str = ""  # PROCESSID
@@ -121,6 +127,7 @@ class RegisterFileRequest(_CBOSRequest):
 
 class MarkOptionalRequest(_CBOSRequest):
     """POST UpdateNewTradeProcessProcessDetailsIsMandatory - Step 8."""
+
     PROCESSID: str = ""
     STEPNO: int = 0
     ISOPTIONAL: str = "0"
@@ -128,23 +135,27 @@ class MarkOptionalRequest(_CBOSRequest):
 
 class UploadSettingsRequest(_CBOSRequest):
     """POST GetNewTradeProcessPromodalUploadSettings - Step 4."""
+
     UPLOADID: str = ""
 
 
 class ExpectedFilenameRequest(_CBOSRequest):
     """POST get_expected_filename - Step 40 (V6 renumbering)."""
+
     uploadid: str = ""
 
 
 class TriggerRequest(_CBOSRequest):
     """Collateral/MTF/margin trigger endpoints - BUTTONNAME switches
     REFRESH (status peek) vs trigger."""
+
     BUTTONNAME: str = ""
 
 
 class Table2Row(TypedDict):
     """One V5 Table2 row as the client reads it (STATUS + STATUSDESC are what
     UploadCandidate.needs_upload keys on)."""
+
     STEPNO: int
     NAME: str
     STATUS: str
@@ -165,15 +176,22 @@ class Table1Row(TypedDict):
 # CORE host  (/v1/api/*)  - real host http://10.167.202.164:8003
 # ==============================================================================
 
+
 def _table2_rows(proc: Process, with_desc: bool) -> list[Table2Row]:
     """Render a process's Table2 in the V5 row shape (STATUS + STATUSDESC +
     ISOPTIONAL + CREATEDBY). with_desc=False renders STATUSDESC as null,
     matching the doc's *creation* example where every fresh row carries
     STATUSDESC: null; re-fetches report the derived real value."""
     return [
-        Table2Row(STEPNO=s.stepno, NAME=s.name, STATUS=s.status,
-                  STATUSDESC=(s.status_desc if with_desc else None),
-                  UPLOADID=s.uploadid, ISOPTIONAL=s.is_optional, CREATEDBY=proc.login_id)
+        Table2Row(
+            STEPNO=s.stepno,
+            NAME=s.name,
+            STATUS=s.status,
+            STATUSDESC=(s.status_desc if with_desc else None),
+            UPLOADID=s.uploadid,
+            ISOPTIONAL=s.is_optional,
+            CREATEDBY=proc.login_id,
+        )
         for s in proc.steps
     ]
 
@@ -192,29 +210,28 @@ async def get_new_trade_process(payload: TradeProcessRequest):
 
     if process_id == "0":
         proc = STATE.reserve_process(payload.GROUPNAME, payload.LOGINID, payload.TRADEDATE)
-        return _ok(Result={
-            "Table1": [Table1Row(PROCESSID=int(proc.process_id), ISRUNNABLE=True,
-                                 ISAUTOUPLOAD=True)],
-            "Table2": _table2_rows(proc, with_desc=False),
-        })
+        return _ok(
+            Result={
+                "Table1": [Table1Row(PROCESSID=int(proc.process_id), ISRUNNABLE=True, ISAUTOUPLOAD=True)],
+                "Table2": _table2_rows(proc, with_desc=False),
+            }
+        )
 
     # Existing-PROCESSID path: re-fetch; trigger only when GTG-ready.
     proc = STATE.get_process(process_id)
     if proc is None:
-        return JSONResponse(status_code=400,
-                            content={"Status": "FAILED",
-                                     "Message": f"PROCESSID {process_id} not found"})
+        return JSONResponse(
+            status_code=400, content={"Status": "FAILED", "Message": f"PROCESSID {process_id} not found"}
+        )
     if proc.gtg_ready():
         STATE.trigger(process_id)
     started = "2026-07-19 10:00:00" if proc.triggered else ""
-    return _ok(Result={
-        "Table1": [Table1Row(PROCESSID=int(proc.process_id), ISRUNNABLE=True,
-                             ISAUTOUPLOAD=False)],
-        "Table2": [
-            {**row, "STARTDATETIME": started}
-            for row in _table2_rows(proc, with_desc=True)
-        ],
-    })
+    return _ok(
+        Result={
+            "Table1": [Table1Row(PROCESSID=int(proc.process_id), ISRUNNABLE=True, ISAUTOUPLOAD=False)],
+            "Table2": [{**row, "STARTDATETIME": started} for row in _table2_rows(proc, with_desc=True)],
+        }
+    )
 
 
 @app.post("/v1/api/process/GetNewTradeProcessPromodalUploadSettings")
@@ -260,10 +277,13 @@ async def register_file(payload: RegisterFileRequest):
     file_name = payload.uploadfilename
 
     if "fail" in file_name.lower():
-        return JSONResponse(status_code=200, content={
-            "Status": "FAILED",
-            "Message": f"CBOS rejected '{file_name}' (business-failure scenario)",
-        })
+        return JSONResponse(
+            status_code=200,
+            content={
+                "Status": "FAILED",
+                "Message": f"CBOS rejected '{file_name}' (business-failure scenario)",
+            },
+        )
 
     ok, message = STATE.register_file(guid, upload_id, process_id)
     if not ok:
@@ -280,8 +300,10 @@ async def update_is_mandatory(payload: MarkOptionalRequest):
     # how the field is used to skip no-file steps.
     ok, message = STATE.mark_optional(payload.PROCESSID, payload.STEPNO, is_optional=True)
     status_code = 200 if ok else 400
-    return JSONResponse(status_code=status_code, content=_ok(Result={"Table1": [{"MSG": message}]}) if ok
-                        else {"Status": "FAILED", "Message": message})
+    return JSONResponse(
+        status_code=status_code,
+        content=_ok(Result={"Table1": [{"MSG": message}]}) if ok else {"Status": "FAILED", "Message": message},
+    )
 
 
 @app.post("/v1/api/brokerage/getdropdown")
@@ -294,8 +316,9 @@ async def get_dropdown(payload: DropdownRequest):
     proc = STATE.process_for(payload.FILTER1, payload.FILTER2)
     if proc is None:
         return _ok(Result=[])
-    return _ok(Result=[{"_KEY": int(proc.process_id),
-                        "_DESC": f"{proc.process_id} - {payload.LOGINID} - {proc.trade_date}"}])
+    return _ok(
+        Result=[{"_KEY": int(proc.process_id), "_DESC": f"{proc.process_id} - {payload.LOGINID} - {proc.trade_date}"}]
+    )
 
 
 # --- Collateral / MTF / Margin trigger endpoints (V6 Steps 18-37) --------------
@@ -332,6 +355,7 @@ async def combined_margin(payload: TriggerRequest):
 # ==============================================================================
 # GTG host  (/api/edp/*)  - real host http://10.167.202.234:8087
 # ==============================================================================
+
 
 @app.post("/api/edp/file_process_status")
 async def file_process_status(payload: FileProcessStatusRequest):
@@ -401,6 +425,7 @@ async def get_expected_filename(payload: ExpectedFilenameRequest):
 # Health + test helpers
 # ==============================================================================
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "mock-cbos-v6"}
@@ -411,15 +436,22 @@ async def mock_state():
     return {
         "processes": {
             pid: {
-                "segment": p.segment, "trade_date": p.trade_date, "triggered": p.triggered,
-                "fileupload_polls": p.fileupload_polls, "gtg_ready": p.gtg_ready(),
+                "segment": p.segment,
+                "trade_date": p.trade_date,
+                "triggered": p.triggered,
+                "fileupload_polls": p.fileupload_polls,
+                "gtg_ready": p.gtg_ready(),
                 "unsatisfied_upload_steps": [
-                    {"stepno": s.stepno, "uploadid": s.uploadid, "name": s.name}
-                    for s in p.unsatisfied_upload_steps()
+                    {"stepno": s.stepno, "uploadid": s.uploadid, "name": s.name} for s in p.unsatisfied_upload_steps()
                 ],
                 "steps": [
-                    {"stepno": s.stepno, "uploadid": s.uploadid, "status": s.status,
-                     "has_file": s.has_file, "is_optional": s.is_optional}
+                    {
+                        "stepno": s.stepno,
+                        "uploadid": s.uploadid,
+                        "status": s.status,
+                        "has_file": s.has_file,
+                        "is_optional": s.is_optional,
+                    }
                     for s in p.steps
                 ],
             }
@@ -442,7 +474,8 @@ async def mock_state():
                     }
                     for name, c in f.files.items()
                 },
-                "registered": f.registered, "upload_id": f.upload_id,
+                "registered": f.registered,
+                "upload_id": f.upload_id,
                 "process_id": f.process_id,
             }
             for g, f in STATE.guids.items()

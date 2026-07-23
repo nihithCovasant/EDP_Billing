@@ -9,8 +9,8 @@ after Segment ("Shape A"); getNewTradeProcess with a real PROCESSID re-fetches
 instead of minting; getdropdown(EXISTINGPROCESSID) filters by segment + trade
 date. V6's headline change: a new Step 10 — Insti Trade Status GTG
 (ProcessName=CHECKINSTITRADE, Shape A) — must answer TRUE after FILEUPLOAD
-does and before the trade-process trigger fires; old doc Steps 10–39
-renumber to 11–40, with no other payload change.
+does and before the trade-process trigger fires; old doc Steps 10-39
+renumber to 11-40, with no other payload change.
 """
 
 from __future__ import annotations
@@ -37,13 +37,16 @@ PROCESS_FILE_UPLOAD_STATUS = "FILEUPLOAD"
 # pipeline step failures"), so the engine polls it between FILEUPLOAD and
 # the trigger call.
 PROCESS_CHECK_INSTI_TRADE = "CHECKINSTITRADE"
-BEGIN_UPLOAD_PROCEED = "SKIP"   # counter-intuitive: SKIP means "not a holiday, proceed"
+BEGIN_UPLOAD_PROCEED = "SKIP"  # counter-intuitive: SKIP means "not a holiday, proceed"
 MSG_TRUE = "TRUE"
 MSG_FALSE = "FALSE"
 
 
 def file_process_status_payload(
-    segment: str, trade_date_iso: str, process_name: str, user_id: str,
+    segment: str,
+    trade_date_iso: str,
+    process_name: str,
+    user_id: str,
 ) -> dict[str, str]:
     """V5 "Shape A" (retained in V6): TradeDate is required, immediately
     after Segment. Every segment-scoped file_process_status call (Steps
@@ -58,7 +61,11 @@ def file_process_status_payload(
 
 
 def get_new_trade_process_payload(
-    segment: str, trade_date_iso: str, login_id: str, password: str, process_id: str = "0",
+    segment: str,
+    trade_date_iso: str,
+    login_id: str,
+    password: str,
+    process_id: str = "0",
 ) -> dict[str, str]:
     """PROCESSID='0' mints (UPLOADER ONLY — single-writer contract, see
     CBOS_HANDOFF_CONTRACT.md); a real PROCESSID re-fetches (uploader) or
@@ -73,7 +80,9 @@ def get_new_trade_process_payload(
 
 
 def existing_process_id_payload(
-    segment: str, trade_date_iso: str, login_id: str,
+    segment: str,
+    trade_date_iso: str,
+    login_id: str,
 ) -> dict[str, str]:
     """getdropdown(EXISTINGPROCESSID): FILTER1 = segment, FILTER2 = trade date
     (V5 — the date filter is what stops yesterday's PID leaking into today)."""
@@ -88,7 +97,9 @@ def existing_process_id_payload(
 
 
 def file_process_status_payload_b(
-    trade_date_iso: str, process_name: str, user_id: str,
+    trade_date_iso: str,
+    process_name: str,
+    user_id: str,
 ) -> dict[str, str]:
     """V5 "Shape B" (retained in V6) — the file_process_status steps WITHOUT
     a Segment field (post-trade GTG/already-triggered/completion checks:

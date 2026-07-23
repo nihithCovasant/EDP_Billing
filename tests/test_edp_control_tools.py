@@ -17,6 +17,7 @@ async def _invoke(tool, **kwargs) -> str:
 # skip_edp_segment_today
 # =============================================================================
 
+
 async def test_skip_segment_posts_reason_and_resolves_alias(monkeypatch):
     captured = {}
 
@@ -63,6 +64,7 @@ async def test_skip_segment_409_when_already_terminal(monkeypatch):
 # retry_edp_segment
 # =============================================================================
 
+
 async def test_retry_segment_success(monkeypatch):
     captured = {}
 
@@ -95,6 +97,7 @@ async def test_retry_segment_409_when_not_failed_or_skipped(monkeypatch):
 # control_edp_agent
 # =============================================================================
 
+
 async def test_control_agent_rejects_unknown_action():
     result = await _invoke(edp_control.control_edp_agent, action="pause")
     assert "Unrecognized action" in result
@@ -106,8 +109,13 @@ async def test_control_agent_status_renders_history(monkeypatch):
         return 200, {
             "effective_state": "RUNNING",
             "history": [
-                {"requested_at": "2026-07-01T10:00:00", "action": "START", "effective_state": "RUNNING",
-                 "requested_by": "ops", "reason": "resume"},
+                {
+                    "requested_at": "2026-07-01T10:00:00",
+                    "action": "START",
+                    "effective_state": "RUNNING",
+                    "requested_by": "ops",
+                    "reason": "resume",
+                },
             ],
         }
 
@@ -124,7 +132,8 @@ async def test_control_agent_stop_includes_snapshot(monkeypatch):
         assert path == "/edp/agent/stop"
         assert body == {"requested_by": "chat-user", "reason": "Diwali holiday"}
         return 200, {
-            "requested_by": "chat-user", "reason": "Diwali holiday",
+            "requested_by": "chat-user",
+            "reason": "Diwali holiday",
             "snapshot": {"active_segment": "EQ", "active_process": "BeginFileUpload", "active_state": "INIT"},
         }
 

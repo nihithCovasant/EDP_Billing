@@ -40,7 +40,6 @@ from src.tools.cbos_client import (
 )
 
 from .. import helpers
-from ..fakes import SkippingCbosClient
 
 # =============================================================================
 # Call-sequence-recording fakes specific to this file.
@@ -71,19 +70,34 @@ class SequenceRecordingCbosClient(CbosClient):
         self.calls: list[tuple[str, str]] = []
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         self.calls.append((segment.upper(), process_name))
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
     async def get_existing_process_id(
-        self, segment: str, login_id: str, trade_date: date,
+        self,
+        segment: str,
+        login_id: str,
+        trade_date: date,
     ) -> ExistingProcessResult:
         self.calls.append((segment.upper(), "getExistingProcessId"))
         return await super().get_existing_process_id(segment, login_id, trade_date)
 
     async def get_new_trade_process(
-        self, group_name: str, login_id: str, trade_date: date, process_id: str = "0",
+        self,
+        group_name: str,
+        login_id: str,
+        trade_date: date,
+        process_id: str = "0",
     ) -> NewTradeProcessResult:
         mode = "reserve" if process_id == "0" else "trigger"
         self.calls.append((group_name.upper(), f"getNewTradeProcess:{mode}"))
@@ -125,12 +139,17 @@ class ExistingPidSequenceCbosClient(SequenceRecordingCbosClient):
         self._existing_pid = existing_pid
 
     async def get_existing_process_id(
-        self, segment: str, login_id: str, trade_date: date,
+        self,
+        segment: str,
+        login_id: str,
+        trade_date: date,
     ) -> ExistingProcessResult:
         self.calls.append((segment.upper(), "getExistingProcessId"))
         if segment.upper() == self._existing_pid_segment:
             return ExistingProcessResult(
-                found=True, process_id=self._existing_pid, description="pre-existing PID (RPA reserved)",
+                found=True,
+                process_id=self._existing_pid,
+                description="pre-existing PID (RPA reserved)",
             )
         # Fall through to the real (non-recording) mock logic for every
         # other segment -- call CbosClient's implementation directly,
@@ -142,22 +161,23 @@ class ExistingPidSequenceCbosClient(SequenceRecordingCbosClient):
 # fastest possible happy path (mock_set_ready_after(1) -- every poll ready
 # on its first try). Mirrors cbos_client.py's module-docstring step list.
 EXPECTED_FULL_PIPELINE_SEQUENCE = [
-    "BeginFileUpload",              # INIT holiday check
-    "getExistingProcessId",         # WAITING_FOR_FILE_UPLOAD PID read (uploader is the
-                                    # sole reserver; the mock's uploader-sim provisions
-                                    # the PID on this first lookup, delay 0)
-    "FILEUPLOAD",                   # WAITING_FOR_FILE_UPLOAD poll
-    "CHECKINSTITRADE",              # WAITING_FOR_INSTI_TRADE poll (V6 Step-10 gate)
-    "getNewTradeProcess:trigger",   # TRIGGERED
-    "BILLPOSTING",                  # WAITING_FOR_BILLPOSTING poll
-    "RECON",                        # WAITING_FOR_RECON poll
-    "CONTRACTNOTEGENERATION",       # WAITING_FOR_CONTRACT_NOTE_GENERATION poll
+    "BeginFileUpload",  # INIT holiday check
+    "getExistingProcessId",  # WAITING_FOR_FILE_UPLOAD PID read (uploader is the
+    # sole reserver; the mock's uploader-sim provisions
+    # the PID on this first lookup, delay 0)
+    "FILEUPLOAD",  # WAITING_FOR_FILE_UPLOAD poll
+    "CHECKINSTITRADE",  # WAITING_FOR_INSTI_TRADE poll (V6 Step-10 gate)
+    "getNewTradeProcess:trigger",  # TRIGGERED
+    "BILLPOSTING",  # WAITING_FOR_BILLPOSTING poll
+    "RECON",  # WAITING_FOR_RECON poll
+    "CONTRACTNOTEGENERATION",  # WAITING_FOR_CONTRACT_NOTE_GENERATION poll
 ]
 
 
 # =============================================================================
 # Scenario 1 — A holiday-skipped segment makes EXACTLY ONE CBOS call, ever.
 # =============================================================================
+
 
 async def test_holiday_skipped_segment_makes_exactly_one_cbos_call_ever(cfg, session_factory, test_date):
     """
@@ -175,14 +195,24 @@ async def test_holiday_skipped_segment_makes_exactly_one_cbos_call_ever(cfg, ses
             self._skip_segment = skip_segment.upper()
             self._skip_process = skip_process
 
-        async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
+        async def file_process_status(
+            self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True
+        ) -> FileStatusResult:
             self.calls.append((segment.upper(), process_name))
             if segment.upper() == self._skip_segment and process_name == self._skip_process:
-                return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
+                return FileStatusResult(
+                    response="HOLIDAY",
+                    raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}',
+                    error=None,
+                    is_transient=False,
+                )
             return await CbosClient.file_process_status(self, segment, process_name, user_id)
 
     cbos = RecordingSkippingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, skip_segment="EQ", skip_process="BeginFileUpload",
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        skip_segment="EQ",
+        skip_process="BeginFileUpload",
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -206,6 +236,7 @@ async def test_holiday_skipped_segment_makes_exactly_one_cbos_call_ever(cfg, ses
 # =============================================================================
 # Scenario 2 — Full-pipeline segment: exact ordered sequence, minimum polls.
 # =============================================================================
+
 
 async def test_full_pipeline_segment_exact_call_sequence_minimum_polls(cfg, session_factory, test_date):
     """
@@ -246,6 +277,7 @@ async def test_full_pipeline_segment_exact_call_sequence_minimum_polls(cfg, sess
 # Scenario 3 — Multiple polls before EVERY polling stage succeeds.
 # =============================================================================
 
+
 async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, session_factory, test_date):
     """
     mock_set_ready_after(3): CBOS says "not ready" twice before succeeding on
@@ -271,7 +303,10 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
 
     await helpers.seed_day(session_factory, test_date, cfg)
     rows = await helpers.drive_until_terminal(
-        orchestrator, session_factory, test_date, max_cycles=7 * POLLS_BEFORE_READY + 10,
+        orchestrator,
+        session_factory,
+        test_date,
+        max_cycles=7 * POLLS_BEFORE_READY + 10,
     )
     by_code = {r.segment_code: r for r in rows}
     assert by_code["EQ"].segment_status == SegmentStatus.COMPLETED
@@ -300,7 +335,14 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
     # Explicitly confirm each of the 6 polling stages individually shows
     # exactly POLLS_BEFORE_READY consecutive repeats (not just that the
     # overall sequence happens to match).
-    for process_name in ("BeginFileUpload", "FILEUPLOAD", "CHECKINSTITRADE", "BILLPOSTING", "RECON", "CONTRACTNOTEGENERATION"):
+    for process_name in (
+        "BeginFileUpload",
+        "FILEUPLOAD",
+        "CHECKINSTITRADE",
+        "BILLPOSTING",
+        "RECON",
+        "CONTRACTNOTEGENERATION",
+    ):
         run_length = eq_calls.count(process_name)
         assert run_length == POLLS_BEFORE_READY, (
             f"polling stage {process_name!r} expected exactly {POLLS_BEFORE_READY} calls "
@@ -308,16 +350,18 @@ async def test_multiple_polls_uniform_retry_behaviour_across_every_stage(cfg, se
         )
         # And confirm they are consecutive (no interleaving with another stage).
         first_idx = eq_calls.index(process_name)
-        actual_run = eq_calls[first_idx: first_idx + POLLS_BEFORE_READY]
+        actual_run = eq_calls[first_idx : first_idx + POLLS_BEFORE_READY]
         assert actual_run == [process_name] * POLLS_BEFORE_READY, (
             f"{process_name!r}'s {POLLS_BEFORE_READY} calls must be consecutive before "
-            f"advancing to the next stage, got interleaved sequence {eq_calls[first_idx:first_idx + POLLS_BEFORE_READY + 2]}"
+            f"advancing to the next stage, got interleaved sequence "
+            f"{eq_calls[first_idx : first_idx + POLLS_BEFORE_READY + 2]}"
         )
 
 
 # =============================================================================
 # Scenario 4 — Existing process_id path skips the reserve-mode call entirely.
 # =============================================================================
+
 
 async def test_existing_process_id_path_skips_reserve_mode_call(cfg, session_factory, test_date):
     """
@@ -329,7 +373,10 @@ async def test_existing_process_id_path_skips_reserve_mode_call(cfg, session_fac
     vs. reserve-new) are mutually exclusive per segment-day, never both fire.
     """
     cbos = ExistingPidSequenceCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, existing_pid_segment="EQ", existing_pid="55555",
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        existing_pid_segment="EQ",
+        existing_pid="55555",
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -373,6 +420,7 @@ async def test_existing_process_id_path_skips_reserve_mode_call(cfg, session_fac
 # grand-total call-count audit with no cross-segment leakage.
 # =============================================================================
 
+
 async def test_full_day_all_segments_and_post_trade_call_count_audit(cfg, session_factory, test_date):
     """
     A full day: some segments holiday-skipped (via a recording variant of
@@ -389,14 +437,23 @@ async def test_full_day_all_segments_and_post_trade_call_count_audit(cfg, sessio
             super().__init__(status_url, process_url)
             self._skip_segments = {s.upper() for s in skip_segments}
 
-        async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
+        async def file_process_status(
+            self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True
+        ) -> FileStatusResult:
             self.calls.append((segment.upper(), process_name))
             if segment.upper() in self._skip_segments and process_name == "BeginFileUpload":
-                return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
+                return FileStatusResult(
+                    response="HOLIDAY",
+                    raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}',
+                    error=None,
+                    is_transient=False,
+                )
             return await CbosClient.file_process_status(self, segment, process_name, user_id)
 
     cbos = RecordingMultiSkippingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, skip_segments=HOLIDAY_SEGMENTS,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        skip_segments=HOLIDAY_SEGMENTS,
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -466,6 +523,7 @@ async def test_full_day_all_segments_and_post_trade_call_count_audit(cfg, sessio
 # Scenario 6 — Post-trade "already triggered" short-circuit call count.
 # =============================================================================
 
+
 async def test_post_trade_already_triggered_short_circuit_zero_trigger_calls(cfg, session_factory, test_date):
     """
     COLVAL's "already triggered" check (check_collateral_valuation_triggered)
@@ -530,9 +588,9 @@ async def test_post_trade_already_triggered_short_circuit_zero_trigger_calls(cfg
     # handle_waiting_for_completion()). No reserve/trigger/getExistingProcessId
     # calls exist in the post-trade pipeline at all.
     expected = [
-        "CollateralValuation",                          # WAITING_FOR_GTG poll
+        "CollateralValuation",  # WAITING_FOR_GTG poll
         "alreadyTriggeredCheck:GetCollateralValuation",  # already-triggered pre-check
-        "CollateralValuation",                          # WAITING_FOR_COMPLETION poll
+        "CollateralValuation",  # WAITING_FOR_COMPLETION poll
     ]
     assert colval_calls == expected, (
         f"COLVAL's already-triggered short-circuit call sequence mismatch.\n"
@@ -543,6 +601,7 @@ async def test_post_trade_already_triggered_short_circuit_zero_trigger_calls(cfg
 # =============================================================================
 # Scenario N — Uploader hasn't reserved yet: the agent WAITS, never mints.
 # =============================================================================
+
 
 async def test_agent_waits_for_uploader_reservation_and_never_mints(cfg, session_factory, test_date):
     """

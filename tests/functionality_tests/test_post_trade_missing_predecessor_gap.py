@@ -19,12 +19,13 @@ on DMRPT's final segment_status.
 
 from __future__ import annotations
 
-from datetime import time as dtime, timedelta
+from datetime import time as dtime
+from datetime import timedelta
 
 from sqlalchemy import delete
 
 from src.agent.edp import repository
-from src.agent.edp.models import SegmentExecution, SegmentState, SegmentStatus
+from src.agent.edp.models import SegmentExecution, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.tools.cbos_client import CbosClient
 
@@ -81,12 +82,13 @@ async def test_dmrpt_stuck_forever_when_predecessor_row_never_seeded(cfg, sessio
     # further out (next-day-equivalent) to rule out "just needs more time".
     base_day = test_date + timedelta(days=1)
     from datetime import datetime as _dt
+
     now_points = [
-        _dt.combine(base_day, dtime(3, 0), tzinfo=tz),   # inside window
-        _dt.combine(base_day, dtime(5, 0), tzinfo=tz),   # still inside window
-        _dt.combine(base_day, dtime(6, 0), tzinfo=tz),   # exactly at deadline
-        _dt.combine(base_day, dtime(6, 1), tzinfo=tz),   # just past deadline
-        _dt.combine(base_day, dtime(9, 0), tzinfo=tz),   # well past deadline
+        _dt.combine(base_day, dtime(3, 0), tzinfo=tz),  # inside window
+        _dt.combine(base_day, dtime(5, 0), tzinfo=tz),  # still inside window
+        _dt.combine(base_day, dtime(6, 0), tzinfo=tz),  # exactly at deadline
+        _dt.combine(base_day, dtime(6, 1), tzinfo=tz),  # just past deadline
+        _dt.combine(base_day, dtime(9, 0), tzinfo=tz),  # well past deadline
     ]
     # Pad out to a healthy number of extra past-deadline cycles (well past
     # what a single deadline check would need), reusing the last, clearly

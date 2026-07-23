@@ -26,7 +26,8 @@ but everything else about each of the 5 fixed processes is now ops-owned.
 
 from __future__ import annotations
 
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, timedelta
+from datetime import time as dtime
 
 from src.agent.edp import repository
 from src.agent.edp.config import build_default_workflow_json
@@ -38,7 +39,9 @@ from .fakes import RecordingFileStatusCbosClient
 
 
 async def test_post_trade_process_uses_configured_login_id_and_process_name(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     A post_trade_processes entry with a custom login_id + gtg_process_name
@@ -80,7 +83,9 @@ async def test_post_trade_process_uses_configured_login_id_and_process_name(
 
 
 async def test_post_trade_default_window_gate_applies_independently_per_process(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     The default 02:00 IST (T+1) gate applies to EVERY post-trade process
@@ -93,7 +98,8 @@ async def test_post_trade_default_window_gate_applies_independently_per_process(
         post_trade_processes=[
             {"process_code": "COLVAL", "login_id": "G_LID"},
             {
-                "process_code": "COLALLOC", "login_id": "G_LID",
+                "process_code": "COLALLOC",
+                "login_id": "G_LID",
                 "window_start": "03:00",
             },
             {"process_code": "MTFFT", "login_id": "G_LID"},
@@ -116,9 +122,7 @@ async def test_post_trade_default_window_gate_applies_independently_per_process(
 
     # Before COLVAL's default 02:00 gate opens — must stay blocked, even
     # though COLALLOC's own override is a different, unrelated time.
-    before_window = datetime.combine(
-        test_date + timedelta(days=1), dtime(0, 30), tzinfo=orchestrator._tz
-    )
+    before_window = datetime.combine(test_date + timedelta(days=1), dtime(0, 30), tzinfo=orchestrator._tz)
     orchestrator._cycle_now = before_window
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome == "blocked", "COLVAL must still default-gate at 02:00 T+1"
@@ -153,7 +157,9 @@ async def test_seed_post_trade_processes_skips_unknown_process_code(cfg, session
 
 
 async def test_legacy_workflow_without_post_trade_processes_key_still_seeds_fixed_five(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """A workflow_json uploaded before this feature existed (no
     "post_trade_processes" key at all) must still seed the fixed 5 —
@@ -172,6 +178,7 @@ async def test_legacy_workflow_without_post_trade_processes_key_still_seeds_fixe
         await session.commit()
 
     from src.agent.edp.utils.constants import POST_TRADE_ORDER
+
     assert {r.segment_code for r in created} == set(POST_TRADE_ORDER)
 
 

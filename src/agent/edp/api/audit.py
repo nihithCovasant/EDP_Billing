@@ -9,14 +9,13 @@ deletes). See models.py::AuditLog for the exact scope.
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
+from cams_otel_lib import otel_trace
 from fastapi import APIRouter, Query
 
 from ..database import get_session
 from ..repository import get_audit_history
 from .schemas import AuditLogEntry
-from cams_otel_lib import otel_trace
 
 router = APIRouter()
 
@@ -24,8 +23,8 @@ router = APIRouter()
 @router.get("/audit", response_model=list[AuditLogEntry])
 @otel_trace
 async def list_audit_log(
-    trade_date: Optional[date] = None,
-    action: Optional[str] = None,
+    trade_date: date | None = None,
+    action: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
 ):
     """

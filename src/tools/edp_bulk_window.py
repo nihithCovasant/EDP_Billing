@@ -23,12 +23,12 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
+from langchain_core.tools import tool
 
 try:
     from cams_otel_lib import get_request_context
@@ -42,29 +42,49 @@ except ImportError:  # pragma: no cover - defensive
 
 IST = ZoneInfo("Asia/Kolkata")
 
-_CODE_ALIASES: Dict[str, str] = {
-    "EQ": "EQ", "CASH": "EQ", "EQUITY": "EQ",
-    "DR": "DR", "F&O": "DR", "FO": "DR", "FNO": "DR", "DERIVATIVES": "DR",
-    "CUR": "CUR", "CD": "CUR", "CURRENCY": "CUR",
+_CODE_ALIASES: dict[str, str] = {
+    "EQ": "EQ",
+    "CASH": "EQ",
+    "EQUITY": "EQ",
+    "DR": "DR",
+    "F&O": "DR",
+    "FO": "DR",
+    "FNO": "DR",
+    "DERIVATIVES": "DR",
+    "CUR": "CUR",
+    "CD": "CUR",
+    "CURRENCY": "CUR",
     "SLB": "SLB",
     "NCDEX": "NCDEX",
-    "NCDEXPHY": "NCDEXPHY", "NCDEX PHY": "NCDEXPHY", "NCDEX PHYSICAL": "NCDEXPHY",
+    "NCDEXPHY": "NCDEXPHY",
+    "NCDEX PHY": "NCDEXPHY",
+    "NCDEX PHYSICAL": "NCDEXPHY",
     "MCX": "MCX",
-    "MCXPHY": "MCXPHY", "MCX PHY": "MCXPHY", "MCX PHYSICAL": "MCXPHY",
-    "NSECOM": "NSECOM", "NSE COMMODITY": "NSECOM", "COMMODITY": "NSECOM",
-    "COLVAL": "COLVAL", "COLLATERAL VALUATION": "COLVAL",
-    "COLALLOC": "COLALLOC", "COLLATERAL ALLOCATION": "COLALLOC",
-    "MTFFT": "MTFFT", "MTF FUND TRANSFER": "MTFFT", "MTF": "MTFFT",
-    "DMRPT": "DMRPT", "DAILY MARGIN REPORTING": "DMRPT",
-    "DMSTMT": "DMSTMT", "DAILY MARGIN STATEMENTS": "DMSTMT",
+    "MCXPHY": "MCXPHY",
+    "MCX PHY": "MCXPHY",
+    "MCX PHYSICAL": "MCXPHY",
+    "NSECOM": "NSECOM",
+    "NSE COMMODITY": "NSECOM",
+    "COMMODITY": "NSECOM",
+    "COLVAL": "COLVAL",
+    "COLLATERAL VALUATION": "COLVAL",
+    "COLALLOC": "COLALLOC",
+    "COLLATERAL ALLOCATION": "COLALLOC",
+    "MTFFT": "MTFFT",
+    "MTF FUND TRANSFER": "MTFFT",
+    "MTF": "MTFFT",
+    "DMRPT": "DMRPT",
+    "DAILY MARGIN REPORTING": "DMRPT",
+    "DMSTMT": "DMSTMT",
+    "DAILY MARGIN STATEMENTS": "DMSTMT",
 }
 
 _TIME_FORMATS = ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H.%M")
 _DATE_FORMATS = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y")
-_RELATIVE_DAYS: Dict[str, int] = {"today": 0, "yesterday": -1, "tomorrow": 1}
+_RELATIVE_DAYS: dict[str, int] = {"today": 0, "yesterday": -1, "tomorrow": 1}
 
 
-def _resolve_code(identifier: str) -> Optional[str]:
+def _resolve_code(identifier: str) -> str | None:
     return _CODE_ALIASES.get(identifier.strip().upper())
 
 
@@ -99,8 +119,8 @@ def _base_url() -> str:
     return f"http://localhost:{port}"
 
 
-def _actor_headers() -> Dict[str, str]:
-    headers: Dict[str, str] = {}
+def _actor_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
     if get_request_context is not None:
         try:
             ctx = get_request_context()
@@ -119,7 +139,7 @@ def _actor_headers() -> Dict[str, str]:
     return headers
 
 
-async def _get(path: str) -> tuple[int, Dict[str, Any]]:
+async def _get(path: str) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{_base_url()}{path}", headers=_actor_headers())
     try:
@@ -128,7 +148,7 @@ async def _get(path: str) -> tuple[int, Dict[str, Any]]:
         return resp.status_code, {"raw": resp.text[:500]}
 
 
-async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+async def _post(path: str, json_body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{_base_url()}{path}", json=json_body, headers=_actor_headers())
     try:
@@ -137,7 +157,7 @@ async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, An
         return resp.status_code, {"raw": resp.text[:500]}
 
 
-def _find_target(workflow_json: dict, code: str) -> Optional[dict]:
+def _find_target(workflow_json: dict, code: str) -> dict | None:
     for seg in workflow_json.get("segments", []) or []:
         if seg.get("segment_code") == code:
             return seg
@@ -147,7 +167,7 @@ def _find_target(workflow_json: dict, code: str) -> Optional[dict]:
     return None
 
 
-async def _fetch_todays_active_config() -> tuple[Optional[dict], Optional[str], Optional[str]]:
+async def _fetch_todays_active_config() -> tuple[dict | None, str | None, str | None]:
     """Returns (workflow_json, carried_from_note, error_message). Refuses
     (returns error) if today's config can't be resolved — same today-only
     restriction as update_edp_segment_window, for the same reason: the
@@ -155,23 +175,25 @@ async def _fetch_todays_active_config() -> tuple[Optional[dict], Optional[str], 
     resolved_date = _today_ist()
     status_code, data = await _get(f"/edp/workflow/{resolved_date}")
     if status_code == 404:
-        return None, None, (
-            f"No workflow config found for **{resolved_date}** (nor any earlier date to carry "
-            f"forward) — nothing to update."
+        return (
+            None,
+            None,
+            (
+                f"No workflow config found for **{resolved_date}** (nor any earlier date to carry "
+                f"forward) — nothing to update."
+            ),
         )
     if status_code >= 400:
         return None, None, f"❌ Could not fetch the current config (HTTP {status_code}): {data.get('detail', data)}"
-    carried_note = (
-        f" (carried forward from **{data.get('trade_date')}**)" if data.get("carried_forward") else ""
-    )
+    carried_note = f" (carried forward from **{data.get('trade_date')}**)" if data.get("carried_forward") else ""
     return data.get("workflow_json"), carried_note, None
 
 
 @tool
 async def update_edp_segment_windows_bulk(
-    updates: List[Dict[str, str]],
+    updates: list[dict[str, str]],
     version_name: str,
-    uploaded_by: Optional[str] = None,
+    uploaded_by: str | None = None,
     overwrite_version: bool = False,
 ) -> str:
     """
@@ -269,7 +291,7 @@ async def copy_edp_segment_window(
     source_identifier: str,
     target_identifier: str,
     version_name: str,
-    uploaded_by: Optional[str] = None,
+    uploaded_by: str | None = None,
     overwrite_version: bool = False,
 ) -> str:
     """
@@ -327,14 +349,14 @@ async def copy_edp_segment_window(
         else ""
     )
     return (
-        f"✅ Copied **{source_code}**'s window (`{source.get('window_start')}`–`{source.get('window_end')}`) "
+        f"✅ Copied **{source_code}**'s window (`{source.get('window_start')}`-`{source.get('window_end')}`) "
         f"onto **{target_code}**, saved as **{data.get('version_name')}** for "
         f"**{data.get('trade_date')}**{carried_note}.{deferred_note}"
     )
 
 
 @tool
-async def get_edp_day_timeline(trade_date: Optional[str] = None) -> str:
+async def get_edp_day_timeline(trade_date: str | None = None) -> str:
     """
     Show all configured segments' and post-trade processes' windows for a
     trading day as one sorted timeline table. Use this when the user asks

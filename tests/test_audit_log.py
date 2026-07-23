@@ -44,6 +44,7 @@ def _workflow_json(window_start="17:00", window_end="18:00") -> dict:
 # diff_workflow_configs()
 # =============================================================================
 
+
 def test_diff_reports_initial_config_for_first_upload():
     summary, changes = diff_workflow_configs(None, _workflow_json())
     assert "Initial" in summary
@@ -67,12 +68,16 @@ def test_diff_reports_no_changes_for_identical_reupload():
 
 
 def test_diff_detects_added_and_removed_segments():
-    old = build_default_workflow_json([
-        {"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "18:00"},
-    ])
-    new = build_default_workflow_json([
-        {"segment_code": "DR", "login_id": "CV0001", "window_start": "18:00", "window_end": "21:00"},
-    ])
+    old = build_default_workflow_json(
+        [
+            {"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "18:00"},
+        ]
+    )
+    new = build_default_workflow_json(
+        [
+            {"segment_code": "DR", "login_id": "CV0001", "window_start": "18:00", "window_end": "21:00"},
+        ]
+    )
     summary, changes = diff_workflow_configs(old, new)
     added = [c["code"] for c in changes["segments"] if c["change"] == "added"]
     removed = [c["code"] for c in changes["segments"] if c["change"] == "removed"]
@@ -84,6 +89,7 @@ def test_diff_detects_added_and_removed_segments():
 # =============================================================================
 # Upload -> audit row wiring
 # =============================================================================
+
 
 async def test_first_upload_for_a_date_records_one_audit_entry(cfg, session_factory, test_date):
     """
@@ -150,6 +156,7 @@ async def test_version_name_and_config_id_are_captured_on_upload(cfg, session_fa
 # Delete-version -> audit row wiring
 # =============================================================================
 
+
 async def test_deleting_a_version_records_audit_entry(cfg, session_factory, test_date):
     name = _version_name()
     await _upload_workflow_for_date(test_date, _workflow_json(), "ops", version_name=name)
@@ -165,8 +172,8 @@ async def test_deleting_a_version_records_audit_entry(cfg, session_factory, test
 
 
 async def test_deleting_unknown_version_records_no_audit_entry(cfg, session_factory, test_date):
-    from fastapi import HTTPException
     import pytest
+    from fastapi import HTTPException
 
     async with session_factory() as session:
         before = await repository.get_audit_history(session, action="WORKFLOW_VERSION_DELETE")
@@ -183,6 +190,7 @@ async def test_deleting_unknown_version_records_no_audit_entry(cfg, session_fact
 # =============================================================================
 # Repository layer
 # =============================================================================
+
 
 async def test_get_audit_history_filters_by_trade_date(cfg, session_factory, test_date):
     other_date = test_date.replace(year=test_date.year + 1)

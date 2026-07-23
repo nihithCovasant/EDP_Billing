@@ -17,12 +17,12 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
+from langchain_core.tools import tool
 
 try:
     from cams_otel_lib import get_request_context
@@ -49,34 +49,61 @@ _STATUS_EMOJI = {
 # local (not imported from src/agent/edp/utils/constants) for the same
 # decoupling reason as the rest of this file — these rarely change, and
 # duplicating a handful of names is cheaper than coupling to EDP internals.
-_CODE_ALIASES: Dict[str, str] = {
-    "EQ": "EQ", "CASH": "EQ", "EQUITY": "EQ",
-    "DR": "DR", "F&O": "DR", "FO": "DR", "FNO": "DR", "DERIVATIVES": "DR",
-    "CUR": "CUR", "CD": "CUR", "CURRENCY": "CUR",
+_CODE_ALIASES: dict[str, str] = {
+    "EQ": "EQ",
+    "CASH": "EQ",
+    "EQUITY": "EQ",
+    "DR": "DR",
+    "F&O": "DR",
+    "FO": "DR",
+    "FNO": "DR",
+    "DERIVATIVES": "DR",
+    "CUR": "CUR",
+    "CD": "CUR",
+    "CURRENCY": "CUR",
     "SLB": "SLB",
     "NCDEX": "NCDEX",
-    "NCDEXPHY": "NCDEXPHY", "NCDEX PHY": "NCDEXPHY", "NCDEX PHYSICAL": "NCDEXPHY",
+    "NCDEXPHY": "NCDEXPHY",
+    "NCDEX PHY": "NCDEXPHY",
+    "NCDEX PHYSICAL": "NCDEXPHY",
     "MCX": "MCX",
-    "MCXPHY": "MCXPHY", "MCX PHY": "MCXPHY", "MCX PHYSICAL": "MCXPHY",
-    "NSECOM": "NSECOM", "NSE COMMODITY": "NSECOM", "COMMODITY": "NSECOM",
-    "COLVAL": "COLVAL", "COLLATERAL VALUATION": "COLVAL",
-    "COLALLOC": "COLALLOC", "COLLATERAL ALLOCATION": "COLALLOC",
-    "MTFFT": "MTFFT", "MTF FUND TRANSFER": "MTFFT", "MTF": "MTFFT",
-    "DMRPT": "DMRPT", "DAILY MARGIN REPORTING": "DMRPT",
-    "DMSTMT": "DMSTMT", "DAILY MARGIN STATEMENTS": "DMSTMT",
+    "MCXPHY": "MCXPHY",
+    "MCX PHY": "MCXPHY",
+    "MCX PHYSICAL": "MCXPHY",
+    "NSECOM": "NSECOM",
+    "NSE COMMODITY": "NSECOM",
+    "COMMODITY": "NSECOM",
+    "COLVAL": "COLVAL",
+    "COLLATERAL VALUATION": "COLVAL",
+    "COLALLOC": "COLALLOC",
+    "COLLATERAL ALLOCATION": "COLALLOC",
+    "MTFFT": "MTFFT",
+    "MTF FUND TRANSFER": "MTFFT",
+    "MTF": "MTFFT",
+    "DMRPT": "DMRPT",
+    "DAILY MARGIN REPORTING": "DMRPT",
+    "DMSTMT": "DMSTMT",
+    "DAILY MARGIN STATEMENTS": "DMSTMT",
 }
 
 _TIME_FORMATS = ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H.%M")
 
 _DATE_FORMATS = (
-    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
-    "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%B %d, %Y", "%b %d, %Y",
+    "%Y-%m-%d",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+    "%d %B %Y",
+    "%d %b %Y",
+    "%B %d %Y",
+    "%b %d %Y",
+    "%B %d, %Y",
+    "%b %d, %Y",
 )
 _ORDINAL_SUFFIX_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
 
 # Relative-day phrasing the LLM might pass through verbatim instead of
 # converting to an ISO date itself — resolved relative to today (IST).
-_RELATIVE_DAYS: Dict[str, int] = {
+_RELATIVE_DAYS: dict[str, int] = {
     "today": 0,
     "yesterday": -1,
     "the day before yesterday": -2,
@@ -85,7 +112,7 @@ _RELATIVE_DAYS: Dict[str, int] = {
 }
 
 
-def _resolve_code(identifier: str) -> Optional[str]:
+def _resolve_code(identifier: str) -> str | None:
     return _CODE_ALIASES.get(identifier.strip().upper())
 
 
@@ -137,7 +164,7 @@ def _today_ist() -> str:
     return datetime.now(IST).date().isoformat()
 
 
-def _actor_headers() -> Dict[str, str]:
+def _actor_headers() -> dict[str, str]:
     """
     Forward the current request's caller identity AND role (if any) to
     this same agent's own /edp/* API:
@@ -153,7 +180,7 @@ def _actor_headers() -> Dict[str, str]:
       every config change via chat would be rejected with 403 even for an
       actual System Administrator.
     """
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if get_request_context is not None:
         try:
             ctx = get_request_context()
@@ -172,7 +199,7 @@ def _actor_headers() -> Dict[str, str]:
     return headers
 
 
-async def _get(path: str) -> tuple[int, Dict[str, Any]]:
+async def _get(path: str) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{_base_url()}{path}", headers=_actor_headers())
     try:
@@ -181,7 +208,7 @@ async def _get(path: str) -> tuple[int, Dict[str, Any]]:
         return resp.status_code, {"raw": resp.text[:500]}
 
 
-async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+async def _post(path: str, json_body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{_base_url()}{path}", json=json_body, headers=_actor_headers())
     try:
@@ -190,7 +217,7 @@ async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, An
         return resp.status_code, {"raw": resp.text[:500]}
 
 
-async def _delete(path: str) -> tuple[int, Dict[str, Any]]:
+async def _delete(path: str) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.delete(f"{_base_url()}{path}", headers=_actor_headers())
     try:
@@ -203,7 +230,7 @@ async def _delete(path: str) -> tuple[int, Dict[str, Any]]:
 async def upload_edp_workflow_config(
     workflow_json: dict,
     version_name: str,
-    uploaded_by: Optional[str] = None,
+    uploaded_by: str | None = None,
     overwrite_version: bool = False,
 ) -> str:
     """
@@ -273,7 +300,12 @@ async def list_edp_workflow_versions() -> str:
         return f"❌ Could not list versions (HTTP {status_code}): {data.get('detail', data)}"
     if not data:
         return "No saved workflow versions yet."
-    lines = ["### 📁 Saved EDP workflow versions", "", "| Name | Trade date | Segments | Post-trade | Uploaded by |", "|---|---|---|---|---|"]
+    lines = [
+        "### 📁 Saved EDP workflow versions",
+        "",
+        "| Name | Trade date | Segments | Post-trade | Uploaded by |",
+        "|---|---|---|---|---|",
+    ]
     for v in data:
         post_trade_count = v.get("post_trade_process_count")
         lines.append(
@@ -323,7 +355,7 @@ async def delete_edp_workflow_version(version_name: str) -> str:
     return f"✅ Removed the saved name **{version_name}** (the config itself is untouched)."
 
 
-def _fmt_ts_ist(raw: Optional[str]) -> str:
+def _fmt_ts_ist(raw: str | None) -> str:
     """Best-effort "YYYY-MM-DD HH:MM IST" formatter for an ISO timestamp
     string coming back from the API — falls back to the raw value
     unchanged if it doesn't parse."""
@@ -345,7 +377,7 @@ _BUSINESS_HOURS_START = 9
 _BUSINESS_HOURS_END = 19
 
 
-def _is_outside_business_hours(occurred_at_raw: Optional[str]) -> bool:
+def _is_outside_business_hours(occurred_at_raw: str | None) -> bool:
     if not occurred_at_raw:
         return False
     try:
@@ -357,7 +389,7 @@ def _is_outside_business_hours(occurred_at_raw: Optional[str]) -> bool:
     return not (_BUSINESS_HOURS_START <= dt.hour < _BUSINESS_HOURS_END)
 
 
-def _format_changes_detail(changes_json: Dict[str, Any]) -> str:
+def _format_changes_detail(changes_json: dict[str, Any]) -> str:
     """Readable per-field diff from an audit row's changes_json, same
     {"segments": [...], "post_trade_processes": [...]} shape produced at
     upload time (see api/workflow.py::diff_workflow_configs) — each entry
@@ -381,8 +413,8 @@ def _format_changes_detail(changes_json: Dict[str, Any]) -> str:
 
 @tool
 async def list_edp_audit_log(
-    trade_date: Optional[str] = None,
-    action: Optional[str] = None,
+    trade_date: str | None = None,
+    action: str | None = None,
     limit: int = 20,
     show_details: bool = False,
 ) -> str:
@@ -442,9 +474,9 @@ async def list_edp_audit_log(
 async def update_edp_segment_window(
     identifier: str,
     version_name: str,
-    window_start: Optional[str] = None,
-    window_end: Optional[str] = None,
-    trade_date: Optional[str] = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    trade_date: str | None = None,
     overwrite_version: bool = False,
 ) -> str:
     """
@@ -504,9 +536,7 @@ async def update_edp_segment_window(
         else ""
     )
     workflow_json = data.get("workflow_json") or {}
-    target = next(
-        (s for s in workflow_json.get("segments", []) if s.get("segment_code") == code), None
-    )
+    target = next((s for s in workflow_json.get("segments", []) if s.get("segment_code") == code), None)
     if target is None:
         target = next(
             (p for p in workflow_json.get("post_trade_processes", []) if p.get("process_code") == code),
@@ -565,7 +595,7 @@ async def update_edp_segment_window(
 
 
 @tool
-async def get_edp_status(trade_date: Optional[str] = None, segment_code: Optional[str] = None) -> str:
+async def get_edp_status(trade_date: str | None = None, segment_code: str | None = None) -> str:
     """
     Check EDP billing processing status for ANY trading day — today,
     yesterday, or any past date. Use this whenever the user asks about the
@@ -600,7 +630,7 @@ async def get_edp_status(trade_date: Optional[str] = None, segment_code: Optiona
     return _format_day_summary(data)
 
 
-def _format_day_summary(data: Dict[str, Any]) -> str:
+def _format_day_summary(data: dict[str, Any]) -> str:
     segments = sorted(data.get("segments", []), key=lambda s: s.get("sequence_order", 0))
     if not segments:
         return (
@@ -628,7 +658,9 @@ def _format_day_summary(data: Dict[str, Any]) -> str:
             or seg.get("current_state")
             or ("Not started" if status == "PENDING" else "Done" if status in ("COMPLETED", "SKIPPED") else "—")
         )
-        note = seg.get("skip_reason") or ("STALE — no heartbeat recently" if seg.get("runtime_health") == "STALE" else "")
+        note = seg.get("skip_reason") or (
+            "STALE — no heartbeat recently" if seg.get("runtime_health") == "STALE" else ""
+        )
         lines.append(
             f"| {seg.get('sequence_order')} | {seg.get('segment_name')} ({seg.get('segment_code')}) "
             f"| {emoji} {status} | {current_step} | {note} |"
@@ -636,7 +668,7 @@ def _format_day_summary(data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_segment_detail(data: Dict[str, Any]) -> str:
+def _format_segment_detail(data: dict[str, Any]) -> str:
     emoji = _STATUS_EMOJI.get(data.get("segment_status"), "")
     lines = [
         f"### {emoji} {data.get('segment_name')} ({data.get('segment_code')}) — {data.get('trade_date')}",

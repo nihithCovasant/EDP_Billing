@@ -103,6 +103,7 @@ async def test_check_collateral_valuation_triggered_sends_documented_payload(mon
         captured["endpoint_name"] = endpoint_name
         captured["payload"] = payload
         from src.tools.cbos_client import AlreadyTriggeredResult
+
         return AlreadyTriggeredResult(already_triggered=False)
 
     monkeypatch.setattr(cbos, "_already_triggered_check", fake_check)
@@ -122,6 +123,7 @@ async def test_check_daily_margin_reporting_triggered_sends_documented_payload(m
         captured["endpoint_name"] = endpoint_name
         captured["payload"] = payload
         from src.tools.cbos_client import AlreadyTriggeredResult
+
         return AlreadyTriggeredResult(already_triggered=False)
 
     monkeypatch.setattr(cbos, "_already_triggered_check", fake_check)

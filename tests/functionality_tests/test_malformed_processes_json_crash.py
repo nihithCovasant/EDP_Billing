@@ -23,7 +23,7 @@ processes_json[state_key]. But the exact failure mode differs by call path:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -37,7 +37,7 @@ from src.agent.edp.utils.json_helpers import (
 
 STATE_KEY = "INIT"
 STEP_KEY = "some_step"
-NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 11, tzinfo=UTC)
 
 MALFORMED_SHAPES = {
     "string": "this is a string, not a dict",
@@ -54,6 +54,7 @@ def make_row(processes_json: dict) -> SimpleNamespace:
 # ---------------------------------------------------------------------------
 # get_step
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("shape_name", MALFORMED_SHAPES)
 def test_get_step_crashes_on_malformed_state(shape_name):
@@ -76,6 +77,7 @@ def test_get_step_crashes_on_malformed_state(shape_name):
 #   - [] (empty list) -> dict([]) succeeds silently and produces {} — no
 #     crash at all; the malformed state is silently discarded/overwritten.
 # ---------------------------------------------------------------------------
+
 
 def test_set_step_string_state_raises_value_error():
     row = make_row({STATE_KEY: MALFORMED_SHAPES["string"]})
@@ -101,6 +103,7 @@ def test_set_step_list_state_does_not_crash_and_overwrites_silently():
 # record_poll
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("shape_name", MALFORMED_SHAPES)
 def test_record_poll_crashes_on_malformed_state(shape_name):
     row = make_row({STATE_KEY: MALFORMED_SHAPES[shape_name]})
@@ -114,6 +117,7 @@ def test_record_poll_crashes_on_malformed_state(shape_name):
 # Same reasoning as set_step(): it also starts with get_state(), whose
 # `dict(...)` coercion determines the outcome per shape.
 # ---------------------------------------------------------------------------
+
 
 def test_mark_step_done_string_state_raises_value_error():
     row = make_row({STATE_KEY: MALFORMED_SHAPES["string"]})
@@ -139,6 +143,7 @@ def test_mark_step_done_list_state_does_not_crash_and_overwrites_silently():
 # ---------------------------------------------------------------------------
 # Healthy / normal cases — must NOT crash
 # ---------------------------------------------------------------------------
+
 
 def test_get_step_healthy_empty_processes_json():
     row = make_row({})

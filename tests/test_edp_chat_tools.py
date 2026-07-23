@@ -25,6 +25,7 @@ async def _invoke(tool, **kwargs) -> str:
 # config change as coming from an admin).
 # =============================================================================
 
+
 class _FakeRequestContext:
     def __init__(self, userid):
         self.userid = userid
@@ -59,6 +60,7 @@ def test_actor_headers_ignores_placeholder_na_userid(monkeypatch):
 # chosen name matches the config's current name.
 # =============================================================================
 
+
 async def test_update_segment_window_requires_version_name_argument():
     """version_name has no default -- omitting it must be a tool-invocation
     error (StructuredTool argument validation), not a silent guess."""
@@ -71,7 +73,7 @@ async def test_update_segment_window_requires_version_name_argument():
     except Exception as exc:  # some langchain versions raise a different wrapper
         assert "version_name" in str(exc)
         return
-    assert False, "expected a validation error for missing version_name"
+    raise AssertionError("expected a validation error for missing version_name")
 
 
 async def test_update_segment_window_reusing_current_name_auto_overwrites(monkeypatch):
@@ -104,7 +106,9 @@ async def test_update_segment_window_reusing_current_name_auto_overwrites(monkey
 
     result = await _invoke(
         edp_status.update_edp_segment_window,
-        identifier="EQ", version_name="default", window_start="5 PM",
+        identifier="EQ",
+        version_name="default",
+        window_start="5 PM",
     )
 
     assert captured["body"]["version_name"] == "default"
@@ -144,7 +148,9 @@ async def test_update_segment_window_new_name_does_not_force_overwrite(monkeypat
 
     await _invoke(
         edp_status.update_edp_segment_window,
-        identifier="EQ", version_name="brand_new_name", window_start="5 PM",
+        identifier="EQ",
+        version_name="brand_new_name",
+        window_start="5 PM",
     )
 
     assert captured["body"]["version_name"] == "brand_new_name"
@@ -175,7 +181,9 @@ async def test_update_segment_window_surfaces_409_as_friendly_message(monkeypatc
 
     result = await _invoke(
         edp_status.update_edp_segment_window,
-        identifier="EQ", version_name="taken", window_start="5 PM",
+        identifier="EQ",
+        version_name="taken",
+        window_start="5 PM",
     )
     assert "already exists" in result
     assert "❌" in result
@@ -184,6 +192,7 @@ async def test_update_segment_window_surfaces_409_as_friendly_message(monkeypatc
 # =============================================================================
 # upload_edp_workflow_config -- version_name required, 409 surfaced nicely.
 # =============================================================================
+
 
 async def test_upload_workflow_config_requires_version_name_argument():
     import pydantic
@@ -195,7 +204,7 @@ async def test_upload_workflow_config_requires_version_name_argument():
     except Exception as exc:
         assert "version_name" in str(exc)
         return
-    assert False, "expected a validation error for missing version_name"
+    raise AssertionError("expected a validation error for missing version_name")
 
 
 async def test_upload_workflow_config_passes_version_name_and_overwrite_through(monkeypatch):
@@ -219,7 +228,9 @@ async def test_upload_workflow_config_passes_version_name_and_overwrite_through(
 
     result = await _invoke(
         edp_status.upload_edp_workflow_config,
-        workflow_json={"segments": [{"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "18:00"}]},
+        workflow_json={
+            "segments": [{"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "18:00"}]
+        },
         version_name="my_new_config",
         overwrite_version=True,
     )

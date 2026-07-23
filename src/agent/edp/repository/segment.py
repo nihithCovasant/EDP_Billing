@@ -12,22 +12,22 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime
-from typing import List, Optional
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..alert_health import record_alert_attempt
 from ..models import (
     EdpProperties,
     SegmentExecution,
     SegmentStatus,
 )
-from ..utils.constants import get_sequence_order, POST_TRADE_ORDER, SEGMENT_ORDER
+from ..utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER, get_sequence_order
 from ..utils.datetime_utils import now_ist
 from ..utils.serializers import serialize_segment_alert, serialize_segment_summary
-from ..alert_health import record_alert_attempt
-from cams_otel_lib import Logger as logger, otel_trace
 
 # Terminal statuses — once here, a row is "handled" and won't be revisited.
 _TERMINAL_STATUSES = (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED)
@@ -37,12 +37,13 @@ _TERMINAL_STATUSES = (SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentSta
 # Queries
 # =============================================================================
 
+
 @otel_trace
 async def get_one(
     session: AsyncSession,
     trade_date: date,
     segment_code: str,
-) -> Optional[SegmentExecution]:
+) -> SegmentExecution | None:
     stmt = select(SegmentExecution).where(
         SegmentExecution.trade_date == trade_date,
         SegmentExecution.segment_code == segment_code,
@@ -54,7 +55,7 @@ async def get_one(
 async def get_all_for_date(
     session: AsyncSession,
     trade_date: date,
-) -> List[SegmentExecution]:
+) -> list[SegmentExecution]:
     """Return all segment rows for a date, ordered by the fixed SEGMENT_ORDER."""
     stmt = select(SegmentExecution).where(
         SegmentExecution.trade_date == trade_date,
@@ -68,7 +69,7 @@ async def get_all_for_date(
 async def get_in_progress(
     session: AsyncSession,
     trade_date: date,
-) -> Optional[SegmentExecution]:
+) -> SegmentExecution | None:
     """Return the segment currently IN_PROGRESS, if any."""
     stmt = select(SegmentExecution).where(
         SegmentExecution.trade_date == trade_date,
@@ -80,6 +81,7 @@ async def get_in_progress(
 # =============================================================================
 # Seeding
 # =============================================================================
+
 
 @otel_trace
 async def get_or_create(
@@ -148,13 +150,13 @@ async def seed_from_workflow(
     session: AsyncSession,
     workflow: EdpProperties,
     trade_date: date,
-) -> List[SegmentExecution]:
+) -> list[SegmentExecution]:
     """
     Bulk equivalent of get_or_create() for every segment in the workflow
     config. Not called by the orchestrator (which seeds lazily); kept for
     test setup and other bulk-seeding callers.
     """
-    created: List[SegmentExecution] = []
+    created: list[SegmentExecution] = []
     for seg_cfg in workflow.workflow_json.get("segments", []):
         code = seg_cfg["segment_code"]
         existed = await is_record_exists(session, trade_date, code)
@@ -169,7 +171,7 @@ async def seed_post_trade_processes(
     session: AsyncSession,
     workflow: EdpProperties,
     trade_date: date,
-) -> List[SegmentExecution]:
+) -> list[SegmentExecution]:
     """
     Bulk equivalent of get_or_create() for the 5 T+1 post-trade processes.
     Missing "post_trade_processes" key falls back to the fixed
@@ -181,7 +183,7 @@ async def seed_post_trade_processes(
     else:
         proc_configs = [{"process_code": code} for code in POST_TRADE_ORDER]
 
-    created: List[SegmentExecution] = []
+    created: list[SegmentExecution] = []
     for proc_cfg in proc_configs:
         code = proc_cfg.get("process_code", "")
         if code not in POST_TRADE_ORDER:
@@ -240,14 +242,15 @@ def is_handled(row: SegmentExecution) -> bool:
 # State transitions — the single place terminal transitions happen
 # =============================================================================
 
+
 @otel_trace
 async def move_to_state(
     session: AsyncSession,
     row: SegmentExecution,
     new_status: SegmentStatus,
-    category: Optional[str] = None,
-    reason: Optional[str] = None,
-    now: Optional[datetime] = None,
+    category: str | None = None,
+    reason: str | None = None,
+    now: datetime | None = None,
 ) -> None:
     """
     Move a row to a new status, updating terminal bookkeeping fields
@@ -295,10 +298,7 @@ async def _send_terminal_alert(row: SegmentExecution) -> None:
 
         payload = serialize_segment_alert(row)
         await asyncio.to_thread(send_segment_alert, payload)
-        logger.info(
-            f"[ALERT] segment={row.segment_code} | Alert email sent for "
-            f"status={row.segment_status.value}"
-        )
+        logger.info(f"[ALERT] segment={row.segment_code} | Alert email sent for status={row.segment_status.value}")
         record_alert_attempt(success=True)
     except Exception as exc:
         logger.error(
@@ -312,6 +312,7 @@ async def _send_terminal_alert(row: SegmentExecution) -> None:
 # =============================================================================
 # Heartbeat
 # =============================================================================
+
 
 @otel_trace
 async def touch_heartbeat(session: AsyncSession, row: SegmentExecution) -> None:
@@ -330,12 +331,13 @@ async def touch_heartbeat(session: AsyncSession, row: SegmentExecution) -> None:
 # Operational control — retry / skip
 # =============================================================================
 
+
 @otel_trace
 async def retry_segment(
     session: AsyncSession,
     trade_date: date,
     segment_code: str,
-) -> Optional[SegmentExecution]:
+) -> SegmentExecution | None:
     """
     Reset a FAILED or SKIPPED segment back to PENDING so the pipeline can retry it.
 
@@ -388,7 +390,7 @@ async def activate_segment_run(
     workflow,
     trade_date: date,
     segment_code: str,
-) -> tuple[str, Optional[SegmentExecution]]:
+) -> tuple[str, SegmentExecution | None]:
     """POST /edp/run: create-or-reset a (trade_date, segment) row and mark it
     manually_activated so the wake loop drives it regardless of the active
     date (window gating bypassed - see orchestrator).
@@ -411,10 +413,7 @@ async def activate_segment_run(
         _reset_to_pending(row)
     row.manually_activated = True
     await session.flush()
-    logger.info(
-        f"[OPS] segment={segment_code} trade_date={trade_date} | "
-        f"Segment manually ACTIVATED for on-demand run"
-    )
+    logger.info(f"[OPS] segment={segment_code} trade_date={trade_date} | Segment manually ACTIVATED for on-demand run")
     return "activated", row
 
 
@@ -447,7 +446,7 @@ async def skip_segment_manually(
     segment_code: str,
     reason: str,
     skipped_by: str,
-) -> Optional[SegmentExecution]:
+) -> SegmentExecution | None:
     """
     Manually skip a PENDING or IN_PROGRESS segment.
     Useful when a segment was already processed outside the agent or must be bypassed.
@@ -458,7 +457,9 @@ async def skip_segment_manually(
         return None
 
     await move_to_state(
-        session, row, SegmentStatus.SKIPPED,
+        session,
+        row,
+        SegmentStatus.SKIPPED,
         category="MANUAL_SKIP",
         reason=f"Manually skipped by {skipped_by}: {reason}",
     )

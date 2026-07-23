@@ -15,16 +15,16 @@ Revises: d4e5f6a7b8c9
 Create Date: 2026-07-04 00:00:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "e5f6a7b8c9d0"
-down_revision: Union[str, Sequence[str], None] = "d4e5f6a7b8c9"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "d4e5f6a7b8c9"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _COLLATERAL_STATUS_VALUES = ("PENDING", "IN_PROGRESS", "COMPLETED", "SKIPPED", "FAILED")
 _COLLATERAL_PHASE_VALUES = ("AWAIT_GTG", "TRIGGER_JOB", "AWAIT_CONFIRM", "DONE")
@@ -69,5 +69,7 @@ def downgrade() -> None:
         sa.UniqueConstraint("trade_date", name="uq_collateral_execution_trade_date"),
     )
     op.create_index(
-        "ix_collateral_execution_trade_date", "collateral_execution", ["trade_date"],
+        "ix_collateral_execution_trade_date",
+        "collateral_execution",
+        ["trade_date"],
     )

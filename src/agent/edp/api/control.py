@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -19,10 +21,10 @@ from ..database import get_session
 from ..models import AgentControlAction
 from ..repository import (
     activate_segment_run,
-    get_effective_state,
-    record_action,
     get_control_history,
     get_day_summary,
+    get_effective_state,
+    record_action,
 )
 from ..repository import workflow as workflow_repo
 from ..utils.constants import SEGMENT_ORDER
@@ -31,10 +33,9 @@ from .auth import require_admin_role
 from .schemas import (
     AgentControlRequest,
     AgentControlResponse,
-    AgentStopResponse,
     AgentStatusResponse,
+    AgentStopResponse,
 )
-from cams_otel_lib import Logger as logger, otel_trace
 
 router = APIRouter()
 
@@ -72,9 +73,7 @@ async def agent_stop(body: AgentControlRequest):
 
     try:
         now = datetime.now(ZoneInfo(config.timezone))
-        active_date = resolve_active_date(
-            now, config.active_date_cutoff_hour, config.timezone
-        )
+        active_date = resolve_active_date(now, config.active_date_cutoff_hour, config.timezone)
         async with get_session() as session:
             summary = await get_day_summary(session, active_date)
         snapshot = {
@@ -143,6 +142,7 @@ async def agent_status():
 # On-demand segment run (wayfinder ticket 13) — backfill / arbitrary trade date
 # =============================================================================
 
+
 class RunSegmentRequest(BaseModel):
     trade_date: date = Field(description="Trade date to run (YYYY-MM-DD) — any date, not just today")
     segment_code: str = Field(description=f"One of {', '.join(SEGMENT_ORDER)}")
@@ -172,7 +172,7 @@ async def run_segment(body: RunSegmentRequest, request: Request):
                 status_code=409,
                 detail=f"No workflow config exists on or before {body.trade_date} — upload one first",
             )
-        outcome, row = await activate_segment_run(session, wf, body.trade_date, code)
+        outcome, _row = await activate_segment_run(session, wf, body.trade_date, code)
         if outcome == "completed":
             raise HTTPException(
                 status_code=409,
@@ -183,9 +183,7 @@ async def run_segment(body: RunSegmentRequest, request: Request):
             )
         await session.commit()
 
-    logger.info(
-        f"[OPS] segment={code} trade_date={body.trade_date} | POST /edp/run -> {outcome}"
-    )
+    logger.info(f"[OPS] segment={code} trade_date={body.trade_date} | POST /edp/run -> {outcome}")
     return {
         "trade_date": body.trade_date.isoformat(),
         "segment_code": code,

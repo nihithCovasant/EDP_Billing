@@ -18,13 +18,17 @@ async def _invoke(tool, **kwargs) -> str:
 # get_edp_active_version
 # =============================================================================
 
+
 async def test_get_active_version_reports_name_and_counts(monkeypatch):
     async def fake_get(path):
         assert path == "/edp/workflow/2026-07-10"
         return 200, {
-            "version_name": "diwali_2026", "segment_count": 9,
-            "post_trade_process_count": 5, "uploaded_by": "ops",
-            "uploaded_at": "2026-07-01T10:00:00+05:30", "carried_forward": False,
+            "version_name": "diwali_2026",
+            "segment_count": 9,
+            "post_trade_process_count": 5,
+            "uploaded_by": "ops",
+            "uploaded_at": "2026-07-01T10:00:00+05:30",
+            "carried_forward": False,
         }
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
@@ -39,9 +43,12 @@ async def test_get_active_version_reports_name_and_counts(monkeypatch):
 async def test_get_active_version_flags_carried_forward(monkeypatch):
     async def fake_get(path):
         return 200, {
-            "version_name": "default", "segment_count": 9,
-            "post_trade_process_count": 5, "uploaded_by": "agent-bootstrap",
-            "uploaded_at": None, "carried_forward": True,
+            "version_name": "default",
+            "segment_count": 9,
+            "post_trade_process_count": 5,
+            "uploaded_by": "agent-bootstrap",
+            "uploaded_at": None,
+            "carried_forward": True,
         }
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
@@ -92,7 +99,9 @@ async def test_diff_two_named_versions_reports_added_removed_modified(monkeypatc
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 
     result = await _invoke(
-        edp_versions.diff_edp_workflow_versions, version_a="version_a", version_b="version_b",
+        edp_versions.diff_edp_workflow_versions,
+        version_a="version_a",
+        version_b="version_b",
     )
 
     assert "EQ" in result and "window_start" in result and "17:00" in result and "17:30" in result
@@ -127,7 +136,9 @@ async def test_diff_identical_configs_reports_no_differences(monkeypatch):
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 
     result = await _invoke(
-        edp_versions.diff_edp_workflow_versions, version_a="a", version_b="b",
+        edp_versions.diff_edp_workflow_versions,
+        version_a="a",
+        version_b="b",
     )
 
     assert "No differences" in result
@@ -148,6 +159,7 @@ async def test_diff_missing_version_a_is_friendly(monkeypatch):
 # clone_edp_workflow_version
 # =============================================================================
 
+
 async def test_clone_fetches_source_then_uploads_as_new_name(monkeypatch):
     captured = {}
 
@@ -164,7 +176,9 @@ async def test_clone_fetches_source_then_uploads_as_new_name(monkeypatch):
     monkeypatch.setattr(edp_versions, "_post", fake_post)
 
     result = await _invoke(
-        edp_versions.clone_edp_workflow_version, source_version_name="source_v", new_version_name="cloned_v",
+        edp_versions.clone_edp_workflow_version,
+        source_version_name="source_v",
+        new_version_name="cloned_v",
     )
 
     assert captured["path"] == "/edp/workflow/upload"
@@ -180,7 +194,9 @@ async def test_clone_missing_source_returns_friendly_message(monkeypatch):
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 
     result = await _invoke(
-        edp_versions.clone_edp_workflow_version, source_version_name="ghost", new_version_name="new",
+        edp_versions.clone_edp_workflow_version,
+        source_version_name="ghost",
+        new_version_name="new",
     )
 
     assert "No saved version named" in result
@@ -197,7 +213,9 @@ async def test_clone_name_conflict_returns_409_message(monkeypatch):
     monkeypatch.setattr(edp_versions, "_post", fake_post)
 
     result = await _invoke(
-        edp_versions.clone_edp_workflow_version, source_version_name="source_v", new_version_name="taken",
+        edp_versions.clone_edp_workflow_version,
+        source_version_name="source_v",
+        new_version_name="taken",
     )
 
     assert "already exists" in result

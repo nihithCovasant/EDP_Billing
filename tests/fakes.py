@@ -33,7 +33,13 @@ class FailingCbosClient(CbosClient):
         self._fail_process = fail_process
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() == self._fail_segment and process_name == self._fail_process:
             return FileStatusResult(
@@ -42,7 +48,9 @@ class FailingCbosClient(CbosClient):
                 error=f"Simulated permanent CBOS failure for {segment}/{process_name}",
                 is_transient=False,
             )
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 class SkippingCbosClient(CbosClient):
@@ -60,7 +68,13 @@ class SkippingCbosClient(CbosClient):
         self._skip_process = skip_process
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() == self._skip_segment and process_name == self._skip_process:
             # V5 split semantics: BeginFileUpload's holiday answer is any
@@ -70,9 +84,12 @@ class SkippingCbosClient(CbosClient):
             return FileStatusResult(
                 response=msg,
                 raw_body=f'{{"Status":"Success","Data":[{{"MSG":"{msg}"}}]}}',
-                error=None, is_transient=False,
+                error=None,
+                is_transient=False,
             )
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 class TransientTriggerFailureCbosClient(CbosClient):
@@ -96,7 +113,11 @@ class TransientTriggerFailureCbosClient(CbosClient):
         self._fired = False
 
     async def get_new_trade_process(
-        self, group_name: str, login_id: str, trade_date: date, process_id: str = "0",
+        self,
+        group_name: str,
+        login_id: str,
+        trade_date: date,
+        process_id: str = "0",
     ) -> NewTradeProcessResult:
         if not self._fired and group_name.upper() == self._fail_segment and process_id != "0":
             self._fired = True
@@ -124,10 +145,18 @@ class RecordingFileStatusCbosClient(CbosClient):
         self.calls: list[tuple[str, str, str]] = []
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         self.calls.append((segment, process_name, user_id))
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 class CountingPostTradeTriggerCbosClient(CbosClient):

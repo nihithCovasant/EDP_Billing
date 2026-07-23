@@ -11,12 +11,12 @@ from __future__ import annotations
 import enum
 
 
-class Segment(str, enum.Enum):
+class Segment(enum.StrEnum):
     """The 9 real market segments, in fixed execution order."""
 
-    EQ = "EQ"              # Cash
-    DR = "DR"              # F&O / Derivatives
-    CUR = "CUR"            # Currency
+    EQ = "EQ"  # Cash
+    DR = "DR"  # F&O / Derivatives
+    CUR = "CUR"  # Currency
     SLB = "SLB"
     NCDEX = "NCDEX"
     NCDEXPHY = "NCDEXPHY"

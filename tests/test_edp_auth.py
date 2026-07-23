@@ -46,10 +46,14 @@ def test_allows_admin_via_jwt_role_claim():
 
 def test_x_user_role_header_wins_over_jwt_role_claim():
     token = _fake_jwt({"role": "Viewer"})
-    require_admin_role(_FakeRequest({
-        "Authorization": f"Bearer {token}",
-        "X-User-Role": ADMIN_ROLE,
-    }))  # header overrides a conflicting JWT claim -- must not raise
+    require_admin_role(
+        _FakeRequest(
+            {
+                "Authorization": f"Bearer {token}",
+                "X-User-Role": ADMIN_ROLE,
+            }
+        )
+    )  # header overrides a conflicting JWT claim -- must not raise
 
 
 def test_rejects_non_admin_role_with_403():

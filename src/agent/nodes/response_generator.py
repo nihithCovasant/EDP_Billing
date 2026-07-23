@@ -1,24 +1,31 @@
-﻿"""
+"""
 Response generation node with remote configuration support.
 Generates final responses using retrieved context - customize for your response style.
 """
 
-from typing import Dict, Any
-from langchain_core.messages import HumanMessage, AIMessage
+from typing import Any
+
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
+from langchain_core.messages import AIMessage, HumanMessage
 
 from src.config.agent_config import get_node_configuration
-from src.utils.llm_provider import get_llm_model, get_provider_from_model
 from src.utils.langfuse_decorator import trace_node
-from cams_otel_lib import Logger as logger, otel_trace
+from src.utils.llm_provider import get_llm_model, get_provider_from_model
 
 # FEATURE:prometheus
 try:
-    from src.utils.metrics import track_node_metrics, get_metrics_collector
+    from src.utils.metrics import get_metrics_collector, track_node_metrics
+
     _METRICS_AVAILABLE = True
 except ImportError:
+
     def track_node_metrics(name):
-        def decorator(func): return func
+        def decorator(func):
+            return func
+
         return decorator
+
     _METRICS_AVAILABLE = False
 
 
@@ -34,7 +41,7 @@ class ResponseGeneratorNode:
     """
 
     @otel_trace
-    def __init__(self, config: Dict[str, Any], tenant_id: str = "default"):
+    def __init__(self, config: dict[str, Any], tenant_id: str = "default"):
         """Initialize response generation node with tenant-aware configuration."""
         self.global_config = config
         self.tenant_id = tenant_id
@@ -58,7 +65,9 @@ class ResponseGeneratorNode:
                 logger.warning(f"Could not infer provider for model {self.model}, defaulting to openai")
                 self.provider = "openai"
 
-        logger.debug(f"ResponseNode initialized for tenant {tenant_id} with provider={self.provider}, model={self.model}")
+        logger.debug(
+            f"ResponseNode initialized for tenant {tenant_id} with provider={self.provider}, model={self.model}"
+        )
 
     # FEATURE:prometheus
     @track_node_metrics("response_generator")
@@ -76,7 +85,7 @@ class ResponseGeneratorNode:
         },
     )
     @otel_trace
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Generate final response using context.
 
@@ -93,16 +102,10 @@ class ResponseGeneratorNode:
             return {"final_response": "I don't see any question to answer."}
 
         last_message = messages[-1]
-        user_question = (
-            last_message.content
-            if hasattr(last_message, "content")
-            else str(last_message)
-        )
+        user_question = last_message.content if hasattr(last_message, "content") else str(last_message)
 
         # Get tenant-specific config
-        tenant_config = self.global_config.get(
-            state.get("tenant_id", "default"), self.global_config.get("default", {})
-        )
+        tenant_config = self.global_config.get(state.get("tenant_id", "default"), self.global_config.get("default", {}))
 
         # Get domain knowledge for context
         domain_knowledge = tenant_config.get("domain_knowledge", {})
@@ -148,7 +151,8 @@ class ResponseGeneratorNode:
         # Get prompt template
         prompt_template = tenant_config.get("prompts", {}).get(
             "response",
-            "Answer the user's question using the provided context.\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer:",
+            "Answer the user's question using the provided context.\n\n"
+            "Context: {context}\n\nQuestion: {question}\n\nAnswer:",
         )
 
         # Format conversation history
@@ -177,6 +181,7 @@ class ResponseGeneratorNode:
 
             # Generate response (tracing handled automatically by decorator)
             import time as _time
+
             _llm_start = _time.time()
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             _llm_duration = _time.time() - _llm_start
@@ -185,9 +190,7 @@ class ResponseGeneratorNode:
             # content blocks instead — normalize before .strip().
             raw_content = response.content
             if isinstance(raw_content, list):
-                raw_content = "".join(
-                    (b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw_content
-                )
+                raw_content = "".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw_content)
             final_response = raw_content.strip()
 
             # FEATURE:prometheus
@@ -200,6 +203,7 @@ class ResponseGeneratorNode:
                 if _in or _out:
                     try:
                         from src.utils.cost_calculator import calculate_cost
+
                         _cost = calculate_cost(self.model, _in, _out)
                     except Exception:
                         _cost = 0.0

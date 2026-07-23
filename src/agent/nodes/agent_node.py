@@ -1,23 +1,30 @@
-﻿"""
+"""
 Agent node with tool-calling capability.
 This node allows the LLM to decide which tools to call and when.
 """
 
-from typing import Dict, Any, List
+from typing import Any
 
-from langchain_core.messages import ToolMessage, SystemMessage
-from src.utils.llm_provider import get_llm_model, get_provider_from_model
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
+from langchain_core.messages import SystemMessage, ToolMessage
+
 from src.utils.langfuse_decorator import trace_node
-from cams_otel_lib import Logger as logger, otel_trace
+from src.utils.llm_provider import get_llm_model, get_provider_from_model
 
 # FEATURE:prometheus
 try:
-    from src.utils.metrics import track_node_metrics, get_metrics_collector
+    from src.utils.metrics import get_metrics_collector, track_node_metrics
+
     _METRICS_AVAILABLE = True
 except ImportError:
+
     def track_node_metrics(name):
-        def decorator(func): return func
+        def decorator(func):
+            return func
+
         return decorator
+
     _METRICS_AVAILABLE = False
 
 
@@ -31,9 +38,7 @@ class AgentNode:
     """
 
     @otel_trace
-    def __init__(
-        self, config: Dict[str, Any], tools: List[Any], tenant_id: str = "default"
-    ):
+    def __init__(self, config: dict[str, Any], tools: list[Any], tenant_id: str = "default"):
         """Initialize agent node with tools."""
         self.global_config = config
         self.tools = tools
@@ -41,7 +46,9 @@ class AgentNode:
 
         # Get tenant-specific config
         tenant_config = config.get(tenant_id, config.get("default", {}))
-        llm_config = tenant_config.get("llm_config", {}).get("agent", tenant_config.get("llm_config", {}).get("response", {}))
+        llm_config = tenant_config.get("llm_config", {}).get(
+            "agent", tenant_config.get("llm_config", {}).get("response", {})
+        )
         self.model = llm_config.get("model", "gpt-4o")
         self.temperature = llm_config.get("temperature", 0.1)
         self.max_tokens = llm_config.get("max_tokens")
@@ -87,7 +94,7 @@ class AgentNode:
         },
     )
     @otel_trace
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Execute agent with tool-calling capability.
 
@@ -99,7 +106,7 @@ class AgentNode:
 
         # Prepend system prompt if configured and not already present
         if self.system_prompt and not (messages and isinstance(messages[0], SystemMessage)):
-            messages = [SystemMessage(content=self.system_prompt)] + list(messages)
+            messages = [SystemMessage(content=self.system_prompt), *list(messages)]
 
         # Get LiteLLM custom headers if available
         litellm_headers = state.get("litellm_headers")
@@ -107,13 +114,15 @@ class AgentNode:
         # Invoke LLM with tools
         if litellm_headers:
             response = await self.llm_with_tools.ainvoke(
-                messages,
-                config={"configurable": {"litellm_headers": litellm_headers}}
+                messages, config={"configurable": {"litellm_headers": litellm_headers}}
             )
         else:
             response = await self.llm_with_tools.ainvoke(messages)
 
-        logger.info(f"Agent response generated: has_tool_calls={bool(response.tool_calls) if hasattr(response, 'tool_calls') else False}")
+        logger.info(
+            "Agent response generated: has_tool_calls="
+            f"{bool(response.tool_calls) if hasattr(response, 'tool_calls') else False}"
+        )
 
         return {"messages": [response]}
 
@@ -125,7 +134,7 @@ class ToolNode:
     """
 
     @otel_trace
-    def __init__(self, tools: List[Any]):
+    def __init__(self, tools: list[Any]):
         """Initialize tool node."""
         self.tools_by_name = {tool.name: tool for tool in tools}
         logger.info(f"Tool node initialized with {len(tools)} tools: {list(self.tools_by_name.keys())}")
@@ -139,18 +148,20 @@ class ToolNode:
         estimate_tokens=False,
         calculate_cost=False,
         metadata_fn=lambda state: {
-            "tool_calls_count": len(state.get("messages", [])[-1].tool_calls) if state.get("messages") and hasattr(state["messages"][-1], 'tool_calls') else 0,
+            "tool_calls_count": len(state.get("messages", [])[-1].tool_calls)
+            if state.get("messages") and hasattr(state["messages"][-1], "tool_calls")
+            else 0,
         },
     )
     @otel_trace
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Execute tools requested by the agent.
         """
         messages = state.get("messages", [])
         last_message = messages[-1] if messages else None
 
-        if not last_message or not hasattr(last_message, 'tool_calls'):
+        if not last_message or not hasattr(last_message, "tool_calls"):
             logger.warning("No tool calls found in last message")
             return {"messages": []}
 
@@ -170,18 +181,13 @@ class ToolNode:
             if not tool:
                 error_msg = f"Tool '{tool_name}' not found"
                 logger.error(error_msg)
-                tool_messages.append(
-                    ToolMessage(
-                        content=error_msg,
-                        tool_call_id=tool_call_id,
-                        name=tool_name
-                    )
-                )
+                tool_messages.append(ToolMessage(content=error_msg, tool_call_id=tool_call_id, name=tool_name))
                 continue
 
             try:
                 # Execute tool
                 import time as _time
+
                 _tool_start = _time.time()
                 result = await tool.ainvoke(tool_args)
                 _tool_duration = _time.time() - _tool_start
@@ -191,37 +197,29 @@ class ToolNode:
 
                 # FEATURE:prometheus
                 if _METRICS_AVAILABLE:
-                    get_metrics_collector().track_tool_invocation(tool_name, _tool_duration, "success", state.get("tenant_id", "default"))
+                    get_metrics_collector().track_tool_invocation(
+                        tool_name, _tool_duration, "success", state.get("tenant_id", "default")
+                    )
 
                 logger.info(f"Tool {tool_name} executed successfully: result_length={len(result_str)}")
 
-                tool_messages.append(
-                    ToolMessage(
-                        content=result_str,
-                        tool_call_id=tool_call_id,
-                        name=tool_name
-                    )
-                )
+                tool_messages.append(ToolMessage(content=result_str, tool_call_id=tool_call_id, name=tool_name))
 
             except Exception as e:
-                error_msg = f"Error executing tool {tool_name}: {str(e)}"
+                error_msg = f"Error executing tool {tool_name}: {e!s}"
                 logger.error(error_msg)
                 # FEATURE:prometheus
                 if _METRICS_AVAILABLE:
-                    get_metrics_collector().track_tool_invocation(tool_name, 0.0, "error", state.get("tenant_id", "default"))
-                tool_messages.append(
-                    ToolMessage(
-                        content=error_msg,
-                        tool_call_id=tool_call_id,
-                        name=tool_name
+                    get_metrics_collector().track_tool_invocation(
+                        tool_name, 0.0, "error", state.get("tenant_id", "default")
                     )
-                )
+                tool_messages.append(ToolMessage(content=error_msg, tool_call_id=tool_call_id, name=tool_name))
 
         return {"messages": tool_messages}
 
 
 @otel_trace
-def should_continue(state: Dict[str, Any]) -> str:
+def should_continue(state: dict[str, Any]) -> str:
     """
     Determine if we should continue to tools or end.
 
@@ -233,7 +231,7 @@ def should_continue(state: Dict[str, Any]) -> str:
     last_message = messages[-1] if messages else None
 
     # If the last message has tool calls, route to tools
-    if last_message and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+    if last_message and hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
 
     # Otherwise, we're done

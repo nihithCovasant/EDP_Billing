@@ -4,18 +4,20 @@ Provides Kubernetes-compatible readiness and liveness checks.
 """
 
 import asyncio
-from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple
-from enum import Enum
+from collections.abc import Awaitable, Callable
 from datetime import datetime
+from enum import StrEnum
+from typing import Any
 
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 # A liveness probe returns (is_alive, reason) — reason is always logged when
 # is_alive is False, so a tripped check is diagnosable from logs alone.
-LivenessCheck = Callable[[], Awaitable[Tuple[bool, str]]]
+LivenessCheck = Callable[[], Awaitable[tuple[bool, str]]]
 
 
-class HealthStatus(str, Enum):
+class HealthStatus(StrEnum):
     """Health status levels."""
 
     HEALTHY = "healthy"
@@ -40,7 +42,7 @@ class ComponentHealth:
         name: str,
         status: HealthStatus,
         message: str = "",
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         self.name = name
         self.status = status
@@ -48,7 +50,7 @@ class ComponentHealth:
         self.details = details or {}
         self.checked_at = datetime.utcnow().isoformat() + "Z"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "name": self.name,
@@ -73,8 +75,8 @@ class HealthChecker:
     def __init__(self):
         """Initialize health checker."""
         self.startup_time = datetime.utcnow()
-        self._components: List[ComponentHealth] = []
-        self._liveness_checks: List[LivenessCheck] = []
+        self._components: list[ComponentHealth] = []
+        self._liveness_checks: list[LivenessCheck] = []
 
     def register_liveness_check(self, check: LivenessCheck) -> None:
         """
@@ -145,7 +147,7 @@ class HealthChecker:
                 return ComponentHealth(
                     name="llm",
                     status=HealthStatus.DEGRADED,
-                    message=f"LLM configured but instantiation warning: {str(e)}",
+                    message=f"LLM configured but instantiation warning: {e!s}",
                     details={"configured_providers": available_providers},
                 )
 
@@ -154,7 +156,7 @@ class HealthChecker:
             return ComponentHealth(
                 name="llm",
                 status=HealthStatus.UNHEALTHY,
-                message=f"LLM check failed: {str(e)}",
+                message=f"LLM check failed: {e!s}",
             )
 
     @otel_trace
@@ -181,9 +183,7 @@ class HealthChecker:
             try:
                 import psycopg
 
-                async with await psycopg.AsyncConnection.connect(
-                    settings.postgres_connection_string
-                ) as conn:
+                async with await psycopg.AsyncConnection.connect(settings.postgres_connection_string) as conn:
                     await conn.execute("SELECT 1")
 
                 return ComponentHealth(
@@ -205,7 +205,7 @@ class HealthChecker:
                 return ComponentHealth(
                     name="database",
                     status=HealthStatus.UNHEALTHY,
-                    message=f"Database connection failed: {str(e)}",
+                    message=f"Database connection failed: {e!s}",
                     details={"type": "postgresql"},
                 )
 
@@ -214,7 +214,7 @@ class HealthChecker:
             return ComponentHealth(
                 name="database",
                 status=HealthStatus.UNHEALTHY,
-                message=f"Database check failed: {str(e)}",
+                message=f"Database check failed: {e!s}",
             )
 
     @otel_trace
@@ -252,7 +252,7 @@ class HealthChecker:
             return ComponentHealth(
                 name="tools",
                 status=HealthStatus.UNHEALTHY,
-                message=f"Tools check failed: {str(e)}",
+                message=f"Tools check failed: {e!s}",
             )
 
     @otel_trace
@@ -327,7 +327,7 @@ class HealthChecker:
             return ComponentHealth(
                 name="metrics",
                 status=HealthStatus.UNHEALTHY,
-                message=f"Metrics check failed: {str(e)}",
+                message=f"Metrics check failed: {e!s}",
             )
 
     @otel_trace
@@ -371,11 +371,11 @@ class HealthChecker:
             return ComponentHealth(
                 name="rate_limiter",
                 status=HealthStatus.UNHEALTHY,
-                message=f"Rate limiter check failed: {str(e)}",
+                message=f"Rate limiter check failed: {e!s}",
             )
 
     @otel_trace
-    async def check_all_components(self) -> List[ComponentHealth]:
+    async def check_all_components(self) -> list[ComponentHealth]:
         """
         Run all component health checks in parallel.
 
@@ -412,7 +412,7 @@ class HealthChecker:
                     ComponentHealth(
                         name=component_name,
                         status=HealthStatus.UNHEALTHY,
-                        message=f"Health check exception: {str(result)}",
+                        message=f"Health check exception: {result!s}",
                     )
                 )
             else:
@@ -421,7 +421,7 @@ class HealthChecker:
         return component_results
 
     @otel_trace
-    async def get_health_status(self) -> Dict[str, Any]:
+    async def get_health_status(self) -> dict[str, Any]:
         """
         Get overall health status with component details.
 
@@ -435,12 +435,9 @@ class HealthChecker:
         critical_components = {"llm"}
 
         critical_unhealthy = any(
-            c.status == HealthStatus.UNHEALTHY and c.name in critical_components
-            for c in components
+            c.status == HealthStatus.UNHEALTHY and c.name in critical_components for c in components
         )
-        any_unhealthy_or_degraded = any(
-            c.status != HealthStatus.HEALTHY for c in components
-        )
+        any_unhealthy_or_degraded = any(c.status != HealthStatus.HEALTHY for c in components)
 
         if critical_unhealthy:
             overall_status = HealthStatus.UNHEALTHY
@@ -474,7 +471,9 @@ class HealthChecker:
         for component in components:
             if component.name in critical_components:
                 if component.status == HealthStatus.UNHEALTHY:
-                    logger.warning(f"Readiness check failed: component={component.name} status={component.status.value}")
+                    logger.warning(
+                        f"Readiness check failed: component={component.name} status={component.status.value}"
+                    )
                     return False
 
         return True
@@ -505,7 +504,7 @@ class HealthChecker:
 
 
 # Global health checker instance
-_health_checker: Optional[HealthChecker] = None
+_health_checker: HealthChecker | None = None
 
 
 @otel_trace

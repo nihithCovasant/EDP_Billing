@@ -12,16 +12,19 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
-from .config import load_edp_config, EdpBootstrapConfig
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
+
+from src.tools.cbos_client import CbosClient
+
+from .config import EdpBootstrapConfig, load_edp_config
 from .database import close_database, init_database
 from .edpb_client import get_edpb_client
 from .orchestrator import EdpOrchestrator
 from .utils.datetime_utils import now_ist
 from .utils.log_fmt import edp_log
-from src.tools.cbos_client import CbosClient
-from cams_otel_lib import Logger as logger, otel_trace
 
 # A cycle taking longer than this many multiples of wake_interval_seconds
 # to even START is considered wedged (some await inside the previous cycle
@@ -34,33 +37,37 @@ _MIN_STALE_THRESHOLD_SECONDS = 120
 
 class EdpWakeLoop:
     def __init__(self):
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
-        self._orchestrator: Optional[EdpOrchestrator] = None
+        self._orchestrator: EdpOrchestrator | None = None
         self._cycle_count: int = 0
-        self._config: Optional[EdpBootstrapConfig] = None
+        self._config: EdpBootstrapConfig | None = None
         # Monotonic (not wall-clock) timestamp of the last cycle start — used
         # by liveness_check() to detect a wedged loop.
-        self._last_cycle_started_at: Optional[float] = None
+        self._last_cycle_started_at: float | None = None
         # Wall-clock (IST) start/end timestamps of the last cycle — reported
         # by health_snapshot() for GET /edp/health; separate from the
         # monotonic field above, which exists purely for staleness math.
-        self._last_cycle_started_at_wall: Optional[datetime] = None
-        self._last_cycle_ended_at_wall: Optional[datetime] = None
+        self._last_cycle_started_at_wall: datetime | None = None
+        self._last_cycle_ended_at_wall: datetime | None = None
 
     @otel_trace
     async def start(self) -> None:
         config = load_edp_config()
-        logger.info(edp_log(
-            "EDP startup: initializing database (running Alembic migrations "
-            "if any are pending — first-time/fresh-DB runs can take a while)"
-        ))
+        logger.info(
+            edp_log(
+                "EDP startup: initializing database (running Alembic migrations "
+                "if any are pending — first-time/fresh-DB runs can take a while)"
+            )
+        )
         t_db0 = time.monotonic()
         await init_database(config.database_url)
-        logger.info(edp_log(
-            "EDP startup: database ready",
-            elapsed_ms=int((time.monotonic() - t_db0) * 1000),
-        ))
+        logger.info(
+            edp_log(
+                "EDP startup: database ready",
+                elapsed_ms=int((time.monotonic() - t_db0) * 1000),
+            )
+        )
         cbos = CbosClient(
             status_url=config.cbos_status_url,
             process_url=config.cbos_process_url,
@@ -74,14 +81,16 @@ class EdpWakeLoop:
         self._stop_event.clear()
         self._cycle_count = 0
         self._task = asyncio.create_task(self._cycle_wrapper(), name="edp-wake-loop")
-        logger.info(edp_log(
-            "Wake loop started",
-            interval_s=config.wake_interval_seconds,
-            mock_cbos=config.cbos_use_mock,
-            status_url=config.cbos_status_url,
-            process_url=config.cbos_process_url,
-            instance=config.agent_instance_id,
-        ))
+        logger.info(
+            edp_log(
+                "Wake loop started",
+                interval_s=config.wake_interval_seconds,
+                mock_cbos=config.cbos_use_mock,
+                status_url=config.cbos_status_url,
+                process_url=config.cbos_process_url,
+                instance=config.agent_instance_id,
+            )
+        )
 
     @otel_trace
     async def stop(self) -> None:
@@ -96,10 +105,12 @@ class EdpWakeLoop:
             except asyncio.CancelledError:
                 pass
         await close_database()
-        logger.info(edp_log(
-            "Wake loop stopped",
-            total_cycles=self._cycle_count,
-        ))
+        logger.info(
+            edp_log(
+                "Wake loop stopped",
+                total_cycles=self._cycle_count,
+            )
+        )
 
     async def _cycle_wrapper(self) -> None:
         """Run one cycle, then reschedule itself unless stopped. Every
@@ -119,7 +130,7 @@ class EdpWakeLoop:
                 timeout=self._config.wake_interval_seconds,
             )
             return  # stop_event was set while sleeping
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass  # normal case — time for the next cycle
 
         if self._stop_event.is_set():
@@ -140,36 +151,41 @@ class EdpWakeLoop:
             if self._orchestrator:
                 summary = await self._orchestrator.run_wake_cycle()
                 elapsed_ms = int((time.monotonic() - t0) * 1000)
-                logger.info(edp_log(
-                    f"── Wake cycle #{cycle_no} END ──",
-                    elapsed_ms=elapsed_ms,
-                    date=summary.get("active_date"),
-                    state=summary.get("agent_state"),
-                    processed=summary.get("segments_processed", 0),
-                    completed=summary.get("segments_completed", 0),
-                    skipped=summary.get("segments_skipped", 0),
-                    blocked=summary.get("segments_blocked", 0),
-                    failed=summary.get("segments_failed", 0),
-                ))
+                logger.info(
+                    edp_log(
+                        f"── Wake cycle #{cycle_no} END ──",
+                        elapsed_ms=elapsed_ms,
+                        date=summary.get("active_date"),
+                        state=summary.get("agent_state"),
+                        processed=summary.get("segments_processed", 0),
+                        completed=summary.get("segments_completed", 0),
+                        skipped=summary.get("segments_skipped", 0),
+                        blocked=summary.get("segments_blocked", 0),
+                        failed=summary.get("segments_failed", 0),
+                    )
+                )
         except Exception as exc:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
-            logger.error(edp_log(
-                f"── Wake cycle #{cycle_no} ERROR ──",
-                elapsed_ms=elapsed_ms,
-                error=str(exc),
-            ), exc_info=True)
+            logger.error(
+                edp_log(
+                    f"── Wake cycle #{cycle_no} ERROR ──",
+                    elapsed_ms=elapsed_ms,
+                    error=str(exc),
+                ),
+                exc_info=True,
+            )
         finally:
             # Recorded even on error/exception -- an "ended" timestamp that
             # never advances is itself useful wedged-loop evidence.
             self._last_cycle_ended_at_wall = now_ist()
 
     @property
-    def cbos(self) -> Optional[CbosClient]:
+    def cbos(self) -> CbosClient | None:
         """The orchestrator's CbosClient, if the loop has started — used by
         GET /edp/health's CBOS connectivity check (see __main__.py)."""
         return self._orchestrator.cbos if self._orchestrator else None
 
-    def health_snapshot(self) -> Dict[str, Any]:
+    def health_snapshot(self) -> dict[str, Any]:
         """
         Billing-loop section of GET /edp/health (see __main__.py) — whether
         the loop is running at all, plus the last cycle's start/end wall-clock
@@ -180,17 +196,15 @@ class EdpWakeLoop:
             "running": running,
             "cycle_count": self._cycle_count,
             "last_cycle_started_at": (
-                self._last_cycle_started_at_wall.isoformat()
-                if self._last_cycle_started_at_wall else None
+                self._last_cycle_started_at_wall.isoformat() if self._last_cycle_started_at_wall else None
             ),
             "last_cycle_ended_at": (
-                self._last_cycle_ended_at_wall.isoformat()
-                if self._last_cycle_ended_at_wall else None
+                self._last_cycle_ended_at_wall.isoformat() if self._last_cycle_ended_at_wall else None
             ),
             "wake_interval_seconds": self._config.wake_interval_seconds if self._config else None,
         }
 
-    async def liveness_check(self) -> Tuple[bool, str]:
+    async def liveness_check(self) -> tuple[bool, str]:
         """
         Registered with the app's HealthChecker (see src/agent/__main__.py)
         as a liveness probe. Detects a wedged wake loop: if

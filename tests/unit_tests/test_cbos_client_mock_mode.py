@@ -47,6 +47,7 @@ UNREACHABLE_PROCESS_URL = "http://this-host-does-not-exist-12345.invalid"
 # 1. file_process_status
 # =============================================================================
 
+
 async def test_file_process_status_begin_file_upload_returns_expected_mock_value():
     """
     _mock_file_status() returns SKIP for BeginFileUpload only when the
@@ -97,6 +98,7 @@ async def test_file_process_status_becomes_ready_after_configured_poll_count():
 # =============================================================================
 # 2. get_new_trade_process
 # =============================================================================
+
 
 async def test_get_new_trade_process_reserve_returns_success_with_nonempty_pid():
     """process_id="0" (reserve mode) must return success=True with a
@@ -193,6 +195,7 @@ async def test_get_new_trade_process_trigger_mode_second_call_reports_in_progres
 # 3. get_existing_process_id
 # =============================================================================
 
+
 async def test_get_existing_process_id_uploader_sim_miss_then_provision():
     """The mock plays the UPLOADER (the sole PID reserver): with
     mock_set_uploader_reserve_delay(1) the first lookup for a
@@ -237,6 +240,7 @@ async def test_get_existing_process_id_found_after_reservation():
 # 4. Post-trade trigger methods (5) — all mock-succeed via
 #    _mock_post_trade_trigger()
 # =============================================================================
+
 
 async def test_trigger_collateral_valuation_mock_succeeds():
     cbos = CbosClient("http://status", "http://process", use_mock=True)
@@ -309,6 +313,7 @@ async def test_trigger_daily_margin_statements_mock_not_yet_ready():
 #    mock_mark_already_triggered() was called first.
 # =============================================================================
 
+
 async def test_check_collateral_valuation_triggered_defaults_to_not_triggered():
     cbos = CbosClient("http://status", "http://process", use_mock=True)
     result = await cbos.check_collateral_valuation_triggered("CV0001", date(2026, 6, 29))
@@ -372,6 +377,7 @@ async def test_check_daily_margin_statements_triggered_true_after_mock_mark():
 #    __init__, and never reassigned anywhere else in the class body.
 # =============================================================================
 
+
 def test_use_mock_assigned_exactly_once_in_init():
     """
     Regression coverage for a previously-audited concurrency/toggle-safety
@@ -382,13 +388,10 @@ def test_use_mock_assigned_exactly_once_in_init():
     """
     source = inspect.getsource(CbosClient)
     assignment_lines = [
-        line.strip() for line in source.splitlines()
-        if "self.use_mock" in line and "=" in line and "==" not in line
+        line.strip() for line in source.splitlines() if "self.use_mock" in line and "=" in line and "==" not in line
     ]
 
-    assert len(assignment_lines) == 1, (
-        f"expected exactly one self.use_mock assignment, found: {assignment_lines}"
-    )
+    assert len(assignment_lines) == 1, f"expected exactly one self.use_mock assignment, found: {assignment_lines}"
     assert assignment_lines[0] == "self.use_mock = use_mock"
 
     init_source = inspect.getsource(CbosClient.__init__)
@@ -405,6 +408,7 @@ def test_use_mock_reads_back_as_true_when_constructed_with_use_mock_true():
 #    unreachable status_url/process_url -- proven by completing without
 #    raising any httpx/network exception.
 # =============================================================================
+
 
 async def test_file_process_status_never_hits_network_with_unreachable_url():
     cbos = CbosClient(UNREACHABLE_STATUS_URL, UNREACHABLE_PROCESS_URL, use_mock=True)

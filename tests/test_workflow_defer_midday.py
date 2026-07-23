@@ -55,7 +55,9 @@ async def test_upload_applies_immediately_when_nothing_started(cfg, session_fact
     await helpers.seed_day(session_factory, test_date, cfg)
 
     resp = await _upload_workflow_for_date(
-        test_date, _workflow_json(cfg, "CHANGED"), "ops",
+        test_date,
+        _workflow_json(cfg, "CHANGED"),
+        "ops",
     )
 
     assert resp["deferred"] is False
@@ -86,7 +88,9 @@ async def test_upload_deferred_to_next_day_once_a_segment_has_started(cfg, sessi
         original_id = original_active.id
 
         resp = await _upload_workflow_for_date(
-            test_date, _workflow_json(cfg, "SHOULD_NOT_APPLY_TODAY"), "ops",
+            test_date,
+            _workflow_json(cfg, "SHOULD_NOT_APPLY_TODAY"),
+            "ops",
         )
 
         assert resp["deferred"] is True
@@ -122,7 +126,9 @@ async def test_upload_deferred_when_only_post_trade_process_has_started(cfg, ses
             await session.commit()
 
         resp = await _upload_workflow_for_date(
-            test_date, _workflow_json(cfg, "SHOULD_DEFER"), "ops",
+            test_date,
+            _workflow_json(cfg, "SHOULD_DEFER"),
+            "ops",
         )
 
         assert resp["deferred"] is True

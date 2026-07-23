@@ -78,7 +78,8 @@ def get_step(row: SegmentExecution, state_key: str, step_key: str) -> dict:
 
 
 def set_step(row: SegmentExecution, state_key: str, step_key: str, step: dict) -> None:
-    """Merge a step dict into processes_json[state_key]["steps"][step_key], preserving the state's other fields (e.g. "status")."""
+    """Merge a step dict into processes_json[state_key]["steps"][step_key],
+    preserving the state's other fields (e.g. "status")."""
     state = get_state(row, state_key)
     steps = dict(state.get("steps", {}))
     steps[step_key] = step
@@ -125,7 +126,10 @@ def mark_step_done(row: SegmentExecution, state_key: str, step_key: str, last_re
 
 
 def record_pid_reservation(
-    row: SegmentExecution, process_id: str, source: str, now: datetime,
+    row: SegmentExecution,
+    process_id: str,
+    source: str,
+    now: datetime,
 ) -> None:
     """
     Record the PID-resolution outcome as a "reserve_process_id" step.
@@ -139,11 +143,16 @@ def record_pid_reservation(
     operation) — not a separate top-level key, so processes_json's
     top-level keys stay exactly the SegmentState vocabulary.
     """
-    set_step(row, SegmentState.WAITING_FOR_FILE_UPLOAD.value, "reserve_process_id", {
-        "process_id_reserved": process_id,
-        "process_id_source": source,
-        "reserved_at": now.isoformat(),
-    })
+    set_step(
+        row,
+        SegmentState.WAITING_FOR_FILE_UPLOAD.value,
+        "reserve_process_id",
+        {
+            "process_id_reserved": process_id,
+            "process_id_source": source,
+            "reserved_at": now.isoformat(),
+        },
+    )
 
 
 def get_pid_reservation(row: SegmentExecution) -> dict:
@@ -162,11 +171,15 @@ def record_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
     eventual TRIGGERED/FAILED write.
     """
     pid_reservation = get_pid_reservation(row)
-    set_state(row, SegmentState.TRIGGERED.value, {
-        "status": "TRIGGERING",
-        "attempt_started_at": now.isoformat(),
-        "process_id_source": pid_reservation.get("process_id_source"),
-    })
+    set_state(
+        row,
+        SegmentState.TRIGGERED.value,
+        {
+            "status": "TRIGGERING",
+            "attempt_started_at": now.isoformat(),
+            "process_id_source": pid_reservation.get("process_id_source"),
+        },
+    )
 
 
 def record_trigger(
@@ -181,14 +194,18 @@ def record_trigger(
     confirms, the timestamp of when the attempt actually started (and thus
     how long CBOS took to confirm it) would be silently lost."""
     existing = get_state(row, SegmentState.TRIGGERED.value)
-    set_state(row, SegmentState.TRIGGERED.value, {
-        "status": "TRIGGERED",
-        "attempt_started_at": existing.get("attempt_started_at"),
-        "at": now.isoformat(),
-        "process_id_used": process_id,
-        "process_id_source": existing.get("process_id_source"),
-        "is_runnable": is_runnable,
-    })
+    set_state(
+        row,
+        SegmentState.TRIGGERED.value,
+        {
+            "status": "TRIGGERED",
+            "attempt_started_at": existing.get("attempt_started_at"),
+            "at": now.isoformat(),
+            "process_id_used": process_id,
+            "process_id_source": existing.get("process_id_source"),
+            "is_runnable": is_runnable,
+        },
+    )
 
 
 def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
@@ -198,13 +215,17 @@ def record_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> N
     Transient failures deliberately skip this, leaving "TRIGGERING" for recovery.
     """
     existing = get_state(row, SegmentState.TRIGGERED.value)
-    set_state(row, SegmentState.TRIGGERED.value, {
-        "status": "FAILED",
-        "attempt_started_at": existing.get("attempt_started_at"),
-        "at": now.isoformat(),
-        "error": error,
-        "process_id_source": existing.get("process_id_source"),
-    })
+    set_state(
+        row,
+        SegmentState.TRIGGERED.value,
+        {
+            "status": "FAILED",
+            "attempt_started_at": existing.get("attempt_started_at"),
+            "at": now.isoformat(),
+            "error": error,
+            "process_id_source": existing.get("process_id_source"),
+        },
+    )
 
 
 def record_post_trade_trigger_attempt(row: SegmentExecution, now: datetime) -> None:
@@ -215,10 +236,14 @@ def record_post_trade_trigger_attempt(row: SegmentExecution, now: datetime) -> N
     so a crash mid-call is durably visible; handle_triggered() refuses to
     re-fire when it sees this and requires manual verification instead.
     """
-    set_state(row, SegmentState.TRIGGERED.value, {
-        "status": "TRIGGERING",
-        "attempt_started_at": now.isoformat(),
-    })
+    set_state(
+        row,
+        SegmentState.TRIGGERED.value,
+        {
+            "status": "TRIGGERING",
+            "attempt_started_at": now.isoformat(),
+        },
+    )
 
 
 def record_post_trade_trigger(row: SegmentExecution, message: str, now: datetime) -> None:
@@ -226,28 +251,40 @@ def record_post_trade_trigger(row: SegmentExecution, message: str, now: datetime
     preserving attempt_started_at carried forward from
     record_post_trade_trigger_attempt() — same rationale as record_trigger()."""
     existing = get_state(row, SegmentState.TRIGGERED.value)
-    set_state(row, SegmentState.TRIGGERED.value, {
-        "status": "TRIGGERED",
-        "attempt_started_at": existing.get("attempt_started_at"),
-        "at": now.isoformat(),
-        "message": message,
-    })
+    set_state(
+        row,
+        SegmentState.TRIGGERED.value,
+        {
+            "status": "TRIGGERED",
+            "attempt_started_at": existing.get("attempt_started_at"),
+            "at": now.isoformat(),
+            "message": message,
+        },
+    )
 
 
 def record_post_trade_trigger_failed(row: SegmentExecution, error: str, now: datetime) -> None:
     """Record a failed post-trade trigger attempt, preserving
     attempt_started_at — same rationale as record_trigger_failed()."""
     existing = get_state(row, SegmentState.TRIGGERED.value)
-    set_state(row, SegmentState.TRIGGERED.value, {
-        "status": "FAILED",
-        "attempt_started_at": existing.get("attempt_started_at"),
-        "at": now.isoformat(),
-        "error": error,
-    })
+    set_state(
+        row,
+        SegmentState.TRIGGERED.value,
+        {
+            "status": "FAILED",
+            "attempt_started_at": existing.get("attempt_started_at"),
+            "at": now.isoformat(),
+            "error": error,
+        },
+    )
 
 
 def record_download_result(
-    row: SegmentExecution, manifest_path: str, batch_id: str, status: str, now: datetime,
+    row: SegmentExecution,
+    manifest_path: str,
+    batch_id: str,
+    status: str,
+    now: datetime,
 ) -> None:
     """DOWNLOADING succeeded — persist what the bot handed back. UPLOADING
     reads manifest_path from here; WAITING_FOR_FILE_UPLOAD's incomplete-batch

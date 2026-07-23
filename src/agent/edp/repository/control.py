@@ -4,13 +4,12 @@ edpb_agent_control table — START/STOP audit log operations.
 
 from __future__ import annotations
 
-from typing import Optional
-
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import AgentControl, AgentControlAction
-from cams_otel_lib import Logger as logger, otel_trace
 
 
 @otel_trace
@@ -26,8 +25,8 @@ async def record_action(
     session: AsyncSession,
     action: AgentControlAction,
     requested_by: str,
-    reason: Optional[str] = None,
-    snapshot: Optional[dict] = None,
+    reason: str | None = None,
+    snapshot: dict | None = None,
 ) -> AgentControl:
     """
     Append a START or STOP record.
@@ -43,10 +42,7 @@ async def record_action(
     )
     session.add(record)
     await session.flush()
-    logger.info(
-        f"AgentControl recorded: action={action.value} "
-        f"effective={effective} by={requested_by}"
-    )
+    logger.info(f"AgentControl recorded: action={action.value} effective={effective} by={requested_by}")
     return record
 
 
@@ -56,9 +52,5 @@ async def get_history(
     limit: int = 20,
 ) -> list[AgentControl]:
     """Return recent agent control events, most recent first."""
-    stmt = (
-        select(AgentControl)
-        .order_by(desc(AgentControl.requested_at))
-        .limit(limit)
-    )
+    stmt = select(AgentControl).order_by(desc(AgentControl.requested_at)).limit(limit)
     return list((await session.execute(stmt)).scalars().all())

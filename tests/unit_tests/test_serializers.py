@@ -50,25 +50,25 @@ def _full_row(**overrides) -> SegmentExecution:
     value (except created_at/updated_at, which are server-default-only and
     not set by the plain Python constructor)."""
     now = now_ist()
-    defaults = dict(
-        id="row-1",
-        trade_date=date(2026, 6, 29),
-        segment_code="EQ",
-        config_id_used="cfg-1",
-        segment_status=SegmentStatus.IN_PROGRESS,
-        current_process="BeginFileUpload",
-        current_state=SegmentState.INIT,
-        process_id="PID123",
-        process_id_reserved_at=now,
-        processes_json={"INIT": {"status": "COMPLETED"}},
-        started_at=now,
-        completed_at=now,
-        last_heartbeat_at=now,
-        skip_category="CBOS_SKIP",
-        skip_reason="Holiday",
-        created_at=now,
-        updated_at=now,
-    )
+    defaults = {
+        "id": "row-1",
+        "trade_date": date(2026, 6, 29),
+        "segment_code": "EQ",
+        "config_id_used": "cfg-1",
+        "segment_status": SegmentStatus.IN_PROGRESS,
+        "current_process": "BeginFileUpload",
+        "current_state": SegmentState.INIT,
+        "process_id": "PID123",
+        "process_id_reserved_at": now,
+        "processes_json": {"INIT": {"status": "COMPLETED"}},
+        "started_at": now,
+        "completed_at": now,
+        "last_heartbeat_at": now,
+        "skip_category": "CBOS_SKIP",
+        "skip_reason": "Holiday",
+        "created_at": now,
+        "updated_at": now,
+    }
     defaults.update(overrides)
     return SegmentExecution(**defaults)
 
@@ -100,11 +100,26 @@ def test_serialize_segment_returns_all_documented_keys_with_expected_values():
     assert result["updated_at"] == row.updated_at.isoformat()
 
     expected_keys = {
-        "id", "trade_date", "segment_code", "segment_name", "sequence_order",
-        "segment_status", "current_process", "current_state", "process_id",
-        "process_id_reserved_at", "skip_category", "skip_reason", "started_at",
-        "completed_at", "last_heartbeat_at", "runtime_health", "config_id_used",
-        "processes_json", "created_at", "updated_at",
+        "id",
+        "trade_date",
+        "segment_code",
+        "segment_name",
+        "sequence_order",
+        "segment_status",
+        "current_process",
+        "current_state",
+        "process_id",
+        "process_id_reserved_at",
+        "skip_category",
+        "skip_reason",
+        "started_at",
+        "completed_at",
+        "last_heartbeat_at",
+        "runtime_health",
+        "config_id_used",
+        "processes_json",
+        "created_at",
+        "updated_at",
     }
     assert set(result.keys()) == expected_keys
 
@@ -166,10 +181,20 @@ def test_serialize_segment_summary_returns_compact_key_set():
     result = serialize_segment_summary(row)
 
     expected_keys = {
-        "segment_code", "segment_name", "sequence_order", "segment_status",
-        "current_process", "current_state", "process_id",
-        "process_id_reserved_at", "skip_category", "skip_reason",
-        "started_at", "completed_at", "last_heartbeat_at", "runtime_health",
+        "segment_code",
+        "segment_name",
+        "sequence_order",
+        "segment_status",
+        "current_process",
+        "current_state",
+        "process_id",
+        "process_id_reserved_at",
+        "skip_category",
+        "skip_reason",
+        "started_at",
+        "completed_at",
+        "last_heartbeat_at",
+        "runtime_health",
         "processes_json",
     }
     assert set(result.keys()) == expected_keys
@@ -202,16 +227,30 @@ def test_serialize_segment_alert_drops_internal_audit_fields():
     result = serialize_segment_alert(row)
 
     expected_keys = {
-        "trade_date", "segment_code", "segment_name", "segment_status",
-        "current_process", "current_state", "process_id", "skip_reason",
-        "started_at", "completed_at",
+        "trade_date",
+        "segment_code",
+        "segment_name",
+        "segment_status",
+        "current_process",
+        "current_state",
+        "process_id",
+        "skip_reason",
+        "started_at",
+        "completed_at",
     }
     assert set(result.keys()) == expected_keys
 
     for dropped in (
-        "id", "config_id_used", "process_id_reserved_at", "last_heartbeat_at",
-        "runtime_health", "processes_json", "created_at", "updated_at",
-        "skip_category", "sequence_order",
+        "id",
+        "config_id_used",
+        "process_id_reserved_at",
+        "last_heartbeat_at",
+        "runtime_health",
+        "processes_json",
+        "created_at",
+        "updated_at",
+        "skip_category",
+        "sequence_order",
     ):
         assert dropped not in result
 

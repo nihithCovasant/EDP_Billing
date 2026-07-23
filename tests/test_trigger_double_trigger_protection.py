@@ -29,7 +29,11 @@ SEGMENT = "CUR"
 
 
 async def _seed_and_prime_triggering_row(
-    session_factory, cfg, orchestrator, test_date, process_id: str,
+    session_factory,
+    cfg,
+    orchestrator,
+    test_date,
+    process_id: str,
 ) -> None:
     """Seed a normal day, then rewrite the SEGMENT row into the state a
     crash would leave behind right after writing "TRIGGERING" to
@@ -108,7 +112,10 @@ async def test_recovery_does_not_retrigger_when_cbos_already_has_it(cfg, session
 
     # Simulate the "lost" trigger call actually reaching CBOS before the crash.
     pre_call = await cbos.get_new_trade_process(
-        group_name=SEGMENT, login_id=cfg.cbos_login_id, trade_date=test_date, process_id=fake_pid,
+        group_name=SEGMENT,
+        login_id=cfg.cbos_login_id,
+        trade_date=test_date,
+        process_id=fake_pid,
     )
     assert pre_call.success
 
@@ -177,7 +184,9 @@ async def test_transient_trigger_failure_stays_triggering_and_recovers(cfg, sess
     as "TRIGGERING" (never FAILED) so the next cycle runs the same
     recovery path."""
     cbos = TransientTriggerFailureCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, fail_segment=SEGMENT,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment=SEGMENT,
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)

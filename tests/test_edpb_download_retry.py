@@ -32,6 +32,7 @@ class _FakeResponse:
 class _RaisingThenSucceedingClient:
     """Fake httpx.AsyncClient — raises ConnectError on the first N calls
     (tracked via a shared mutable counter), then succeeds."""
+
     _fail_count = 0
     _call_log = []
 
@@ -82,8 +83,10 @@ class _AlwaysTimeoutClient:
 @pytest.fixture(autouse=True)
 def _fast_backoff(monkeypatch):
     """Don't actually sleep between retries in tests."""
+
     async def no_sleep(_seconds):
         return None
+
     monkeypatch.setattr(edpb_download.asyncio, "sleep", no_sleep)
 
 

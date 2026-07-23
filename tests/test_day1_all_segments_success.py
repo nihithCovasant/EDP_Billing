@@ -45,8 +45,11 @@ async def test_all_segments_complete_successfully(cfg, session_factory, test_dat
         # processes_json should record every one of the 6 states as done —
         # each top-level key is exactly a SegmentState.value string.
         for state in (
-            SegmentState.INIT, SegmentState.WAITING_FOR_FILE_UPLOAD, SegmentState.TRIGGERED,
-            SegmentState.WAITING_FOR_BILLPOSTING, SegmentState.WAITING_FOR_RECON,
+            SegmentState.INIT,
+            SegmentState.WAITING_FOR_FILE_UPLOAD,
+            SegmentState.TRIGGERED,
+            SegmentState.WAITING_FOR_BILLPOSTING,
+            SegmentState.WAITING_FOR_RECON,
             SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
         ):
             assert state.value in row.processes_json, f"{code} missing processes_json[{state.value}]"
@@ -90,7 +93,10 @@ async def test_reserve_pid_step2_reuses_existing_process_id(cfg, session_factory
     await helpers.seed_day(session_factory, test_date, cfg)
 
     pre_reserved = await cbos.get_new_trade_process(
-        group_name="CUR", login_id=cfg.cbos_login_id, trade_date=test_date, process_id="0",
+        group_name="CUR",
+        login_id=cfg.cbos_login_id,
+        trade_date=test_date,
+        process_id="0",
     )
     assert pre_reserved.success
 

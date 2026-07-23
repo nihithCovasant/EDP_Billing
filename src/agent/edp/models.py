@@ -44,7 +44,8 @@ class Base(DeclarativeBase):
 # Enums
 # ---------------------------------------------------------------------------
 
-class SegmentStatus(str, enum.Enum):
+
+class SegmentStatus(enum.StrEnum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
@@ -52,7 +53,7 @@ class SegmentStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class SegmentState(str, enum.Enum):
+class SegmentState(enum.StrEnum):
     """
     There are no "phases" — only states and the actions a state's handler
     takes. Shared by two pipelines, distinguished by segment_code (see
@@ -93,6 +94,7 @@ class SegmentState(str, enum.Enum):
     not here; current_state is set to None once COMPLETED/SKIPPED, or left
     frozen at the state it was in when FAILED, for diagnostics.
     """
+
     # Real-segment pipeline
     INIT = "INIT"
     DOWNLOADING = "DOWNLOADING"
@@ -110,12 +112,12 @@ class SegmentState(str, enum.Enum):
     WAITING_FOR_COMPLETION = "WAITING_FOR_COMPLETION"
 
 
-class AgentControlAction(str, enum.Enum):
+class AgentControlAction(enum.StrEnum):
     START = "START"
     STOP = "STOP"
 
 
-class AuditAction(str, enum.Enum):
+class AuditAction(enum.StrEnum):
     WORKFLOW_UPLOAD = "WORKFLOW_UPLOAD"
     WORKFLOW_VERSION_DELETE = "WORKFLOW_VERSION_DELETE"
 
@@ -123,6 +125,7 @@ class AuditAction(str, enum.Enum):
 # ---------------------------------------------------------------------------
 # Table 1: edpb_properties
 # ---------------------------------------------------------------------------
+
 
 class EdpProperties(Base):
     """
@@ -187,48 +190,39 @@ class EdpProperties(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    trade_date: Mapped[date] = mapped_column(
-        Date, nullable=False, index=True
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     workflow_json: Mapped[dict] = mapped_column(
-        _MutableJSON, nullable=False,
-        comment="Full segment + process config for the day"
+        _MutableJSON, nullable=False, comment="Full segment + process config for the day"
     )
     is_active: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True,
-        comment="Only one active row per trade_date"
+        Boolean, nullable=False, default=True, comment="Only one active row per trade_date"
     )
-    uploaded_by: Mapped[str] = mapped_column(
-        String(256), nullable=False, default="system"
-    )
-    uploaded_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    uploaded_by: Mapped[str] = mapped_column(String(256), nullable=False, default="system")
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     superseded_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
-        comment="Set when a newer config replaces this row for the same trade_date"
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Set when a newer config replaces this row for the same trade_date",
     )
     version_name: Mapped[str | None] = mapped_column(
-        String(128), nullable=True,
+        String(128),
+        nullable=True,
         comment=(
             "Optional human label for this config, reusable across dates. "
             "At most one row may own a given name at a time (see the "
             "case-insensitive unique index above) — applying or "
             "overwriting a name moves it here from its previous owner "
             "rather than duplicating it."
-        )
+        ),
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 # ---------------------------------------------------------------------------
 # Table 2: edpb_segment_execution
 # ---------------------------------------------------------------------------
+
 
 class SegmentExecution(Base):
     """
@@ -250,13 +244,24 @@ class SegmentExecution(Base):
     matches pipeline order, since each key is only ever created when that
     state is first entered):
     {
-      "INIT":                                  {"status"?: "COMPLETED", "steps": {"BeginFileUpload_STATUS": {"last_response": ..., "last_checked_at"|"checked_at": ...}}},
-      "WAITING_FOR_FILE_UPLOAD":                {"status"?: "COMPLETED", "steps": {"reserve_process_id"?: {"process_id_reserved": ..., "process_id_source": "EXISTING", "reserved_at": ...}, "FILEUPLOAD_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
-      "WAITING_FOR_INSTI_TRADE":                {"status"?: "COMPLETED", "steps": {"CHECKINSTITRADE_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
-      "TRIGGERED":                              {"status": ..., "at": ..., "process_id_used": ..., "process_id_source": ..., "is_runnable": bool},
-      "WAITING_FOR_BILLPOSTING":                {"status"?: "COMPLETED", "steps": {"BILLPOSTING_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
-      "WAITING_FOR_RECON":                      {"status"?: "COMPLETED", "steps": {"RECON_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
-      "WAITING_FOR_CONTRACT_NOTE_GENERATION":   {"status"?: "COMPLETED", "steps": {"CONTRACTNOTEGENERATION_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
+      "INIT": {"status"?: "COMPLETED", "steps": {"BeginFileUpload_STATUS":
+          {"last_response": ..., "last_checked_at"|"checked_at": ...}}},
+      "WAITING_FOR_FILE_UPLOAD": {"status"?: "COMPLETED", "steps": {
+          "reserve_process_id"?: {"process_id_reserved": ...,
+              "process_id_source": "EXISTING", "reserved_at": ...},
+          "FILEUPLOAD_STATUS":
+              {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
+      "WAITING_FOR_INSTI_TRADE": {"status"?: "COMPLETED", "steps": {"CHECKINSTITRADE_STATUS":
+          {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
+      "TRIGGERED": {"status": ..., "at": ..., "process_id_used": ...,
+          "process_id_source": ..., "is_runnable": bool},
+      "WAITING_FOR_BILLPOSTING": {"status"?: "COMPLETED", "steps": {"BILLPOSTING_STATUS":
+          {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
+      "WAITING_FOR_RECON": {"status"?: "COMPLETED", "steps": {"RECON_STATUS":
+          {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}},
+      "WAITING_FOR_CONTRACT_NOTE_GENERATION": {"status"?: "COMPLETED", "steps":
+          {"CONTRACTNOTEGENERATION_STATUS":
+              {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
     }
     "reserve_process_id" is written once, on WAITING_FOR_FILE_UPLOAD's
     first entry, nested as a step (keeps top-level keys exactly the
@@ -274,9 +279,11 @@ class SegmentExecution(Base):
     — last_response is the predecessor's terminal segment_status, not a
     CBOS reply:
     {
-      "WAITING_FOR_GTG":        {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS": {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
-      "TRIGGERED":               {"status": ..., "at": ..., "message": ...},
-      "WAITING_FOR_COMPLETION": {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS": {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
+      "WAITING_FOR_GTG": {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS":
+          {"last_response": ..., "last_checked_at"|"ready_at": ...}}},
+      "TRIGGERED": {"status": ..., "at": ..., "message": ...},
+      "WAITING_FOR_COMPLETION": {"status"?: "COMPLETED", "steps": {"<ProcessName>_STATUS":
+          {"last_response": ..., "last_checked_at"|"confirmed_at": ...}}}
     }
 
     current_process holds the CBOS ProcessName currently being polled
@@ -285,41 +292,40 @@ class SegmentExecution(Base):
 
     __tablename__ = "edpb_segment_execution"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
 
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     segment_code: Mapped[str] = mapped_column(
-        String(32), nullable=False,
+        String(32),
+        nullable=False,
         comment=(
             "Real segment (utils/constants.SEGMENT_ORDER) or post-trade "
             "process (POST_TRADE_ORDER); display name/order resolved from "
             "this code, not stored."
-        )
+        ),
     )
 
     config_id_used: Mapped[str | None] = mapped_column(
-        String(36), nullable=True,
-        comment="edpb_properties.id that seeded this row — no FK constraint"
+        String(36), nullable=True, comment="edpb_properties.id that seeded this row — no FK constraint"
     )
 
     segment_status: Mapped[SegmentStatus] = mapped_column(
         Enum(SegmentStatus), nullable=False, default=SegmentStatus.PENDING
     )
     current_process: Mapped[str | None] = mapped_column(
-        String(64), nullable=True,
-        comment="Active CBOS ProcessName being polled"
+        String(64), nullable=True, comment="Active CBOS ProcessName being polled"
     )
     current_state: Mapped[SegmentState | None] = mapped_column(
-        Enum(SegmentState), nullable=True,
+        Enum(SegmentState),
+        nullable=True,
     )
 
     # process_id resolved once per segment-day (getdropdown or
     # getNewTradeProcess), reused for the TRIGGER call.
     process_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     process_id_reserved_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     # Manual (re)activation marker (wayfinder ticket 13): set by the retry /
@@ -328,50 +334,48 @@ class SegmentExecution(Base):
     # loop bypasses window gating for marked rows (logged loudly) and the
     # marker clears on any terminal transition.
     manually_activated: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false",
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
     )
 
     processes_json: Mapped[dict] = mapped_column(
-        _MutableJSON, nullable=False, default=dict,
-        comment="Per-stage state — see class docstring for shape"
+        _MutableJSON, nullable=False, default=dict, comment="Per-stage state — see class docstring for shape"
     )
 
     # Window times are resolved live from workflow_json each cycle (see
     # orchestrator._resolve_window()), not stored, so a config re-upload
     # takes effect immediately.
     started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
     completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True),
+        nullable=True,
     )
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
-        comment="Updated every cycle while IN_PROGRESS; staleness detector"
+        DateTime(timezone=True), nullable=True, comment="Updated every cycle while IN_PROGRESS; staleness detector"
     )
 
     # Used for both SKIPPED and FAILED outcomes.
     skip_category: Mapped[str | None] = mapped_column(
-        String(32), nullable=True,
-        comment=(
-            "SKIPPED: CBOS_SKIP | MANUAL_SKIP | "
-            "FAILED: CBOS_ERROR | SYSTEM_ERROR | TIMEOUT"
-        )
+        String(32),
+        nullable=True,
+        comment=("SKIPPED: CBOS_SKIP | MANUAL_SKIP | FAILED: CBOS_ERROR | SYSTEM_ERROR | TIMEOUT"),
     )
-    skip_reason: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
+    skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     __table_args__ = (
         UniqueConstraint(
-            "trade_date", "segment_code",
+            "trade_date",
+            "segment_code",
             name="uq_segment_execution_per_day",
         ),
     )
@@ -380,6 +384,7 @@ class SegmentExecution(Base):
 # ---------------------------------------------------------------------------
 # Table 3: edpb_agent_control
 # ---------------------------------------------------------------------------
+
 
 class AgentControl(Base):
     """
@@ -393,32 +398,21 @@ class AgentControl(Base):
 
     __tablename__ = "edpb_agent_control"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
-    action: Mapped[AgentControlAction] = mapped_column(
-        Enum(AgentControlAction), nullable=False
-    )
-    requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    requested_by: Mapped[str] = mapped_column(
-        String(256), nullable=False, default="system"
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    action: Mapped[AgentControlAction] = mapped_column(Enum(AgentControlAction), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(256), nullable=False, default="system")
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    effective_state: Mapped[str] = mapped_column(
-        String(32), nullable=False,
-        comment="RUNNING or STOPPED"
-    )
+    effective_state: Mapped[str] = mapped_column(String(32), nullable=False, comment="RUNNING or STOPPED")
     snapshot_json: Mapped[dict | None] = mapped_column(
-        _MutableJSON, nullable=True,
-        comment="Runtime state snapshot at time of action"
+        _MutableJSON, nullable=True, comment="Runtime state snapshot at time of action"
     )
 
 
 # ---------------------------------------------------------------------------
 # Table 4: edpb_audit_log
 # ---------------------------------------------------------------------------
+
 
 class AuditLog(Base):
     """
@@ -444,9 +438,7 @@ class AuditLog(Base):
 
     __tablename__ = "edpb_audit_log"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
@@ -455,14 +447,14 @@ class AuditLog(Base):
     trade_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     version_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     config_id: Mapped[str | None] = mapped_column(
-        String(36), nullable=True,
-        comment="edpb_properties.id this event relates to — no FK constraint"
+        String(36), nullable=True, comment="edpb_properties.id this event relates to — no FK constraint"
     )
     summary: Mapped[str] = mapped_column(
-        Text, nullable=False,
-        comment="Short human-readable description, e.g. 'EQ.window_start 17:00 -> 18:00'"
+        Text, nullable=False, comment="Short human-readable description, e.g. 'EQ.window_start 17:00 -> 18:00'"
     )
     changes_json: Mapped[dict] = mapped_column(
-        _MutableJSON, nullable=False, default=dict,
-        comment="Structured before/after diff — see api/workflow.py::diff_workflow_configs()"
+        _MutableJSON,
+        nullable=False,
+        default=dict,
+        comment="Structured before/after diff — see api/workflow.py::diff_workflow_configs()",
     )

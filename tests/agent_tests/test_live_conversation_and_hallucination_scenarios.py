@@ -90,14 +90,13 @@ import httpx
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
-from src.agent.__main__ import build_app
 import src.tools.edp_status as edp_status_module
+from src.agent.__main__ import build_app
 from src.agent.edp import repository
 from src.agent.edp.models import SegmentStatus
 from src.agent.edp.utils.serializers import serialize_segment
 
 from .. import helpers
-
 
 # ---------------------------------------------------------------------------
 # False-completion phrase detector — the crux of scenario 3.
@@ -166,9 +165,7 @@ def _make_same_loop_get(session_factory):
                 segment_code = parts[3]
                 row = await repository.get_one(session, trade_date, segment_code)
                 if not row:
-                    return 404, {
-                        "detail": f"No execution record for segment={segment_code} date={trade_date}"
-                    }
+                    return 404, {"detail": f"No execution record for segment={segment_code} date={trade_date}"}
                 return 200, serialize_segment(row)
 
             data = await repository.get_day_summary(session, trade_date)
@@ -210,8 +207,16 @@ def test_scenario1_out_of_scope_question_no_crash_no_domain_hallucination(client
     assert text.strip() != ""
 
     lowered = text.lower()
-    edp_jargon = ["eq segment", "mcx segment", "segment eq", "segment mcx",
-                  "completed", "retried", "skipped status", "trade_date"]
+    edp_jargon = [
+        "eq segment",
+        "mcx segment",
+        "segment eq",
+        "segment mcx",
+        "completed",
+        "retried",
+        "skipped status",
+        "trade_date",
+    ]
     leaked = [term for term in edp_jargon if term in lowered]
     assert not leaked, (
         f"Response to an out-of-scope question unexpectedly contains EDP-domain "
@@ -234,12 +239,17 @@ def test_scenario2_capability_question_describes_real_tools(client):
 
     lowered = text.lower()
     capability_keywords = [
-        "status", "download", "upload", "config", "segment", "calculat", "count",
+        "status",
+        "download",
+        "upload",
+        "config",
+        "segment",
+        "calculat",
+        "count",
     ]
     matched = [kw for kw in capability_keywords if kw in lowered]
     assert matched, (
-        f"Capability response mentions none of the expected real-tool keywords "
-        f"{capability_keywords}:\n{text}"
+        f"Capability response mentions none of the expected real-tool keywords {capability_keywords}:\n{text}"
     )
 
 
@@ -330,7 +340,9 @@ async def _run_agent_async(client: httpx.AsyncClient, query: str, conversation_i
 
 
 async def test_scenario4_multi_turn_remembers_seeded_failed_segment(
-    async_client, seeded_failed_day, test_date,
+    async_client,
+    seeded_failed_day,
+    test_date,
 ):
     failed_segment_code = seeded_failed_day
 
@@ -341,14 +353,17 @@ async def test_scenario4_multi_turn_remembers_seeded_failed_segment(
     # `test_date` fixture docstring). So turn 1 must name that date
     # explicitly to get the LLM to query the seeded day, not real "today".
     turn1 = await _run_agent_async(
-        async_client, f"how's the processing going for {test_date.isoformat()}?",
+        async_client,
+        f"how's the processing going for {test_date.isoformat()}?",
     )
     conversation_id = turn1["conversation_id"]
     print("\n=== SCENARIO 4 TURN 1 RESPONSE ===\n" + turn1["response"] + "\n=== END ===\n")
     assert conversation_id
 
     turn2 = await _run_agent_async(
-        async_client, "why did it fail?", conversation_id=conversation_id,
+        async_client,
+        "why did it fail?",
+        conversation_id=conversation_id,
     )
     print("\n=== SCENARIO 4 TURN 2 RESPONSE ===\n" + turn2["response"] + "\n=== END ===\n")
 
@@ -365,7 +380,9 @@ async def test_scenario4_multi_turn_remembers_seeded_failed_segment(
 
 
 async def test_scenario5_fresh_conversation_lacks_prior_context(
-    async_client, seeded_failed_day, test_date,
+    async_client,
+    seeded_failed_day,
+    test_date,
 ):
     failed_segment_code = seeded_failed_day
 
@@ -375,7 +392,8 @@ async def test_scenario5_fresh_conversation_lacks_prior_context(
     # from, then ask the "why did it fail?" question completely fresh — no
     # conversation_id at all.
     await _run_agent_async(
-        async_client, f"how's the processing going for {test_date.isoformat()}?",
+        async_client,
+        f"how's the processing going for {test_date.isoformat()}?",
     )
 
     fresh = await _run_agent_async(async_client, "why did it fail?", conversation_id=None)
@@ -394,9 +412,7 @@ async def test_scenario5_fresh_conversation_lacks_prior_context(
     # itself showing up in a completely different conversation.
     leaked_reason = "simulated failure for live hallucination test" in text.lower()
     leaked_test_date = test_date.isoformat() in text
-    names_segment_as_failed = (
-        failed_segment_code.lower() in text.lower() and "fail" in text.lower()
-    )
+    names_segment_as_failed = failed_segment_code.lower() in text.lower() and "fail" in text.lower()
 
     if leaked_reason or leaked_test_date:
         print(

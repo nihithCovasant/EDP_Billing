@@ -1,4 +1,4 @@
-﻿"""
+"""
 LLM Provider Abstraction Layer
 
 Supports multiple LLM providers:
@@ -8,17 +8,17 @@ Supports multiple LLM providers:
 """
 
 import os
-from typing import Optional, Union
-from enum import Enum
-from pydantic import SecretStr
+from enum import StrEnum
 
-from langchain_openai import ChatOpenAI
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
-from src.config.settings import settings
 from src.config.agent_config import get_secrets, load_agent_config
-from cams_otel_lib import Logger as logger, otel_trace
+from src.config.settings import settings
 
 # Cache config to avoid reloading on every LLM creation
 _cached_config = None
@@ -29,18 +29,18 @@ _cached_litellm_config = None
 def _get_litellm_config():
     """Get LiteLLM configuration from config.secrets.litellm"""
     global _cached_config, _cached_litellm_config
-    
+
     if _cached_litellm_config is None:
         if _cached_config is None:
             _cached_config = load_agent_config()
-        
+
         secrets = get_secrets("default", _cached_config)
         _cached_litellm_config = secrets.get("litellm", {})
-    
+
     return _cached_litellm_config
 
 
-class LLMProvider(str, Enum):
+class LLMProvider(StrEnum):
     """Supported LLM providers."""
 
     OPENAI = "openai"
@@ -58,12 +58,12 @@ DEFAULT_MODELS = {
 
 @otel_trace
 def get_llm_model(
-    provider: Union[str, LLMProvider],
-    model_name: Optional[str] = None,
+    provider: str | LLMProvider,
+    model_name: str | None = None,
     temperature: float = 0.7,
     streaming: bool = True,
-    max_tokens: Optional[int] = None,
-    custom_headers: Optional[dict] = None,
+    max_tokens: int | None = None,
+    custom_headers: dict | None = None,
     **kwargs,
 ):
     """
@@ -91,26 +91,26 @@ def get_llm_model(
     if isinstance(provider, str):
         try:
             provider = LLMProvider(provider.lower())
-        except ValueError:
+        except ValueError as exc:
             raise ValueError(
-                f"Unsupported provider: {provider}. "
-                f"Supported providers: {[p.value for p in LLMProvider]}"
-            )
+                f"Unsupported provider: {provider}. Supported providers: {[p.value for p in LLMProvider]}"
+            ) from exc
 
     # Use default model if not specified
     if not model_name:
         model_name = DEFAULT_MODELS[provider]
 
     logger.debug(
-        f"Creating LLM: provider={provider.value}, model={model_name}, "
-        f"temperature={temperature}, streaming={streaming}"
+        f"Creating LLM: provider={provider.value}, model={model_name}, temperature={temperature}, streaming={streaming}"
     )
 
     # Dispatch to provider-specific function
     if provider == LLMProvider.OPENAI:
         return _create_openai_llm(model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs)
     elif provider == LLMProvider.ANTHROPIC:
-        return _create_anthropic_llm(model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs)
+        return _create_anthropic_llm(
+            model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs
+        )
     elif provider == LLMProvider.GOOGLE:
         return _create_google_llm(model_name, temperature, streaming, custom_headers, max_tokens=max_tokens, **kwargs)
     else:
@@ -119,7 +119,12 @@ def get_llm_model(
 
 @otel_trace
 def _create_openai_llm(
-    model_name: str, temperature: float, streaming: bool, custom_headers: Optional[dict] = None, max_tokens: Optional[int] = None, **kwargs
+    model_name: str,
+    temperature: float,
+    streaming: bool,
+    custom_headers: dict | None = None,
+    max_tokens: int | None = None,
+    **kwargs,
 ) -> ChatOpenAI:
     """Create OpenAI LLM instance with optional LiteLLM gateway support."""
     litellm_config = _get_litellm_config()
@@ -129,10 +134,7 @@ def _create_openai_llm(
     api_key = settings.openai_api_key
     litellm_api_key = litellm_config.get("api_key", "")
     if not api_key and not (litellm_enabled and litellm_base_url):
-        raise ValueError(
-            "OPENAI_API_KEY environment variable is not set. "
-            "Please set it in your .env file."
-        )
+        raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file.")
 
     if litellm_enabled and litellm_base_url:
         logger.debug(f"Creating OpenAI LLM via LiteLLM gateway: {model_name}")
@@ -164,7 +166,12 @@ def _create_openai_llm(
 
 @otel_trace
 def _create_anthropic_llm(
-    model_name: str, temperature: float, streaming: bool, custom_headers: Optional[dict] = None, max_tokens: Optional[int] = None, **kwargs
+    model_name: str,
+    temperature: float,
+    streaming: bool,
+    custom_headers: dict | None = None,
+    max_tokens: int | None = None,
+    **kwargs,
 ) -> ChatAnthropic:
     """Create Anthropic (Claude) LLM instance with optional LiteLLM gateway support."""
     litellm_config = _get_litellm_config()
@@ -174,10 +181,7 @@ def _create_anthropic_llm(
     api_key = settings.anthropic_api_key
     litellm_api_key = litellm_config.get("api_key", "")
     if not api_key and not (litellm_enabled and litellm_base_url):
-        raise ValueError(
-            "ANTHROPIC_API_KEY environment variable is not set. "
-            "Please set it in your .env file."
-        )
+        raise ValueError("ANTHROPIC_API_KEY environment variable is not set. Please set it in your .env file.")
 
     if litellm_enabled and litellm_base_url:
         logger.debug(f"Creating Anthropic LLM via LiteLLM gateway: {model_name}")
@@ -209,7 +213,12 @@ def _create_anthropic_llm(
 
 @otel_trace
 def _create_google_llm(
-    model_name: str, temperature: float, streaming: bool, custom_headers: Optional[dict] = None, max_tokens: Optional[int] = None, **kwargs
+    model_name: str,
+    temperature: float,
+    streaming: bool,
+    custom_headers: dict | None = None,
+    max_tokens: int | None = None,
+    **kwargs,
 ) -> ChatGoogleGenerativeAI:
     """Create Google (Gemini) LLM instance with optional LiteLLM gateway support."""
     litellm_config = _get_litellm_config()
@@ -219,10 +228,7 @@ def _create_google_llm(
     api_key = settings.google_api_key
     litellm_api_key = litellm_config.get("api_key", "")
     if not api_key and not (litellm_enabled and litellm_base_url):
-        raise ValueError(
-            "GOOGLE_API_KEY environment variable is not set. "
-            "Please set it in your .env file."
-        )
+        raise ValueError("GOOGLE_API_KEY environment variable is not set. Please set it in your .env file.")
 
     if litellm_enabled and litellm_base_url:
         logger.debug(f"Creating Google LLM via LiteLLM gateway: {model_name}")
@@ -281,10 +287,7 @@ def get_provider_from_model(model_name: str) -> LLMProvider:
     if "gemini" in model_lower or "palm" in model_lower:
         return LLMProvider.GOOGLE
 
-    raise ValueError(
-        f"Cannot infer provider from model name: {model_name}. "
-        "Please specify provider explicitly."
-    )
+    raise ValueError(f"Cannot infer provider from model name: {model_name}. Please specify provider explicitly.")
 
 
 @otel_trace
@@ -310,16 +313,12 @@ def get_openai_llm(model_name: str = "gpt-4o", temperature: float = 0.7, **kwarg
 
 
 @otel_trace
-def get_anthropic_llm(
-    model_name: str = "claude-3-5-sonnet-20241022", temperature: float = 0.7, **kwargs
-):
+def get_anthropic_llm(model_name: str = "claude-3-5-sonnet-20241022", temperature: float = 0.7, **kwargs):
     """Convenience function to create Anthropic LLM."""
     return get_llm_model(LLMProvider.ANTHROPIC, model_name, temperature, **kwargs)
 
 
 @otel_trace
-def get_google_llm(
-    model_name: str = "gemini-1.5-pro", temperature: float = 0.7, **kwargs
-):
+def get_google_llm(model_name: str = "gemini-1.5-pro", temperature: float = 0.7, **kwargs):
     """Convenience function to create Google LLM."""
     return get_llm_model(LLMProvider.GOOGLE, model_name, temperature, **kwargs)

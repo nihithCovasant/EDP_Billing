@@ -20,7 +20,7 @@ src/agent/edp/utils/log_fmt.py — no DB, no async, pure string formatting.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from src.agent.edp.utils.log_fmt import cbos_log, edp_log, elapsed, seg_log, stage_log
 
@@ -119,7 +119,7 @@ def test_elapsed_naive_timestamps_2_5_seconds_apart():
 def test_elapsed_timezone_aware_timestamps_2_5_seconds_apart():
     """end_iso contains a "+" offset, so the source's format-detection
     branch takes the tz-aware %z path."""
-    start_dt = datetime(2026, 6, 29, 10, 0, 0, tzinfo=timezone.utc)
+    start_dt = datetime(2026, 6, 29, 10, 0, 0, tzinfo=UTC)
     end_dt = start_dt + timedelta(seconds=2.5)
     start = start_dt.isoformat()
     end = end_dt.isoformat()

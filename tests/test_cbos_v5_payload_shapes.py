@@ -60,7 +60,10 @@ def client():
 
 async def test_shape_a_real_segment_status_calls(client, captured):
     await client.file_process_status(
-        segment="MCX", process_name="FILEUPLOAD", user_id="CV0001", trade_date=TRADE_DATE,
+        segment="MCX",
+        process_name="FILEUPLOAD",
+        user_id="CV0001",
+        trade_date=TRADE_DATE,
     )
     url, payload = captured[0]
     assert url.endswith("/api/edp/file_process_status")
@@ -76,8 +79,11 @@ async def test_shape_a_real_segment_status_calls(client, captured):
 
 async def test_shape_b_post_trade_status_calls(client, captured):
     await client.file_process_status(
-        segment="DMSTMT", process_name="DAILYMARGINSTATEMENT", user_id="G_LID",
-        trade_date=TRADE_DATE, include_segment=False,
+        segment="DMSTMT",
+        process_name="DAILYMARGINSTATEMENT",
+        user_id="G_LID",
+        trade_date=TRADE_DATE,
+        include_segment=False,
     )
     _url, payload = captured[0]
     assert payload == {
@@ -106,9 +112,7 @@ async def test_legacy_call_without_trade_date_sends_v3_and_logs(client, captured
     await client.file_process_status(segment="EQ", process_name="RECON", user_id="CV0001")
     _url, payload = captured[0]
     assert payload == {"Segment": "EQ", "ProcessName": "RECON", "UserID": "CV0001"}
-    assert any(
-        "WITHOUT trade_date" in r.message for r in caplog.records
-    ), "the legacy path must log loudly"
+    assert any("WITHOUT trade_date" in r.message for r in caplog.records), "the legacy path must log loudly"
 
 
 async def test_dmstmt_trigger_uses_shape_b(client, captured):

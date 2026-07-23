@@ -1,4 +1,4 @@
-﻿"""
+"""
 Langfuse tracing decorator for LangGraph nodes.
 
 This module is CORE — it is always included regardless of feature selection.
@@ -10,10 +10,12 @@ and zero import errors.
 
 import functools
 import inspect
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 
 def trace_node(
@@ -22,7 +24,7 @@ def trace_node(
     capture_output: bool = True,
     estimate_tokens: bool = False,
     calculate_cost: bool = False,
-    metadata_fn: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    metadata_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     llm_attr_name: str = "llm",
 ):
     """
@@ -46,7 +48,7 @@ def trace_node(
     def decorator(func: Callable):
 
         @functools.wraps(func)
-        async def async_wrapper(self, state: Dict[str, Any], *args, **kwargs):
+        async def async_wrapper(self, state: dict[str, Any], *args, **kwargs):
             logger.debug(f"Executing node: {node_name}")
 
             # --- Try to obtain observability client ----------------------------
@@ -58,7 +60,7 @@ def trace_node(
 
             try:
                 if trace_id and parent_span_id:
-                    from src.utils.observability import get_observability_manager  # noqa: PLC0415
+                    from src.utils.observability import get_observability_manager
 
                     obs_manager = get_observability_manager()
                     client = obs_manager.client if obs_manager.enabled else None
@@ -77,20 +79,14 @@ def trace_node(
                         messages = state.get("messages", [])
                         if messages:
                             last_msg = messages[-1]
-                            user_query = (
-                                last_msg.content
-                                if hasattr(last_msg, "content")
-                                else str(last_msg)
-                            )
+                            user_query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
                             input_data["user_query"] = user_query[:500]
                             input_data["messages_count"] = len(messages)
                         if state.get("search_query"):
                             input_data["search_query"] = state["search_query"][:500]
                         if state.get("retrieved_context"):
                             ctx = state["retrieved_context"]
-                            input_data["retrieved_context"] = ctx[:1000] + (
-                                "..." if len(ctx) > 1000 else ""
-                            )
+                            input_data["retrieved_context"] = ctx[:1000] + ("..." if len(ctx) > 1000 else "")
                             input_data["context_length"] = len(ctx)
                         input_data = {k: v for k, v in input_data.items() if v is not None}
 
@@ -118,7 +114,7 @@ def trace_node(
                         if llm_obj:
                             original_llm = llm_obj
 
-                            class LLMWrapper:  # noqa: N801
+                            class LLMWrapper:
                                 def __init__(self, llm, parent_span, node, state_dict):
                                     self._llm = llm
                                     self._span = parent_span
@@ -128,26 +124,18 @@ def trace_node(
                                 async def ainvoke(self, messages, *args, **kw):
                                     prompt_content = (
                                         messages[0].content
-                                        if (
-                                            isinstance(messages, list)
-                                            and messages
-                                            and hasattr(messages[0], "content")
-                                        )
+                                        if (isinstance(messages, list) and messages and hasattr(messages[0], "content"))
                                         else str(messages)
                                     )
                                     response = await self._llm.ainvoke(messages, *args, **kw)
                                     response_content = (
-                                        response.content
-                                        if hasattr(response, "content")
-                                        else str(response)
+                                        response.content if hasattr(response, "content") else str(response)
                                     )
                                     if self._span:
                                         try:
-                                            from src.utils.token_estimator import estimate_usage  # noqa: PLC0415
+                                            from src.utils.token_estimator import estimate_usage
 
-                                            model_name = getattr(
-                                                self._llm, "model_name", "gpt-4o-mini"
-                                            )
+                                            model_name = getattr(self._llm, "model_name", "gpt-4o-mini")
                                             usage = estimate_usage(prompt_content, response_content)
                                             create_generation_trace(
                                                 parent=self._span,
@@ -192,15 +180,11 @@ def trace_node(
                             output_data["search_query"] = result["search_query"][:500]
                         if result.get("retrieved_context"):
                             ctx = result["retrieved_context"]
-                            output_data["retrieved_context"] = ctx[:1000] + (
-                                "..." if len(ctx) > 1000 else ""
-                            )
+                            output_data["retrieved_context"] = ctx[:1000] + ("..." if len(ctx) > 1000 else "")
                             output_data["context_length"] = len(ctx)
                         if result.get("final_response"):
                             resp = result["final_response"]
-                            output_data["final_response"] = resp[:1000] + (
-                                "..." if len(resp) > 1000 else ""
-                            )
+                            output_data["final_response"] = resp[:1000] + ("..." if len(resp) > 1000 else "")
                             output_data["response_length"] = len(resp)
                         output_data = {k: v for k, v in output_data.items() if v}
                         if output_data:
@@ -234,7 +218,7 @@ def trace_node(
                         logger.debug(f"Flush failed after {node_name}: {e}")
 
         @functools.wraps(func)
-        def sync_wrapper(self, state: Dict[str, Any], *args, **kwargs):
+        def sync_wrapper(self, state: dict[str, Any], *args, **kwargs):
             logger.debug(f"Executing node (sync): {node_name}")
             parent_span = state.get("_langfuse_parent_span")
             span = None
@@ -275,8 +259,12 @@ def trace_node(
                         output_data = {
                             k: v
                             for k, v in {
-                                "search_query": (result.get("search_query", "")[:200] if result.get("search_query") else None),
-                                "context_length": len(result.get("retrieved_context", "")) if result.get("retrieved_context") else 0,
+                                "search_query": (
+                                    result.get("search_query", "")[:200] if result.get("search_query") else None
+                                ),
+                                "context_length": len(result.get("retrieved_context", ""))
+                                if result.get("retrieved_context")
+                                else 0,
                             }.items()
                             if v
                         }
@@ -312,9 +300,9 @@ def create_generation_trace(
     model: str,
     input_data: Any,
     output_data: Any,
-    metadata: Optional[Dict[str, Any]] = None,
-    model_parameters: Optional[Dict[str, Any]] = None,
-    usage: Optional[Dict[str, int]] = None,
+    metadata: dict[str, Any] | None = None,
+    model_parameters: dict[str, Any] | None = None,
+    usage: dict[str, int] | None = None,
 ):
     """
     Create a generation observation within an existing Langfuse span.
@@ -325,7 +313,7 @@ def create_generation_trace(
         return None
 
     try:
-        from src.utils.cost_calculator import calculate_cost_details  # noqa: PLC0415
+        from src.utils.cost_calculator import calculate_cost_details
 
         generation_metadata = metadata or {}
         if model_parameters:
@@ -339,7 +327,7 @@ def create_generation_trace(
             metadata=generation_metadata,
         )
 
-        update_params: Dict[str, Any] = {"output": output_data}
+        update_params: dict[str, Any] = {"output": output_data}
 
         if usage:
             input_tokens = usage.get("input_tokens")
@@ -348,7 +336,7 @@ def create_generation_trace(
             if total_tokens is None and input_tokens and output_tokens:
                 total_tokens = input_tokens + output_tokens
 
-            usage_details: Dict[str, int] = {}
+            usage_details: dict[str, int] = {}
             if input_tokens is not None:
                 usage_details["input"] = input_tokens
             if output_tokens is not None:
@@ -380,9 +368,9 @@ def trace_generation(
     observability,
     model_name: str,
     prompt: str,
-    trace_id: Optional[str] = None,
-    parent_span_id: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    trace_id: str | None = None,
+    parent_span_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ):
     """
     Context manager for tracing an individual LLM call.
@@ -419,13 +407,13 @@ def trace_generation(
         yield (None, lambda x: None)
         return
 
-    completion: Dict[str, Any] = {"text": None}
+    completion: dict[str, Any] = {"text": None}
 
     def set_completion(response_text: str):
         completion["text"] = response_text
         try:
-            from src.utils.token_estimator import estimate_usage  # noqa: PLC0415
-            from src.utils.cost_calculator import calculate_cost_details  # noqa: PLC0415
+            from src.utils.cost_calculator import calculate_cost_details
+            from src.utils.token_estimator import estimate_usage
 
             usage = estimate_usage(prompt, response_text)
             cost = calculate_cost_details(

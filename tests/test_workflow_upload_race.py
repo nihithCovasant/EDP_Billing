@@ -35,8 +35,8 @@ from unittest.mock import patch
 
 from sqlalchemy.exc import IntegrityError
 
-from src.agent.edp import repository
 import src.agent.edp.repository.workflow as workflow_repo
+from src.agent.edp import repository
 from src.agent.edp.config import build_default_workflow_json
 from src.agent.edp.models import EdpProperties
 
@@ -130,19 +130,24 @@ async def test_upload_handles_lost_race_via_integrity_error(cfg, session_factory
             # upload()) so this doesn't recurse back through the patched
             # get_active() a second time.
             async with session_factory() as other_session:
-                other_session.add(EdpProperties(
-                    trade_date=trade_date,
-                    workflow_json=workflow_json_winner,
-                    is_active=True,
-                    uploaded_by="winner",
-                ))
+                other_session.add(
+                    EdpProperties(
+                        trade_date=trade_date,
+                        workflow_json=workflow_json_winner,
+                        is_active=True,
+                        uploaded_by="winner",
+                    )
+                )
                 await other_session.commit()
         return result
 
     async with session_factory() as session:
         with patch.object(workflow_repo, "get_active", side_effect=get_active_then_sneak_in_a_committer):
             row, is_new = await workflow_repo.upload(
-                session, test_date, workflow_json_loser, uploaded_by="loser",
+                session,
+                test_date,
+                workflow_json_loser,
+                uploaded_by="loser",
             )
         await session.commit()
 

@@ -26,9 +26,19 @@ import src.agent.edp.config as edp_config
 from src.agent.edp.config import build_default_workflow_json
 
 _ENV_KEYS = (
-    "DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USERNAME", "DB_PASSWORD",
-    "CBOS_STATUS_URL", "CBOS_PROCESS_URL", "CBOS_USE_MOCK", "EDP_STRICT_CONFIG",
-    "CBOS_LOGIN_ID", "POST_TRADE_LOGIN_ID", "EDP_WAKE_INTERVAL_SECONDS",
+    "DATABASE_URL",
+    "DB_HOST",
+    "DB_PORT",
+    "DB_NAME",
+    "DB_USERNAME",
+    "DB_PASSWORD",
+    "CBOS_STATUS_URL",
+    "CBOS_PROCESS_URL",
+    "CBOS_USE_MOCK",
+    "EDP_STRICT_CONFIG",
+    "CBOS_LOGIN_ID",
+    "POST_TRADE_LOGIN_ID",
+    "EDP_WAKE_INTERVAL_SECONDS",
 )
 
 
@@ -43,7 +53,8 @@ def _stub_config(monkeypatch, edp_raw=None):
     """Wire up a minimal valid agent_config.json (edp section as given) plus
     a valid DATABASE_URL, so only the field under test is nonsensical."""
     monkeypatch.setattr(
-        edp_config, "load_agent_config",
+        edp_config,
+        "load_agent_config",
         lambda: {"default": {"edp": edp_raw or {}}},
     )
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pw@dbhost:5432/edp")
@@ -52,6 +63,7 @@ def _stub_config(monkeypatch, edp_raw=None):
 # ---------------------------------------------------------------------------
 # (a) EDP_WAKE_INTERVAL_SECONDS invalid values.
 # ---------------------------------------------------------------------------
+
 
 def test_wake_interval_non_numeric_raises_uncaught_value_error(clean_env):
     """A non-numeric EDP_WAKE_INTERVAL_SECONDS raises ValueError uncaught
@@ -88,6 +100,7 @@ def test_wake_interval_negative_now_raises(clean_env):
 # (b) active_date_cutoff_hour out of the valid 0-23 range, via agent_config.json.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("bad_hour", [24, -1, 100])
 def test_active_date_cutoff_hour_out_of_range_now_raises(clean_env, bad_hour):
     """active_date_cutoff_hour is range-checked against 0-23; out-of-range
@@ -112,6 +125,7 @@ def test_active_date_cutoff_hour_non_numeric_raises_uncaught_value_error(clean_e
 # (c) Empty-string CBOS URLs explicitly set (not unset).
 # ---------------------------------------------------------------------------
 
+
 def test_cbos_status_url_explicit_empty_string_no_longer_wins_over_json_default(clean_env):
     """_env_nonempty("CBOS_STATUS_URL") treats an explicitly-set empty
     string the same as unset, falling through to the agent_config.json
@@ -127,6 +141,7 @@ def test_cbos_status_url_explicit_empty_string_no_longer_wins_over_json_default(
 # ---------------------------------------------------------------------------
 # (d) Malformed DATABASE_URL.
 # ---------------------------------------------------------------------------
+
 
 def test_database_url_missing_scheme_now_raises(clean_env):
     """_validate_database_url() rejects a resolved URL with no recognized
@@ -153,6 +168,7 @@ def test_database_url_unsupported_scheme_now_raises(clean_env):
 # (e) default.edp section is the wrong type entirely (array / string).
 # ---------------------------------------------------------------------------
 
+
 def test_edp_section_as_json_array_is_ignored_and_logged(clean_env, caplog):
     """The `isinstance(edp_raw, dict)` guard also catches a JSON array
     (list is not a dict): edp_raw resets to {} and an ERROR is logged
@@ -164,10 +180,7 @@ def test_edp_section_as_json_array_is_ignored_and_logged(clean_env, caplog):
 
     assert cfg.cbos_use_mock is True
     assert cfg.default_segments == []
-    assert any(
-        "not an object" in record.message and "list" in record.message
-        for record in caplog.records
-    )
+    assert any("not an object" in record.message and "list" in record.message for record in caplog.records)
 
 
 def test_edp_section_as_plain_string_is_ignored_and_logged(clean_env, caplog):
@@ -180,16 +193,14 @@ def test_edp_section_as_plain_string_is_ignored_and_logged(clean_env, caplog):
 
     assert cfg.cbos_use_mock is True
     assert cfg.default_segments == []
-    assert any(
-        "not an object" in record.message and "str" in record.message
-        for record in caplog.records
-    )
+    assert any("not an object" in record.message and "str" in record.message for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------
 # (f) default_segments / default_post_trade_processes malformed as a list of
 #     strings instead of a list of dicts.
 # ---------------------------------------------------------------------------
+
 
 def test_build_default_workflow_json_segments_as_plain_strings_raises_attribute_error():
     """build_default_workflow_json() assumes each `segments` entry is a

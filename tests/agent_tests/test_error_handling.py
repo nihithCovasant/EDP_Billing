@@ -45,7 +45,6 @@ Run: .venv\\Scripts\\python.exe -m pytest tests/agent_tests/test_error_handling.
 from __future__ import annotations
 
 import os
-import re
 
 os.environ.setdefault("EDP_LOOP_ENABLED", "false")
 
@@ -55,7 +54,6 @@ from langchain_core.messages import AIMessage
 
 from src.agent.__main__ import build_app
 
-
 # Substrings that would indicate a raw Python exception / stack trace leaked
 # into a user-facing response — a real information-disclosure concern for a
 # chat UI. NOTE: response_generator's own fallback message and the tool
@@ -64,8 +62,8 @@ from src.agent.__main__ import build_app
 # flag traceback markers, file paths, or bare Python exception class names.
 LEAK_MARKERS = (
     "Traceback (most recent call last)",
-    ".py\", line",
-    "File \"",
+    '.py", line',
+    'File "',
     "ConnectionError",
     "KeyError",
     "AttributeError",
@@ -252,9 +250,9 @@ def test_response_generator_llm_raises_is_caught_with_generic_fallback(monkeypat
     assert resp.status_code == 200
     body = resp.json()
     assert "error" not in body, f"Expected response_generator's own fallback, not a top-level error: {body}"
-    assert body["response"] == (
-        "I apologize, but I encountered an error generating a response."
-    ), f"response_generator's fallback message changed or wasn't used: {body['response']!r}"
+    assert body["response"] == ("I apologize, but I encountered an error generating a response."), (
+        f"response_generator's fallback message changed or wasn't used: {body['response']!r}"
+    )
     leaks = _leaked_internals(body["response"])
     assert not leaks, f"response_generator fallback leaked internals: {leaks!r}"
 

@@ -9,7 +9,6 @@ proves that: mutate in place, flush, reload in a new session, see the change.
 from __future__ import annotations
 
 from src.agent.edp import repository
-from src.agent.edp.models import EdpProperties
 
 from . import helpers
 

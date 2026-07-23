@@ -39,7 +39,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .constants import POST_TRADE_ORDER, post_trade_reference
-from .state import state, build_table2
+from .state import build_table2, state
 
 app = FastAPI(
     title="Mock CBOS Server",
@@ -59,6 +59,7 @@ app.add_middleware(
 # Steps 1/3/5/6/7 — file_process_status (Good-to-Go polling)
 #     EDP Status API — port 8087 in real CBOS
 # =============================================================================
+
 
 @app.post("/api/edp/file_process_status")
 async def file_process_status(payload: dict):
@@ -90,6 +91,7 @@ async def file_process_status(payload: dict):
 # Steps 2/4 — getNewTradeProcess (reserve PROCESSID="0" / execute with real PROCESSID)
 #     Main Process API — port 8003 in real CBOS
 # =============================================================================
+
 
 @app.post("/v1/api/process/getNewTradeProcess")
 async def get_new_trade_process(payload: dict):
@@ -128,6 +130,7 @@ async def get_new_trade_process(payload: dict):
 #     Brokerage API — port 8003/v1/api/brokerage in real CBOS
 # =============================================================================
 
+
 @app.post("/v1/api/brokerage/getdropdown")
 async def getdropdown(payload: dict):
     """
@@ -154,6 +157,7 @@ async def getdropdown(payload: dict):
 #     Transfer, Daily Margin Reporting/Statements (Processes 1-5)
 #     Main Process API — port 8003 in real CBOS
 # =============================================================================
+
 
 @app.post("/v1/api/process/GetCollateralValuation")
 async def get_collateral_valuation(payload: dict):
@@ -204,18 +208,21 @@ async def daily_margin_statements(payload: dict):
 #     API doc for anyone testing the RPA/upload side separately).
 # =============================================================================
 
+
 @app.post("/v1/api/process/GetNewTradeProcessPromodalUploadSettings")
 async def get_upload_settings(payload: dict):
     upload_id = payload.get("UPLOADID", "0")
     return {
         "Status": "Success",
-        "Result": [{
-            "ID": int(upload_id),
-            "NAME": f"MOCK UPLOAD {upload_id}",
-            "FILE NAME (CONTAINS)": "MOCK",
-            "FILEEXTENSION": "TXT",
-            "NO. OF COLUMNS": 10,
-        }],
+        "Result": [
+            {
+                "ID": int(upload_id),
+                "NAME": f"MOCK UPLOAD {upload_id}",
+                "FILE NAME (CONTAINS)": "MOCK",
+                "FILEEXTENSION": "TXT",
+                "NO. OF COLUMNS": 10,
+            }
+        ],
     }
 
 
@@ -240,6 +247,7 @@ async def save_upload_file(payload: dict):
 # =============================================================================
 # Admin / control endpoints — for QA to script test scenarios
 # =============================================================================
+
 
 @app.get("/mock/health")
 async def health():

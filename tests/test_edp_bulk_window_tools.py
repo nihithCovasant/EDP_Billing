@@ -18,20 +18,23 @@ async def _invoke(tool, **kwargs) -> str:
 def _today_config() -> dict:
     """Fresh deep copy every call -- tools patch this dict in-place, so a
     module-level shared instance would leak mutations across tests."""
-    return copy.deepcopy({
-        "segments": [
-            {"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "18:00"},
-            {"segment_code": "DR", "login_id": "CV0001", "window_start": "17:30", "window_end": "18:30"},
-        ],
-        "post_trade_processes": [
-            {"process_code": "COLVAL", "login_id": "CV0001", "window_start": "02:30", "window_end": "06:00"},
-        ],
-    })
+    return copy.deepcopy(
+        {
+            "segments": [
+                {"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "18:00"},
+                {"segment_code": "DR", "login_id": "CV0001", "window_start": "17:30", "window_end": "18:30"},
+            ],
+            "post_trade_processes": [
+                {"process_code": "COLVAL", "login_id": "CV0001", "window_start": "02:30", "window_end": "06:00"},
+            ],
+        }
+    )
 
 
 # =============================================================================
 # update_edp_segment_windows_bulk
 # =============================================================================
+
 
 async def test_bulk_update_patches_multiple_targets_in_one_upload(monkeypatch):
     calls = {"get": 0, "post": 0}
@@ -108,6 +111,7 @@ async def test_bulk_update_reports_missing_targets(monkeypatch):
 # copy_edp_segment_window
 # =============================================================================
 
+
 async def test_copy_window_copies_start_and_end(monkeypatch):
     captured = {}
 
@@ -124,7 +128,9 @@ async def test_copy_window_copies_start_and_end(monkeypatch):
 
     result = await _invoke(
         edp_bulk.copy_edp_segment_window,
-        source_identifier="EQ", target_identifier="DR", version_name="copy_v1",
+        source_identifier="EQ",
+        target_identifier="DR",
+        version_name="copy_v1",
     )
 
     dr = next(s for s in captured["body"]["workflow_json"]["segments"] if s["segment_code"] == "DR")
@@ -141,7 +147,9 @@ async def test_copy_window_missing_source_is_friendly(monkeypatch):
 
     result = await _invoke(
         edp_bulk.copy_edp_segment_window,
-        source_identifier="MCX", target_identifier="DR", version_name="v1",
+        source_identifier="MCX",
+        target_identifier="DR",
+        version_name="v1",
     )
 
     assert "isn't present" in result
@@ -150,6 +158,7 @@ async def test_copy_window_missing_source_is_friendly(monkeypatch):
 # =============================================================================
 # get_edp_day_timeline
 # =============================================================================
+
 
 async def test_timeline_sorts_by_start_time(monkeypatch):
     async def fake_get(path):

@@ -7,10 +7,10 @@ Import `router` from here to mount in the main FastAPI app.
 
 from fastapi import APIRouter
 
-from .workflow import router as _workflow_router
-from .status import router as _status_router
-from .control import router as _control_router
 from .audit import router as _audit_router
+from .control import router as _control_router
+from .status import router as _status_router
+from .workflow import router as _workflow_router
 
 router = APIRouter(prefix="/edp", tags=["EDP Billing"])
 

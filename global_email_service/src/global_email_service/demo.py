@@ -27,10 +27,14 @@ def main() -> int:
 
     if args.render_only:
         from .service import parse_payload
+
         request = parse_payload(payload)
         html_body, text_body = render_email_body(
-            request.rows, title=request.title, summary=request.summary,
-            columns=request.columns, color_overrides=request.color_overrides,
+            request.rows,
+            title=request.title,
+            summary=request.summary,
+            columns=request.columns,
+            color_overrides=request.color_overrides,
         )
         print("=" * 70)
         print("TEXT VERSION")

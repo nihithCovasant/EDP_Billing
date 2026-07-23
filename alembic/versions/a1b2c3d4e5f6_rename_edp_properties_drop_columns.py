@@ -5,25 +5,22 @@ Revises: 5846a2847710
 Create Date: 2026-07-02 15:45:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "a1b2c3d4e5f6"
-down_revision: Union[str, Sequence[str], None] = "5846a2847710"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "5846a2847710"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     # 1. Rename workflow_properties -> edp_properties (table + its index)
     op.rename_table("workflow_properties", "edp_properties")
-    op.execute(
-        "ALTER INDEX ix_workflow_properties_trade_date "
-        "RENAME TO ix_edp_properties_trade_date"
-    )
+    op.execute("ALTER INDEX ix_workflow_properties_trade_date RENAME TO ix_edp_properties_trade_date")
 
     # 2. hitl_json — no longer used; MOFSL ops handles skipped/failed segments
     #    manually, so there is no in-app alert queue to persist.
@@ -44,8 +41,5 @@ def downgrade() -> None:
         sa.Column("hitl_json", sa.JSON(), nullable=True),
     )
 
-    op.execute(
-        "ALTER INDEX ix_edp_properties_trade_date "
-        "RENAME TO ix_workflow_properties_trade_date"
-    )
+    op.execute("ALTER INDEX ix_edp_properties_trade_date RENAME TO ix_workflow_properties_trade_date")
     op.rename_table("edp_properties", "workflow_properties")

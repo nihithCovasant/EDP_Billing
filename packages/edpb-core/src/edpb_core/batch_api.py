@@ -8,14 +8,14 @@ from __future__ import annotations
 import enum
 
 
-class BatchStatus(str, enum.Enum):
+class BatchStatus(enum.StrEnum):
     QUEUED = "queued"
     UPLOADING = "uploading"
-    CONFIRMED = "confirmed"          # FILEUPLOAD went TRUE
-    UNCONFIRMED = "unconfirmed"      # in CBOS; FILEUPLOAD not yet TRUE
-    INCOMPLETE = "incomplete"        # completeness gate parked the batch
+    CONFIRMED = "confirmed"  # FILEUPLOAD went TRUE
+    UNCONFIRMED = "unconfirmed"  # in CBOS; FILEUPLOAD not yet TRUE
+    INCOMPLETE = "incomplete"  # completeness gate parked the batch
     FAILED = "failed"
-    REJECTED = "rejected"            # intake rejected (schema/checksum)
+    REJECTED = "rejected"  # intake rejected (schema/checksum)
 
     @property
     def is_terminal_bad(self) -> bool:
@@ -24,7 +24,7 @@ class BatchStatus(str, enum.Enum):
         return self in (BatchStatus.INCOMPLETE, BatchStatus.FAILED, BatchStatus.REJECTED)
 
 
-class DownloadOutcome(str, enum.Enum):
+class DownloadOutcome(enum.StrEnum):
     """The bot's classified download outcomes (PortalStatus/McxStatus on the
     bot side) plus the engine client's transport-level ERROR."""
 

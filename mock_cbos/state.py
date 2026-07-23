@@ -19,7 +19,7 @@ import itertools
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .constants import resolve_gtg_process_name
 
@@ -30,13 +30,13 @@ class MockCbosState:
     ready_after: int = 2
 
     # (segment, process_name) -> poll count so far
-    poll_counts: Dict[Tuple[str, str], int] = field(default_factory=dict)
+    poll_counts: dict[tuple[str, str], int] = field(default_factory=dict)
 
     # (group_name, trade_date) -> reserved PROCESSID
-    reserved_pids: Dict[Tuple[str, str], str] = field(default_factory=dict)
+    reserved_pids: dict[tuple[str, str], str] = field(default_factory=dict)
 
     # PROCESSID -> True once getNewTradeProcess was called with the real PID (trigger fired)
-    executed_pids: Dict[str, bool] = field(default_factory=dict)
+    executed_pids: dict[str, bool] = field(default_factory=dict)
 
     # Segments for which BeginFileUpload should always return SKIP (holiday simulation)
     holiday_segments: set = field(default_factory=set)
@@ -53,11 +53,11 @@ class MockCbosState:
     # workflow_json.post_trade_processes[].login_id) plus a timestamp for
     # /mock/state debugging. GTG/confirm poll behaviour is still driven by
     # poll_counts above, keyed by (process_code, gtg_process_name).
-    post_trade_triggered: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    post_trade_triggered: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Last few file_process_status calls — useful for verifying the agent
     # sent the config-resolved (Segment, ProcessName, UserID) triple.
-    recent_file_status_calls: List[Dict[str, str]] = field(default_factory=list)
+    recent_file_status_calls: list[dict[str, str]] = field(default_factory=list)
     _max_recent_calls: int = 20
 
     _pid_counter: itertools.count = field(default_factory=lambda: itertools.count(17001))
@@ -97,7 +97,7 @@ class MockCbosState:
         }
         self.recent_file_status_calls.append(entry)
         if len(self.recent_file_status_calls) > self._max_recent_calls:
-            self.recent_file_status_calls = self.recent_file_status_calls[-self._max_recent_calls:]
+            self.recent_file_status_calls = self.recent_file_status_calls[-self._max_recent_calls :]
 
     # -------------------------------------------------------------------------
     # getNewTradeProcess (reserve + trigger)
@@ -117,7 +117,7 @@ class MockCbosState:
     def is_executed(self, process_id: str) -> bool:
         return self.executed_pids.get(str(process_id), False)
 
-    def find_reserved_pid(self, group_name: str, trade_date: str) -> Optional[str]:
+    def find_reserved_pid(self, group_name: str, trade_date: str) -> str | None:
         return self.reserved_pids.get((group_name.upper(), trade_date))
 
     # -------------------------------------------------------------------------
@@ -137,7 +137,10 @@ class MockCbosState:
         return process_code.upper() in self.post_trade_triggered
 
     def set_post_trade_stuck(
-        self, process_code: str, enabled: bool, gtg_process_name: str | None = None,
+        self,
+        process_code: str,
+        enabled: bool,
+        gtg_process_name: str | None = None,
     ) -> str:
         """
         Pin a post-trade GTG/confirm poll to always return FALSE.
@@ -149,7 +152,10 @@ class MockCbosState:
         return proc_name
 
     def set_post_trade_force_ready(
-        self, process_code: str, enabled: bool, gtg_process_name: str | None = None,
+        self,
+        process_code: str,
+        enabled: bool,
+        gtg_process_name: str | None = None,
     ) -> str:
         """
         Pin a post-trade GTG/confirm poll to always return TRUE immediately.
@@ -228,7 +234,7 @@ state = MockCbosState()
 # Static reference data — the 28 upload steps from the API doc (Step 2 Table2)
 # ---------------------------------------------------------------------------
 
-UPLOAD_STEP_NAMES: List[Tuple[int, str, int]] = [
+UPLOAD_STEP_NAMES: list[tuple[int, str, int]] = [
     (1, "Settlement Master NSE Upload", 551),
     (2, "Settlement Master BSE Upload", 678),
     (3, "BSE Scrip Upload", 81),
@@ -243,12 +249,10 @@ UPLOAD_STEP_NAMES: List[Tuple[int, str, int]] = [
     (12, "BSE AUCTION Trade File Upload", 451),
 ]
 # Steps 13-28: auto-run (Trade Merger / Charges / Bill Posting / STK), upload_id=0
-UPLOAD_STEP_NAMES += [
-    (n, "Trade Merger / Charges / Bill Posting / STK (auto-run)", 0) for n in range(13, 29)
-]
+UPLOAD_STEP_NAMES += [(n, "Trade Merger / Charges / Bill Posting / STK (auto-run)", 0) for n in range(13, 29)]
 
 
-def build_table2(all_success: bool) -> List[dict]:
+def build_table2(all_success: bool) -> list[dict]:
     """Build the Table2 step list for getNewTradeProcess responses."""
     status = "SUCCESS" if all_success else "PENDING"
     return [

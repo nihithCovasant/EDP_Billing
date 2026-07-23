@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -17,10 +16,10 @@ from global_email_service import (
     EmailSendError,
     EmailServiceConfig,
     InvalidPayloadError,
+    graph_client,
     send_alert_email,
     send_segment_alert,
 )
-from global_email_service import graph_client
 from global_email_service.colors import resolve_row_style
 from global_email_service.service import parse_payload
 from global_email_service.table_renderer import (
@@ -70,13 +69,14 @@ def graph_config(**overrides) -> EmailServiceConfig:
     return cfg
 
 
-def _fake_response(status_code: int, json_body: Optional[dict] = None, text: str = "") -> SimpleNamespace:
+def _fake_response(status_code: int, json_body: dict | None = None, text: str = "") -> SimpleNamespace:
     return SimpleNamespace(status_code=status_code, json=lambda: json_body or {}, text=text)
 
 
 # ---------------------------------------------------------------------------
 # Payload parsing
 # ---------------------------------------------------------------------------
+
 
 def test_parse_payload_accepts_row_rows_and_flat_shapes():
     assert parse_payload({"row": MCX_RECON_ROW}).rows == [MCX_RECON_ROW]
@@ -101,6 +101,7 @@ def test_parse_payload_rejects_non_dict_rows_entries():
 # ---------------------------------------------------------------------------
 # Color resolution — the "kind of alert" row coloring requirement
 # ---------------------------------------------------------------------------
+
 
 def test_failed_row_resolves_to_red():
     style = resolve_row_style(MCX_RECON_ROW)
@@ -128,6 +129,7 @@ def test_explicit_color_override_wins():
 # Rendering — MCX RECON failure scenario from the example payloads
 # ---------------------------------------------------------------------------
 
+
 def test_render_email_body_single_row_mcx_recon_failure():
     html_body, text_body = render_email_body([MCX_RECON_ROW], title="EDP Alert")
     assert "MCX" in html_body and "Reconciliation" in html_body
@@ -142,8 +144,11 @@ def test_render_email_body_multi_row_day_summary_flattens_nested_values():
     rows = [
         {"segment_code": "EQ", "segment_status": "COMPLETED"},
         MCX_RECON_ROW,
-        {"segment_code": "MF", "segment_status": "PENDING",
-         "processes_json": {"holiday_check": "done", "trigger": "pending"}},
+        {
+            "segment_code": "MF",
+            "segment_status": "PENDING",
+            "processes_json": {"holiday_check": "done", "trigger": "pending"},
+        },
     ]
     html_body, text_body = render_email_body(rows)
     assert html_body.count("<tr") == 4  # header row (thead) + 3 body rows
@@ -155,6 +160,7 @@ def test_render_email_body_multi_row_day_summary_flattens_nested_values():
 # payload, since this is a customer-facing email (regression test for the
 # "I don't see timings" bug report).
 # ---------------------------------------------------------------------------
+
 
 def test_derive_columns_uses_default_segment_columns_for_minimal_payload():
     minimal_row = {"segment_code": "MCX", "segment_status": "FAILED", "skip_reason": "x"}
@@ -188,7 +194,7 @@ def test_derive_columns_never_shows_sequence_order_or_skip_category():
 
 
 def test_explicit_columns_still_drop_sequence_order_and_skip_category():
-    html_body, text_body = render_email_body(
+    html_body, _text_body = render_email_body(
         [MCX_RECON_ROW],
         columns=["segment_code", "sequence_order", "skip_category", "segment_status", "current_process"],
     )
@@ -206,10 +212,12 @@ def test_minimal_payload_email_body_shows_placeholder_for_missing_timing():
 
 
 def test_customer_facing_status_labels():
-    html_body, _ = render_email_body([
-        {"segment_code": "EQ", "segment_status": "COMPLETED"},
-        {"segment_code": "MCX", "segment_status": "FAILED"},
-    ])
+    html_body, _ = render_email_body(
+        [
+            {"segment_code": "EQ", "segment_status": "COMPLETED"},
+            {"segment_code": "MCX", "segment_status": "FAILED"},
+        ]
+    )
     assert "Succeeded" in html_body
     assert "Failed" in html_body
     assert "COMPLETED" not in html_body
@@ -246,6 +254,7 @@ def test_stage_good_to_go_for_file_upload_failure():
 # banner shown to the reader.
 # ---------------------------------------------------------------------------
 
+
 def test_resolve_severity_failed_row_gives_action_required_red():
     severity = resolve_severity([MCX_RECON_ROW, {"segment_status": "COMPLETED"}])
     assert "ACTION REQUIRED" in severity.label
@@ -269,6 +278,7 @@ def test_now_str_is_short_ist_form_not_raw_isoformat():
     ('YYYY-MM-DD HH:MM:SS IST') — not the previous raw datetime.isoformat()
     with microseconds + numeric UTC offset (e.g. '...112136+05:30')."""
     import re
+
     result = _now_str()
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} IST", result), result
     assert "+" not in result
@@ -277,6 +287,7 @@ def test_now_str_is_short_ist_form_not_raw_isoformat():
 
 def test_example_payload_files_parse_and_render():
     import json
+
     for name in (
         "sample_cash_all_passed.json",
         "sample_slbm_gtg_failed.json",
@@ -297,6 +308,7 @@ def test_example_payload_files_parse_and_render():
 # ---------------------------------------------------------------------------
 # send_alert_email / send_segment_alert — dry-run path (no network)
 # ---------------------------------------------------------------------------
+
 
 def test_send_segment_alert_mcx_recon_failure_dry_run():
     result = send_segment_alert(MCX_RECON_ROW, config=dry_run_config())
@@ -328,6 +340,7 @@ def test_send_alert_email_requires_recipients_when_none_configured():
 # non-retry classification (401/403/400/404/422 fail fast; everything else
 # transient is retried up to max_retries).
 # ---------------------------------------------------------------------------
+
 
 def test_non_transient_graph_auth_failure_is_not_retried(monkeypatch):
     graph_client._token_cache.clear()

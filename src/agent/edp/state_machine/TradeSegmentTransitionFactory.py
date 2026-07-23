@@ -96,15 +96,21 @@ class TradeSegmentTransitionFactory:
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_BILLPOSTING, SegmentStatus.FAILED)
 
             m.add_allowed_transition(
-                seg, SegmentState.WAITING_FOR_RECON, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
+                seg,
+                SegmentState.WAITING_FOR_RECON,
+                SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
             )
             m.add_allowed_transition(seg, SegmentState.WAITING_FOR_RECON, SegmentStatus.FAILED)
 
             m.add_allowed_transition(
-                seg, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION, SegmentStatus.COMPLETED,
+                seg,
+                SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
+                SegmentStatus.COMPLETED,
             )
             m.add_allowed_transition(
-                seg, SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION, SegmentStatus.FAILED,
+                seg,
+                SegmentState.WAITING_FOR_CONTRACT_NOTE_GENERATION,
+                SegmentStatus.FAILED,
             )
         return m
 
@@ -116,7 +122,8 @@ class TradeSegmentTransitionFactory:
 
           WAITING_FOR_GTG        -> TRIGGERED
           WAITING_FOR_GTG        -> WAITING_FOR_COMPLETION   (direct, already triggered — no new trigger fired)
-          WAITING_FOR_GTG        -> SKIPPED                  (holiday check — same operation INIT does for real segments)
+          WAITING_FOR_GTG        -> SKIPPED                  (holiday check — same
+                                                              operation INIT does for real segments)
           WAITING_FOR_GTG        -> FAILED
           TRIGGERED               -> WAITING_FOR_COMPLETION
           TRIGGERED               -> FAILED

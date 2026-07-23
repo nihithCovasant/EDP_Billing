@@ -13,26 +13,28 @@ async requests.
 """
 
 import base64
+import json
 import os
 import uuid
-import json
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from typing import Any
 
 from cams_otel_lib import (
     Logger as logger,
-    Otel_Client,
-    otel_trace,
-    RequestContext,
-    set_request_context,
-    set_observability_client,
-    reset_request_context,
-    reset_observability_client,
 )
+from cams_otel_lib import (
+    Otel_Client,
+    RequestContext,
+    otel_trace,
+    reset_observability_client,
+    reset_request_context,
+    set_observability_client,
+    set_request_context,
+)
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from src.config.settings import settings
 
 
@@ -58,11 +60,7 @@ def _read_agent_name_from_config() -> str:
         if cfg_path.exists():
             with open(cfg_path) as f:
                 data = json.load(f)
-                return (
-                    data.get("agent_definition", {}).get("name")
-                    or data.get("name")
-                    or "N/A"
-                )
+                return data.get("agent_definition", {}).get("name") or data.get("name") or "N/A"
     except Exception:
         pass
     return "N/A"
@@ -74,7 +72,7 @@ _CONFIG_APP_NAME = _read_agent_name_from_config()
 _AGENT_INSTANCE_ID = _read_config_field("instance_id")
 
 
-def _decode_jwt_claims(request: Request) -> Dict[str, Any]:
+def _decode_jwt_claims(request: Request) -> dict[str, Any]:
     """
     Decode (NOT verify) the payload of an `Authorization: Bearer <jwt>`
     header, if present. Signature verification is deliberately skipped —
@@ -98,10 +96,10 @@ def _decode_jwt_claims(request: Request) -> Dict[str, Any]:
         return {}
 
 
-_role_context: ContextVar[Optional[str]] = ContextVar("role_context", default=None)
+_role_context: ContextVar[str | None] = ContextVar("role_context", default=None)
 
 
-def get_current_role() -> Optional[str]:
+def get_current_role() -> str | None:
     """
     The current request's role claim (from its Authorization JWT, or an
     X-User-Role header), if any -- set by OtelContextMiddleware.dispatch().
@@ -118,7 +116,7 @@ def get_current_role() -> Optional[str]:
     return _role_context.get()
 
 
-def _actor_from_claims(claims: Dict[str, Any]) -> str | None:
+def _actor_from_claims(claims: dict[str, Any]) -> str | None:
     """
     Human-readable actor string for logs/audit trail: prefer email (readable),
     suffixed with the stable numeric `sub` when both are present so the
@@ -153,9 +151,7 @@ class OtelContextMiddleware(BaseHTTPMiddleware):
         role_context_token = None
         try:
             claims = _decode_jwt_claims(request)
-            role_context_token = _role_context.set(
-                request.headers.get("X-User-Role") or claims.get("role")
-            )
+            role_context_token = _role_context.set(request.headers.get("X-User-Role") or claims.get("role"))
             request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex.lower())
             tenant_name = (
                 request.headers.get("X-Tenant-ID")
@@ -164,16 +160,9 @@ class OtelContextMiddleware(BaseHTTPMiddleware):
                 or "N/A"
             )
             scope_name = request.headers.get("X-Scope") or claims.get("scope") or "N/A"
-            userid = (
-                request.headers.get("X-User-ID")
-                or _actor_from_claims(claims)
-                or _CONFIG_USER_ID
-                or "N/A"
-            )
+            userid = request.headers.get("X-User-ID") or _actor_from_claims(claims) or _CONFIG_USER_ID or "N/A"
             app_name = request.headers.get("X-App-Name") or _CONFIG_APP_NAME or "N/A"
-            session_id = (
-                request.headers.get("X-Session-ID") or claims.get("session_id") or uuid.uuid4().hex.lower()
-            )
+            session_id = request.headers.get("X-Session-ID") or claims.get("session_id") or uuid.uuid4().hex.lower()
 
             request_context = RequestContext(
                 request_id=request_id,

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .colors import RowStyle, resolve_row_style
@@ -19,7 +20,7 @@ _IST = ZoneInfo("Asia/Kolkata")
 # Never shown in the email table (internal styling / pipeline ordering).
 _LOW_SIGNAL_KEYS = frozenset({"color", "row_color", "sequence_order", "skip_category"})
 
-DEFAULT_SEGMENT_COLUMNS: List[str] = [
+DEFAULT_SEGMENT_COLUMNS: list[str] = [
     "trade_date",
     "segment_code",
     "segment_name",
@@ -33,7 +34,7 @@ DEFAULT_SEGMENT_COLUMNS: List[str] = [
 ]
 
 # Customer-facing column headers (internal field keys unchanged in payload).
-_COLUMN_HEADERS: Dict[str, str] = {
+_COLUMN_HEADERS: dict[str, str] = {
     "segment_status": "Segment Status",
     "skip_reason": "Remarks",
     "current_state": "Stage",
@@ -46,7 +47,7 @@ _COLUMN_HEADERS: Dict[str, str] = {
     "completed_at": "Completed At",
 }
 
-_SEGMENT_STATUS_DISPLAY: Dict[str, str] = {
+_SEGMENT_STATUS_DISPLAY: dict[str, str] = {
     "COMPLETED": "Succeeded",
     "COMPLETE": "Succeeded",
     "SUCCESS": "Succeeded",
@@ -68,7 +69,7 @@ _SEGMENT_STATUS_DISPLAY: Dict[str, str] = {
     "WARN": "Warning",
 }
 
-_PROCESS_DISPLAY: Dict[str, str] = {
+_PROCESS_DISPLAY: dict[str, str] = {
     "FILEUPLOAD": "File Upload",
     "BILLPOSTING": "Bill Posting",
     "RECON": "Reconciliation",
@@ -83,7 +84,7 @@ _PROCESS_DISPLAY: Dict[str, str] = {
 }
 
 # Customer-facing pipeline stage (current_state -> readable label).
-_STAGE_DISPLAY: Dict[str, str] = {
+_STAGE_DISPLAY: dict[str, str] = {
     "INIT": "Good to Go",
     "WAITING_FOR_FILE_UPLOAD": "Good to Go",
     "WAITING_FOR_GTG": "Good to Go",
@@ -95,7 +96,7 @@ _STAGE_DISPLAY: Dict[str, str] = {
 }
 
 # Fallback when phase is missing but current_process is set.
-_PROCESS_STAGE_DISPLAY: Dict[str, str] = {
+_PROCESS_STAGE_DISPLAY: dict[str, str] = {
     "FILEUPLOAD": "Good to Go",
     "BEGINFILEUPLOAD": "Good to Go",
     "BILLPOSTING": "Completion",
@@ -110,11 +111,29 @@ _PROCESS_STAGE_DISPLAY: Dict[str, str] = {
 }
 
 _SEVERITY_RANK = {
-    "FAILED": 0, "FAIL": 0, "ERROR": 0, "CRITICAL": 0, "CBOS_ERROR": 0,
-    "SKIPPED": 1, "SKIP": 1, "TIMEOUT": 1, "WARNING": 1, "WARN": 1,
-    "AGENT_RESTART": 1, "MANUAL_SKIP": 1,
-    "IN_PROGRESS": 2, "RUNNING": 2, "PENDING": 2, "INFO": 2, "BLOCKED": 2,
-    "COMPLETED": 3, "COMPLETE": 3, "SUCCESS": 3, "SUCCEEDED": 3, "OK": 3, "DONE": 3,
+    "FAILED": 0,
+    "FAIL": 0,
+    "ERROR": 0,
+    "CRITICAL": 0,
+    "CBOS_ERROR": 0,
+    "SKIPPED": 1,
+    "SKIP": 1,
+    "TIMEOUT": 1,
+    "WARNING": 1,
+    "WARN": 1,
+    "AGENT_RESTART": 1,
+    "MANUAL_SKIP": 1,
+    "IN_PROGRESS": 2,
+    "RUNNING": 2,
+    "PENDING": 2,
+    "INFO": 2,
+    "BLOCKED": 2,
+    "COMPLETED": 3,
+    "COMPLETE": 3,
+    "SUCCESS": 3,
+    "SUCCEEDED": 3,
+    "OK": 3,
+    "DONE": 3,
 }
 _SEVERITY_BANNER_TEXT = {
     0: "ACTION REQUIRED — one or more records FAILED",
@@ -129,17 +148,17 @@ def _looks_like_segment_row(row: dict) -> bool:
 
 
 def _normalize_columns(
-    columns: Optional[Sequence[str]],
+    columns: Sequence[str] | None,
     rows: Sequence[dict],
-) -> List[str]:
+) -> list[str]:
     if columns is not None:
         return [c for c in columns if c not in _LOW_SIGNAL_KEYS]
     return derive_columns(rows)
 
 
-def derive_columns(rows: Sequence[dict]) -> List[str]:
+def derive_columns(rows: Sequence[dict]) -> list[str]:
     """First-seen key order; segment rows use DEFAULT_SEGMENT_COLUMNS as base."""
-    seen: Dict[str, None] = {}
+    seen: dict[str, None] = {}
     for row in rows:
         for key in row.keys():
             if key in _LOW_SIGNAL_KEYS:
@@ -158,11 +177,11 @@ def _prettify_header(column: str) -> str:
     return _COLUMN_HEADERS.get(column, column.replace("_", " ").strip().title())
 
 
-def _display_token(value: str, mapping: Dict[str, str]) -> str:
+def _display_token(value: str, mapping: dict[str, str]) -> str:
     return mapping.get(value.strip().upper(), mapping.get(value.strip(), value))
 
 
-def _format_stage(state: Any, row: Optional[dict] = None) -> str:
+def _format_stage(state: Any, row: dict | None = None) -> str:
     if state is not None and str(state).strip():
         key = str(state).strip().upper()
         if key in _STAGE_DISPLAY:
@@ -172,7 +191,8 @@ def _format_stage(state: Any, row: Optional[dict] = None) -> str:
         if process:
             proc_key = str(process).strip()
             stage = _PROCESS_STAGE_DISPLAY.get(
-                proc_key, _PROCESS_STAGE_DISPLAY.get(proc_key.upper()),
+                proc_key,
+                _PROCESS_STAGE_DISPLAY.get(proc_key.upper()),
             )
             if stage:
                 return stage
@@ -181,7 +201,7 @@ def _format_stage(state: Any, row: Optional[dict] = None) -> str:
     return str(state).replace("_", " ").title()
 
 
-def _format_segment_cell(column: str, value: Any, row: Optional[dict] = None) -> str:
+def _format_segment_cell(column: str, value: Any, row: dict | None = None) -> str:
     if column == "current_state":
         return _format_stage(value, row)
 
@@ -208,7 +228,7 @@ def _format_scalar(value: Any) -> str:
     return str(value)
 
 
-def format_cell_value(value: Any, *, column: Optional[str] = None, row: Optional[dict] = None) -> str:
+def format_cell_value(value: Any, *, column: str | None = None, row: dict | None = None) -> str:
     if column in _COLUMN_HEADERS and column not in ("trade_date", "started_at", "completed_at"):
         if not isinstance(value, (dict, list, tuple)):
             return _format_segment_cell(column, value, row=row)
@@ -221,19 +241,16 @@ def format_cell_value(value: Any, *, column: Optional[str] = None, row: Optional
     if isinstance(value, (list, tuple)):
         if not value:
             return "—"
-        return ", ".join(
-            format_cell_value(item) if isinstance(item, dict) else _format_scalar(item)
-            for item in value
-        )
+        return ", ".join(format_cell_value(item) if isinstance(item, dict) else _format_scalar(item) for item in value)
     return _format_scalar(value)
 
 
 def resolve_severity(
     rows: Sequence[dict],
-    color_overrides: Optional[Dict[str, tuple]] = None,
+    color_overrides: dict[str, tuple] | None = None,
 ) -> RowStyle:
     worst_rank = 4
-    worst_style: Optional[RowStyle] = None
+    worst_style: RowStyle | None = None
     for row in rows:
         style = resolve_row_style(row, color_overrides)
         rank = _SEVERITY_RANK.get(style.label, 4)
@@ -251,37 +268,41 @@ def resolve_severity(
 def _build_table_rows(
     rows: Sequence[dict],
     columns: Sequence[str],
-    color_overrides: Optional[Dict[str, tuple]] = None,
-) -> List[Dict[str, Any]]:
+    color_overrides: dict[str, tuple] | None = None,
+) -> list[dict[str, Any]]:
     table_rows = []
     for row in rows:
         style = resolve_row_style(row, color_overrides)
-        table_rows.append({
-            "background": style.background,
-            "text_color": style.text_color,
-            "cells": [format_cell_value(row.get(c), column=c, row=row) for c in columns],
-        })
+        table_rows.append(
+            {
+                "background": style.background,
+                "text_color": style.text_color,
+                "cells": [format_cell_value(row.get(c), column=c, row=row) for c in columns],
+            }
+        )
     return table_rows
 
 
 def render_html_table(
     rows: Sequence[dict],
-    columns: Optional[Sequence[str]] = None,
-    color_overrides: Optional[Dict[str, tuple]] = None,
+    columns: Sequence[str] | None = None,
+    color_overrides: dict[str, tuple] | None = None,
 ) -> str:
     cols = _normalize_columns(columns, rows)
     return render_html_template(
         columns=[_prettify_header(c) for c in cols],
         table_rows=_build_table_rows(rows, cols, color_overrides),
-        title=None, summary=None, severity=None,
+        title=None,
+        summary=None,
+        severity=None,
         generated_at=_now_str(),
     )
 
 
 def render_text_table(
     rows: Sequence[dict],
-    columns: Optional[Sequence[str]] = None,
-    color_overrides: Optional[Dict[str, tuple]] = None,
+    columns: Sequence[str] | None = None,
+    color_overrides: dict[str, tuple] | None = None,
 ) -> str:
     cols = _normalize_columns(columns, rows)
     header = " | ".join(["ALERT"] + [_prettify_header(c) for c in cols])
@@ -297,16 +318,16 @@ def _now_str() -> str:
     """Short IST form ('YYYY-MM-DD HH:MM:SS IST') — no microseconds, no
     numeric offset, matching the row-level timestamp style rather than
     the previous raw datetime.isoformat() (e.g. '...+05:30')."""
-    return datetime.now(timezone.utc).astimezone(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
+    return datetime.now(UTC).astimezone(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 def render_email_body(
     rows: Sequence[dict],
     *,
-    title: Optional[str] = None,
-    summary: Optional[str] = None,
-    columns: Optional[Sequence[str]] = None,
-    color_overrides: Optional[Dict[str, tuple]] = None,
+    title: str | None = None,
+    summary: str | None = None,
+    columns: Sequence[str] | None = None,
+    color_overrides: dict[str, tuple] | None = None,
 ) -> tuple[str, str]:
     cols = _normalize_columns(columns, rows)
     pretty_cols = [_prettify_header(c) for c in cols]

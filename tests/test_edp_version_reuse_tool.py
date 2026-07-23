@@ -24,7 +24,15 @@ async def test_unused_name_reports_no_history(monkeypatch):
 
 async def test_single_use_reports_no_reuse(monkeypatch):
     async def fake_get(path):
-        return 200, [{"version_name": "diwali_2026", "actor": "ops", "occurred_at": "2026-07-01T10:00:00", "trade_date": "2026-07-01", "summary": "initial"}]
+        return 200, [
+            {
+                "version_name": "diwali_2026",
+                "actor": "ops",
+                "occurred_at": "2026-07-01T10:00:00",
+                "trade_date": "2026-07-01",
+                "summary": "initial",
+            }
+        ]
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 
@@ -37,8 +45,20 @@ async def test_single_use_reports_no_reuse(monkeypatch):
 async def test_multiple_uses_by_different_actors_flags_reuse(monkeypatch):
     async def fake_get(path):
         return 200, [
-            {"version_name": "shared_name", "actor": "alice", "occurred_at": "2026-01-01T10:00:00", "trade_date": "2026-01-01", "summary": "s1"},
-            {"version_name": "shared_name", "actor": "bob", "occurred_at": "2026-06-01T10:00:00", "trade_date": "2026-06-01", "summary": "s2"},
+            {
+                "version_name": "shared_name",
+                "actor": "alice",
+                "occurred_at": "2026-01-01T10:00:00",
+                "trade_date": "2026-01-01",
+                "summary": "s1",
+            },
+            {
+                "version_name": "shared_name",
+                "actor": "bob",
+                "occurred_at": "2026-06-01T10:00:00",
+                "trade_date": "2026-06-01",
+                "summary": "s2",
+            },
         ]
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
@@ -52,8 +72,20 @@ async def test_multiple_uses_by_different_actors_flags_reuse(monkeypatch):
 async def test_multiple_uses_by_same_actor_does_not_flag(monkeypatch):
     async def fake_get(path):
         return 200, [
-            {"version_name": "reapplied", "actor": "ops", "occurred_at": "2026-01-01T10:00:00", "trade_date": "2026-01-01", "summary": "s1"},
-            {"version_name": "reapplied", "actor": "ops", "occurred_at": "2026-02-01T10:00:00", "trade_date": "2026-02-01", "summary": "s2"},
+            {
+                "version_name": "reapplied",
+                "actor": "ops",
+                "occurred_at": "2026-01-01T10:00:00",
+                "trade_date": "2026-01-01",
+                "summary": "s1",
+            },
+            {
+                "version_name": "reapplied",
+                "actor": "ops",
+                "occurred_at": "2026-02-01T10:00:00",
+                "trade_date": "2026-02-01",
+                "summary": "s2",
+            },
         ]
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)

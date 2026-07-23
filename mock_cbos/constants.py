@@ -15,7 +15,11 @@ endpoints use when you pass only process_code (no explicit gtg_process_name).
 from __future__ import annotations
 
 POST_TRADE_ORDER: tuple[str, ...] = (
-    "COLVAL", "COLALLOC", "MTFFT", "DMRPT", "DMSTMT",
+    "COLVAL",
+    "COLALLOC",
+    "MTFFT",
+    "DMRPT",
+    "DMSTMT",
 )
 
 POST_TRADE_NAMES: dict[str, str] = {

@@ -21,8 +21,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from src.agent.edp import repository
 import src.agent.edp.orchestrator as orchestrator_module
+from src.agent.edp import repository
 from src.agent.edp.models import SegmentState
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.tools.cbos_client import CbosClient, NewTradeProcessResult
@@ -56,7 +56,11 @@ class CountingRacyCbosClient(CbosClient):
         self._first_claimed = False
 
     async def get_new_trade_process(
-        self, group_name: str, login_id: str, trade_date, process_id: str = "0",
+        self,
+        group_name: str,
+        login_id: str,
+        trade_date,
+        process_id: str = "0",
     ) -> NewTradeProcessResult:
         is_trigger_mode = group_name.upper() == self._target_segment and process_id != "0"
         if is_trigger_mode:
@@ -181,7 +185,7 @@ async def test_two_pods_can_both_pass_the_triggering_guard(cfg, session_factory,
                 # same pre-TRIGGERING row independently.
                 try:
                     await asyncio.wait_for(second_read_done.wait(), timeout=10)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
             elif my_index == 2:
                 second_read_done.set()

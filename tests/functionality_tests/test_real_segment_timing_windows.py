@@ -23,10 +23,11 @@ is_my_window_over() directly.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 
 from src.agent.edp import repository
-from src.agent.edp.config import EdpBootstrapConfig, build_default_workflow_json
+from src.agent.edp.config import build_default_workflow_json
 from src.agent.edp.models import SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.tools.cbos_client import CbosClient
@@ -58,17 +59,21 @@ def _build_real_windows_workflow_json(segment_codes: list[str]) -> dict:
     segments = []
     for code in segment_codes:
         window_start, window_end = REAL_WINDOWS[code]
-        segments.append({
-            "segment_code": code,
-            "login_id": "CV0001",
-            "window_start": window_start,
-            "window_end": window_end,
-        })
+        segments.append(
+            {
+                "segment_code": code,
+                "login_id": "CV0001",
+                "window_start": window_start,
+                "window_end": window_end,
+            }
+        )
     return build_default_workflow_json(segments)
 
 
 async def _seed_real_windows_day(
-    session_factory, trade_date: date, segment_codes: list[str],
+    session_factory,
+    trade_date: date,
+    segment_codes: list[str],
 ) -> None:
     """Upload a workflow_json with the REAL documented windows for exactly
     these segments, then seed their segment_execution rows — the real-windows
@@ -87,7 +92,9 @@ async def _seed_real_windows_day(
 def _at(trade_date: date, hh: int, mm: int, tz, ss: int = 0, us: int = 0, day_offset: int = 0) -> datetime:
     """A tz-aware datetime at trade_date+day_offset, HH:MM:SS.ffffff."""
     return datetime.combine(
-        trade_date + timedelta(days=day_offset), dtime(hh, mm, ss, us), tzinfo=tz,
+        trade_date + timedelta(days=day_offset),
+        dtime(hh, mm, ss, us),
+        tzinfo=tz,
     )
 
 
@@ -99,6 +106,7 @@ async def _get_row(session_factory, trade_date: date, segment_code: str):
 # =============================================================================
 # 1. Before-window-opens: DR polled at 17:30, before its 18:00 open.
 # =============================================================================
+
 
 async def test_before_window_opens_dr_blocked_and_zero_cbos_calls(cfg, session_factory, test_date):
     """
@@ -120,14 +128,13 @@ async def test_before_window_opens_dr_blocked_and_zero_cbos_calls(cfg, session_f
     row = await _get_row(session_factory, test_date, "DR")
     assert row.segment_status == SegmentStatus.PENDING
     assert row.started_at is None
-    assert counting_cbos.calls == [], (
-        f"expected zero CBOS calls before DR's window opens, got {counting_cbos.calls}"
-    )
+    assert counting_cbos.calls == [], f"expected zero CBOS calls before DR's window opens, got {counting_cbos.calls}"
 
 
 # =============================================================================
 # 2. Exactly-at-window-open: DR polled at exactly 18:00:00.000000.
 # =============================================================================
+
 
 async def test_exactly_at_window_open_dr_proceeds(cfg, session_factory, test_date):
     """DR's window opens at 18:00 — is_my_time_window() is an inclusive (>=)
@@ -151,6 +158,7 @@ async def test_exactly_at_window_open_dr_proceeds(cfg, session_factory, test_dat
 # =============================================================================
 # 3. Mid-window normal operation: Currencies (CUR) at 18:30.
 # =============================================================================
+
 
 async def test_mid_window_currencies_normal_progress(cfg, session_factory, test_date):
     """CUR's window is 18:00-19:00. Driven entirely within its own real
@@ -181,6 +189,7 @@ async def test_mid_window_currencies_normal_progress(cfg, session_factory, test_
 #    its 19:00 close), never having started -> FAILED/TIMEOUT.
 # =============================================================================
 
+
 async def test_after_window_closes_never_started_slb_fails_timeout(cfg, session_factory, test_date):
     """SLB's window is 18:10-19:00. If it's still PENDING by 19:30 (past
     close, never got a chance to start), the orchestrator must fail it as a
@@ -203,6 +212,7 @@ async def test_after_window_closes_never_started_slb_fails_timeout(cfg, session_
 # =============================================================================
 # 5. Midnight-spanning window: NCDEX (21:00-02:00) driven across T -> T+1.
 # =============================================================================
+
 
 async def test_midnight_spanning_ncdex_stays_open_across_calendar_boundary(cfg, session_factory, test_date):
     """
@@ -240,8 +250,7 @@ async def test_midnight_spanning_ncdex_stays_open_across_calendar_boundary(cfg, 
     await orchestrator._process_one_segment("NCDEX")
     row = await _get_row(session_factory, test_date, "NCDEX")
     assert row.segment_status == SegmentStatus.IN_PROGRESS, (
-        "NCDEX must still be open (not FAILED/TIMEOUT) at 23:59 T, well before "
-        "its 02:00 T+1 close"
+        "NCDEX must still be open (not FAILED/TIMEOUT) at 23:59 T, well before its 02:00 T+1 close"
     )
     assert row.trade_date == test_date, "trade_date must not drift once midnight passes"
 
@@ -264,6 +273,7 @@ async def test_midnight_spanning_ncdex_stays_open_across_calendar_boundary(cfg, 
 # 6. NCDEX exactly at its window_end (02:00 T+1): not yet over (inclusive of
 #    the deadline instant); one instant past -> FAILED/TIMEOUT if incomplete.
 # =============================================================================
+
 
 async def test_ncdex_exactly_at_deadline_not_yet_over_then_fails_one_instant_later(cfg, session_factory, test_date):
     """is_my_window_over() uses a strict `>` — exactly at window_end (02:00
@@ -313,6 +323,7 @@ async def test_ncdex_exactly_at_deadline_not_yet_over_then_fails_one_instant_lat
 #    itself, even at 23:59 T, then opens correctly at 04:00 T+1.
 # =============================================================================
 
+
 async def test_mcx_next_day_window_never_opens_on_trade_date_itself(cfg, session_factory, test_date):
     """
     MCX is a NEXT_DAY_WINDOW_SEGMENTS member — its entire window (04:00-06:00)
@@ -352,6 +363,7 @@ async def test_mcx_next_day_window_never_opens_on_trade_date_itself(cfg, session
 #    the same instant NCDEX opens at 21:00.
 # =============================================================================
 
+
 async def test_dr_close_and_ncdex_open_handoff_at_21_00_no_dead_or_double_zone(cfg, session_factory, test_date):
     """
     DR's window ends at 21:00; NCDEX's window starts at 21:00 — same instant.
@@ -390,8 +402,7 @@ async def test_dr_close_and_ncdex_open_handoff_at_21_00_no_dead_or_double_zone(c
 
     # NCDEX: simultaneously open at its window_start instant.
     assert ncdex_outcome != "blocked", (
-        "NCDEX must be simultaneously open at exactly 21:00:00.000000 — "
-        "the handoff instant must not create a dead zone"
+        "NCDEX must be simultaneously open at exactly 21:00:00.000000 — the handoff instant must not create a dead zone"
     )
     assert ncdex_row.segment_status == SegmentStatus.IN_PROGRESS
 
@@ -413,6 +424,7 @@ async def test_dr_close_and_ncdex_open_handoff_at_21_00_no_dead_or_double_zone(c
 #    segment's outcome depends ONLY on its own window/state.
 # =============================================================================
 
+
 async def test_overlapping_segments_at_18_15_independent_outcomes(cfg, session_factory, test_date):
     """
     Realistic overlapping-windows snapshot at 18:15 IST:
@@ -427,9 +439,12 @@ async def test_overlapping_segments_at_18_15_independent_outcomes(cfg, session_f
     await _seed_real_windows_day(session_factory, test_date, ["EQ", "DR", "CUR", "SLB"])
 
     from ..fakes import FailingCbosClient
+
     cbos = FailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        fail_segment="CUR", fail_process="BeginFileUpload",
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment="CUR",
+        fail_process="BeginFileUpload",
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -464,8 +479,7 @@ async def test_overlapping_segments_at_18_15_independent_outcomes(cfg, session_f
     cur_row = await _get_row(session_factory, test_date, "CUR")
     assert cur_row.segment_status == SegmentStatus.FAILED
     assert cur_row.skip_category != "TIMEOUT", (
-        "CUR's failure must be attributed to its own CBOS error, not conflated "
-        "with EQ's window-timeout category"
+        "CUR's failure must be attributed to its own CBOS error, not conflated with EQ's window-timeout category"
     )
 
     # SLB: open window, healthy CBOS path -> must be completely unaffected by

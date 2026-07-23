@@ -18,7 +18,6 @@ Usage:
 from __future__ import annotations
 
 from datetime import datetime
-
 from typing import Any
 
 
@@ -37,9 +36,7 @@ def edp_log(message: str, **kwargs: Any) -> str:
 
 def seg_log(segment: str, trade_date: Any, message: str, **kwargs: Any) -> str:
     """Segment-level log line — always carries segment + date context."""
-    return (
-        f"[EDP] trade_date={trade_date} segment={segment} | {message}{_kv(kwargs)}"
-    )
+    return f"[EDP] trade_date={trade_date} segment={segment} | {message}{_kv(kwargs)}"
 
 
 def stage_log(
@@ -49,9 +46,7 @@ def stage_log(
     **kwargs: Any,
 ) -> str:
     """Stage-level log line — carries segment + stage name."""
-    return (
-        f"[EDP] segment={segment} stage={stage} | {message}{_kv(kwargs)}"
-    )
+    return f"[EDP] segment={segment} stage={stage} | {message}{_kv(kwargs)}"
 
 
 def cbos_log(
@@ -61,9 +56,7 @@ def cbos_log(
     **kwargs: Any,
 ) -> str:
     """CBOS API call log line."""
-    return (
-        f"[CBOS] segment={segment} api={api} | {message}{_kv(kwargs)}"
-    )
+    return f"[CBOS] segment={segment} api={api} | {message}{_kv(kwargs)}"
 
 
 def elapsed(start_iso: str | None, end_iso: str | None) -> str | None:
@@ -74,7 +67,7 @@ def elapsed(start_iso: str | None, end_iso: str | None) -> str | None:
     if not start_iso or not end_iso:
         return None
     try:
-        fmt = "%Y-%m-%dT%H:%M:%S.%f%z" if "+" in end_iso or end_iso.endswith("Z") else "%Y-%m-%dT%H:%M:%S.%f"
+        "%Y-%m-%dT%H:%M:%S.%f%z" if "+" in end_iso or end_iso.endswith("Z") else "%Y-%m-%dT%H:%M:%S.%f"
         s = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
         e = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
         secs = (e - s).total_seconds()

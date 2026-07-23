@@ -11,7 +11,8 @@ processes).
 
 from __future__ import annotations
 
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, timedelta
+from datetime import time as dtime
 
 from src.agent.edp import repository
 from src.agent.edp.models import SegmentState, SegmentStatus
@@ -79,8 +80,10 @@ async def test_post_trade_process_failure_does_not_block_others(cfg, session_fac
     """COLALLOC's GTG check fails permanently -> marked FAILED, but
     MTFFT/DMRPT/DMSTMT are independent and still run to COMPLETED."""
     cbos = FailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        fail_segment="COLALLOC", fail_process="CollateralAllocation",
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment="COLALLOC",
+        fail_process="CollateralAllocation",
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -100,8 +103,7 @@ async def test_post_trade_process_failure_does_not_block_others(cfg, session_fac
     for code in ("MTFFT", "DMRPT", "DMSTMT"):
         row = by_code[code]
         assert row.segment_status == SegmentStatus.COMPLETED, (
-            f"{code} is independent of COLALLOC's failure and should still complete, "
-            f"got {row.segment_status}"
+            f"{code} is independent of COLALLOC's failure and should still complete, got {row.segment_status}"
         )
 
     async with session_factory() as session:
@@ -120,8 +122,10 @@ async def test_post_trade_process_skipped_on_holiday_gtg_check(cfg, session_fact
     not FAILED.
     """
     cbos = SkippingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        skip_segment="COLVAL", skip_process="CollateralValuation",
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        skip_segment="COLVAL",
+        skip_process="CollateralValuation",
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -161,9 +165,7 @@ async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
     await helpers.seed_post_trade_day(session_factory, test_date)
 
     orchestrator._cycle_active_date = test_date
-    before_window = datetime.combine(
-        test_date + timedelta(days=1), dtime(1, 0), tzinfo=orchestrator._tz
-    )
+    before_window = datetime.combine(test_date + timedelta(days=1), dtime(1, 0), tzinfo=orchestrator._tz)
     orchestrator._cycle_now = before_window
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome == "blocked"
@@ -178,7 +180,9 @@ async def test_post_trade_process1_window_gate(cfg, session_factory, test_date):
 
 
 async def test_all_post_trade_processes_gated_by_default_when_no_window_configured(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     Every one of the 5 post-trade processes — not just COLVAL — must default
@@ -218,7 +222,9 @@ async def test_post_trade_process_pending_past_deadline_fails_with_timeout(cfg, 
     orchestrator._cycle_active_date = test_date
     # Default window is 02:30 -> 06:00 IST on trade_date+1 — well past both.
     orchestrator._cycle_now = datetime.combine(
-        test_date + timedelta(days=1), dtime(23, 59, 30), tzinfo=orchestrator._tz,
+        test_date + timedelta(days=1),
+        dtime(23, 59, 30),
+        tzinfo=orchestrator._tz,
     )
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome == "failed"
@@ -242,6 +248,7 @@ async def test_post_trade_process_in_progress_past_deadline_fails_with_timeout(c
     orchestrator = EdpOrchestrator(cfg, cbos)
 
     from src.agent.edp.config import build_default_workflow_json
+
     workflow_json = build_default_workflow_json(
         [],
         post_trade_processes=[
@@ -266,7 +273,9 @@ async def test_post_trade_process_in_progress_past_deadline_fails_with_timeout(c
         row.processes_json = {
             SegmentState.WAITING_FOR_GTG.value: {"status": "COMPLETED", "last_response": "TRUE"},
             SegmentState.TRIGGERED.value: {
-                "status": "TRIGGERED", "at": fixed_now.isoformat(), "message": "Process started successfully",
+                "status": "TRIGGERED",
+                "at": fixed_now.isoformat(),
+                "message": "Process started successfully",
             },
         }
         await session.commit()
@@ -275,7 +284,9 @@ async def test_post_trade_process_in_progress_past_deadline_fails_with_timeout(c
     # Past the custom 03:30 T+1 deadline, still well within Process 1's
     # opening window (which only gates the START, not this deadline check).
     orchestrator._cycle_now = datetime.combine(
-        test_date + timedelta(days=1), dtime(4, 0), tzinfo=orchestrator._tz,
+        test_date + timedelta(days=1),
+        dtime(4, 0),
+        tzinfo=orchestrator._tz,
     )
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome == "failed"
@@ -344,8 +355,10 @@ async def test_dmrpt_proceeds_even_when_mtfft_fails(cfg, session_factory, test_d
     chance to run rather than blocking forever if MTFFT fails.
     """
     cbos = FailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        fail_segment="MTFFT", fail_process="FundTransfer",
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment="MTFFT",
+        fail_process="FundTransfer",
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)

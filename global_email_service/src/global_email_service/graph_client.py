@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import httpx
 
@@ -31,11 +31,13 @@ _token_cache: dict[str, tuple[str, float]] = {}
 
 def _require_graph_config(config: EmailServiceConfig) -> None:
     missing = [
-        name for name, value in (
+        name
+        for name, value in (
             ("EMAIL_GRAPH_TENANT_ID", config.graph_tenant_id),
             ("EMAIL_GRAPH_CLIENT_ID", config.graph_client_id),
             ("EMAIL_GRAPH_CLIENT_SECRET", config.graph_client_secret),
-        ) if not value
+        )
+        if not value
     ]
     if missing:
         raise EmailSendError(
@@ -63,9 +65,7 @@ def _get_access_token(config: EmailServiceConfig) -> str:
         timeout=config.timeout_seconds,
     )
     if response.status_code != 200:
-        raise EmailSendError(
-            f"Graph token request failed: HTTP {response.status_code} — {response.text}"
-        )
+        raise EmailSendError(f"Graph token request failed: HTTP {response.status_code} — {response.text}")
 
     data = response.json()
     token = str(data["access_token"])
@@ -108,7 +108,7 @@ def send_message(
     _require_graph_config(config)
     message = _build_message(to=to, cc=cc, bcc=bcc, subject=subject, html_body=html_body)
 
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     attempts = config.max_retries + 1
 
     for attempt in range(1, attempts + 1):
@@ -123,20 +123,23 @@ def send_message(
             if response.status_code in (200, 202):
                 logger.info(
                     "[global_email_service] Graph sendMail succeeded — sender=%s to=%d cc=%d",
-                    config.graph_sender, len(to), len(cc),
+                    config.graph_sender,
+                    len(to),
+                    len(cc),
                 )
                 return
             if response.status_code in _PERMANENT_STATUSES:
                 raise EmailSendError(
-                    f"Graph sendMail failed (non-transient): HTTP {response.status_code} "
-                    f"— {response.text}"
+                    f"Graph sendMail failed (non-transient): HTTP {response.status_code} — {response.text}"
                 )
             last_exc = EmailSendError(
                 f"Graph sendMail failed (transient): HTTP {response.status_code} — {response.text}"
             )
             logger.warning(
                 "[global_email_service] Graph sendMail attempt %d/%d failed: %s",
-                attempt, attempts, last_exc,
+                attempt,
+                attempts,
+                last_exc,
             )
         except EmailSendError:
             raise
@@ -144,7 +147,9 @@ def send_message(
             last_exc = exc
             logger.warning(
                 "[global_email_service] Graph sendMail attempt %d/%d failed (network error): %s",
-                attempt, attempts, exc,
+                attempt,
+                attempts,
+                exc,
             )
 
         if attempt < attempts:

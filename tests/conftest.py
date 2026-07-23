@@ -38,9 +38,7 @@ def edpb_mock_client():
     with a canned manifest, batch submission is accepted, batch status is
     confirmed. Tests exercising failure paths swap in their own via
     set_edpb_client()."""
-    edpb_client_module.set_edpb_client(
-        EdpbClient("http://edpb-bot.mock", "http://edpb-uploader.mock", use_mock=True)
-    )
+    edpb_client_module.set_edpb_client(EdpbClient("http://edpb-bot.mock", "http://edpb-uploader.mock", use_mock=True))
     yield
     edpb_client_module.reset_edpb_client()
 

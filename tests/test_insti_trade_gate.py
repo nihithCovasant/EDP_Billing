@@ -40,17 +40,29 @@ class InstiTradeNeverReadyCbosClient(CbosClient):
         self.trigger_calls = 0
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() == self._segment and process_name == "CHECKINSTITRADE":
             return FileStatusResult(
                 response="FALSE",
                 raw_body='{"Status":"Success","Data":[{"MSG":"FALSE"}]}',
             )
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
     async def get_new_trade_process(
-        self, group_name: str, login_id: str, trade_date: date, process_id: str = "0",
+        self,
+        group_name: str,
+        login_id: str,
+        trade_date: date,
+        process_id: str = "0",
     ) -> NewTradeProcessResult:
         # Only the gated segment's triggers matter — the other 8 segments
         # legitimately proceed and fire theirs.
@@ -68,14 +80,22 @@ class _FixedAnswerCbosClient(CbosClient):
         self._segment, self._process, self._answer = segment.upper(), process, answer
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() == self._segment and process_name == self._process:
             return FileStatusResult(
                 response=self._answer,
                 raw_body=f'{{"Status":"Success","Data":[{{"MSG":"{self._answer}"}}]}}',
             )
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 async def test_happy_path_traverses_insti_trade_gate(cfg, session_factory, test_date):
@@ -105,7 +125,9 @@ async def test_trigger_never_fires_while_insti_trade_false(cfg, session_factory,
     getNewTradeProcess call count stays ZERO — the exact premature trigger
     the V6 doc warns about can never be issued."""
     cbos = InstiTradeNeverReadyCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, segment=SEGMENT,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        segment=SEGMENT,
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -118,8 +140,7 @@ async def test_trigger_never_fires_while_insti_trade_false(cfg, session_factory,
     assert row.current_state == SegmentState.WAITING_FOR_INSTI_TRADE
     assert row.segment_status not in (SegmentStatus.COMPLETED, SegmentStatus.FAILED)
     assert cbos.trigger_calls == 0, (
-        "trigger-mode getNewTradeProcess must never fire while Insti Trade "
-        "Transfer is incomplete"
+        "trigger-mode getNewTradeProcess must never fire while Insti Trade Transfer is incomplete"
     )
     # And the audit trail shows the poll happening (waiting, not wedged).
     step = row.processes_json[SegmentState.WAITING_FOR_INSTI_TRADE.value]["steps"]["CHECKINSTITRADE_STATUS"]
@@ -136,12 +157,17 @@ async def test_any_non_true_answer_holds_the_gate(cfg, session_factory, test_dat
     the posture as non-TRUE = wait (window timeout backstops)."""
     for weird_answer_client in (
         SkippingCbosClient(  # answers SKIP for CHECKINSTITRADE
-            cfg.cbos_status_url, cfg.cbos_process_url,
-            skip_segment=SEGMENT, skip_process="CHECKINSTITRADE",
+            cfg.cbos_status_url,
+            cfg.cbos_process_url,
+            skip_segment=SEGMENT,
+            skip_process="CHECKINSTITRADE",
         ),
         _FixedAnswerCbosClient(  # answers an out-of-vocabulary value
-            cfg.cbos_status_url, cfg.cbos_process_url,
-            segment=SEGMENT, process="CHECKINSTITRADE", answer="HOLIDAY",
+            cfg.cbos_status_url,
+            cfg.cbos_process_url,
+            segment=SEGMENT,
+            process="CHECKINSTITRADE",
+            answer="HOLIDAY",
         ),
     ):
         weird_answer_client.mock_set_ready_after(1)

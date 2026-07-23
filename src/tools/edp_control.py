@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -38,21 +38,41 @@ except ImportError:  # pragma: no cover - defensive
 
 IST = ZoneInfo("Asia/Kolkata")
 
-_CODE_ALIASES: Dict[str, str] = {
-    "EQ": "EQ", "CASH": "EQ", "EQUITY": "EQ",
-    "DR": "DR", "F&O": "DR", "FO": "DR", "FNO": "DR", "DERIVATIVES": "DR",
-    "CUR": "CUR", "CD": "CUR", "CURRENCY": "CUR",
+_CODE_ALIASES: dict[str, str] = {
+    "EQ": "EQ",
+    "CASH": "EQ",
+    "EQUITY": "EQ",
+    "DR": "DR",
+    "F&O": "DR",
+    "FO": "DR",
+    "FNO": "DR",
+    "DERIVATIVES": "DR",
+    "CUR": "CUR",
+    "CD": "CUR",
+    "CURRENCY": "CUR",
     "SLB": "SLB",
     "NCDEX": "NCDEX",
-    "NCDEXPHY": "NCDEXPHY", "NCDEX PHY": "NCDEXPHY", "NCDEX PHYSICAL": "NCDEXPHY",
+    "NCDEXPHY": "NCDEXPHY",
+    "NCDEX PHY": "NCDEXPHY",
+    "NCDEX PHYSICAL": "NCDEXPHY",
     "MCX": "MCX",
-    "MCXPHY": "MCXPHY", "MCX PHY": "MCXPHY", "MCX PHYSICAL": "MCXPHY",
-    "NSECOM": "NSECOM", "NSE COMMODITY": "NSECOM", "COMMODITY": "NSECOM",
-    "COLVAL": "COLVAL", "COLLATERAL VALUATION": "COLVAL",
-    "COLALLOC": "COLALLOC", "COLLATERAL ALLOCATION": "COLALLOC",
-    "MTFFT": "MTFFT", "MTF FUND TRANSFER": "MTFFT", "MTF": "MTFFT",
-    "DMRPT": "DMRPT", "DAILY MARGIN REPORTING": "DMRPT",
-    "DMSTMT": "DMSTMT", "DAILY MARGIN STATEMENTS": "DMSTMT",
+    "MCXPHY": "MCXPHY",
+    "MCX PHY": "MCXPHY",
+    "MCX PHYSICAL": "MCXPHY",
+    "NSECOM": "NSECOM",
+    "NSE COMMODITY": "NSECOM",
+    "COMMODITY": "NSECOM",
+    "COLVAL": "COLVAL",
+    "COLLATERAL VALUATION": "COLVAL",
+    "COLALLOC": "COLALLOC",
+    "COLLATERAL ALLOCATION": "COLALLOC",
+    "MTFFT": "MTFFT",
+    "MTF FUND TRANSFER": "MTFFT",
+    "MTF": "MTFFT",
+    "DMRPT": "DMRPT",
+    "DAILY MARGIN REPORTING": "DMRPT",
+    "DMSTMT": "DMSTMT",
+    "DAILY MARGIN STATEMENTS": "DMSTMT",
 }
 
 
@@ -64,7 +84,7 @@ def _today_ist() -> str:
     return datetime.now(IST).date().isoformat()
 
 
-def _normalize_date(raw: str) -> Optional[str]:
+def _normalize_date(raw: str) -> str | None:
     cleaned = raw.strip().lower()
     relative = {"today": 0, "yesterday": -1, "tomorrow": 1}
     if cleaned in relative:
@@ -82,8 +102,8 @@ def _base_url() -> str:
     return f"http://localhost:{port}"
 
 
-def _actor_headers() -> Dict[str, str]:
-    headers: Dict[str, str] = {}
+def _actor_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
     if get_request_context is not None:
         try:
             ctx = get_request_context()
@@ -102,7 +122,7 @@ def _actor_headers() -> Dict[str, str]:
     return headers
 
 
-async def _get(path: str) -> tuple[int, Dict[str, Any]]:
+async def _get(path: str) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{_base_url()}{path}", headers=_actor_headers())
     try:
@@ -111,7 +131,7 @@ async def _get(path: str) -> tuple[int, Dict[str, Any]]:
         return resp.status_code, {"raw": resp.text[:500]}
 
 
-async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+async def _post(path: str, json_body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{_base_url()}{path}", json=json_body, headers=_actor_headers())
     try:
@@ -124,8 +144,8 @@ async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, An
 async def skip_edp_segment_today(
     identifier: str,
     reason: str,
-    trade_date: Optional[str] = None,
-    skipped_by: Optional[str] = None,
+    trade_date: str | None = None,
+    skipped_by: str | None = None,
 ) -> str:
     """
     Manually skip a segment or post-trade process for one trading day only
@@ -165,7 +185,7 @@ async def skip_edp_segment_today(
 
 
 @tool
-async def retry_edp_segment(identifier: str, trade_date: Optional[str] = None) -> str:
+async def retry_edp_segment(identifier: str, trade_date: str | None = None) -> str:
     """
     Reset a FAILED or SKIPPED segment/post-trade process back to PENDING so
     the agent retries it on its next wake cycle. Use this after a transient
@@ -189,17 +209,14 @@ async def retry_edp_segment(identifier: str, trade_date: Optional[str] = None) -
         )
     if status_code >= 400:
         return f"❌ Retry failed (HTTP {status_code}): {data.get('detail', data)}"
-    return (
-        f"✅ **{code}** reset to PENDING for **{resolved_date}** — will be picked up on the "
-        f"next wake cycle."
-    )
+    return f"✅ **{code}** reset to PENDING for **{resolved_date}** — will be picked up on the next wake cycle."
 
 
 @tool
 async def control_edp_agent(
     action: str,
-    reason: Optional[str] = None,
-    requested_by: Optional[str] = None,
+    reason: str | None = None,
+    requested_by: str | None = None,
 ) -> str:
     """
     Start, stop, or check the status of the EDP billing agent's 24/7
@@ -251,7 +268,4 @@ async def control_edp_agent(
             f"- **Reason:** {data.get('reason') or '—'}"
             f"{active_note}"
         )
-    return (
-        f"▶️ Agent **STARTED** (resumed) by {data.get('requested_by')}.\n"
-        f"- **Reason:** {data.get('reason') or '—'}"
-    )
+    return f"▶️ Agent **STARTED** (resumed) by {data.get('requested_by')}.\n- **Reason:** {data.get('reason') or '—'}"

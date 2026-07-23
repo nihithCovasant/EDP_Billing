@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from .config import EmailServiceConfig, load_email_config
-from .exceptions import EmailServiceError, EmailSendError, InvalidPayloadError
+from .exceptions import EmailSendError, EmailServiceError, InvalidPayloadError
 from .service import EmailSendResult, send_alert_email, send_segment_alert
 
 __all__ = [
-    "send_alert_email",
-    "send_segment_alert",
+    "EmailSendError",
     "EmailSendResult",
     "EmailServiceConfig",
-    "load_email_config",
     "EmailServiceError",
-    "EmailSendError",
     "InvalidPayloadError",
+    "load_email_config",
+    "send_alert_email",
+    "send_segment_alert",
 ]

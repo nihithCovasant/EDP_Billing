@@ -52,7 +52,8 @@ CBOS API request / response shapes
 
   getdropdown EXISTINGPROCESSID  (Step 2 — read the uploader-reserved PID)
     POST {PROCESS_URL}/v1/api/brokerage/getdropdown
-    Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ","FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
+    Body: {"TAG":"EXISTINGPROCESSID","LOGINID":"CV0001","FILTER1":"EQ",
+           "FILTER2":"2026-06-29","extraoption2":"","extraoption3":""}
     OK:   {"Status":"Success","Result":[{"_KEY":17658,"_DESC":"17658 - CV0001 - Jun 29 2026 2:19PM"}]}
     Empty Result → uploader hasn't reserved yet; wait and re-check next cycle.
 
@@ -97,14 +98,15 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import os
 import json as _json
+import os
 import time as _time
 from dataclasses import dataclass, field
 from datetime import date
-from typing import List, Optional
 
 import httpx
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 from edpb_core.cbos import (
     existing_process_id_payload,
@@ -113,20 +115,19 @@ from edpb_core.cbos import (
     get_new_trade_process_payload,
 )
 
-from cams_otel_lib import Logger as logger, otel_trace
-
-
 # =============================================================================
 # Result dataclasses
 # =============================================================================
 
+
 @dataclass
 class FileStatusResult:
     """Result of a file_process_status call."""
-    response: str              # "TRUE" | "FALSE" | "SKIP"
+
+    response: str  # "TRUE" | "FALSE" | "SKIP"
     raw_body: str = ""
     http_status: int = 200
-    error: Optional[str] = None
+    error: str | None = None
     is_transient: bool = False  # True for network errors and HTTP 5xx/429 (retryable)
 
     @property
@@ -155,27 +156,29 @@ class NewTradeProcessStep:
     CBOS already received an earlier trigger call: any step IN_PROGRESS or
     SUCCESS means yes (don't re-trigger); all PENDING/empty means no.
     """
+
     id: int
     step_no: int
     name: str
-    status: str                # "PENDING" | "IN_PROGRESS" | "SUCCESS" | "FAILED"
-    status_desc: Optional[str]
+    status: str  # "PENDING" | "IN_PROGRESS" | "SUCCESS" | "FAILED"
+    status_desc: str | None
     upload_id: int
-    start_datetime: Optional[str]
-    end_datetime: Optional[str]
+    start_datetime: str | None
+    end_datetime: str | None
 
 
 @dataclass
 class NewTradeProcessResult:
     """Result of a getNewTradeProcess call (both reserve-PID and trigger modes)."""
+
     success: bool
-    process_id: Optional[str] = None
+    process_id: str | None = None
     is_runnable: bool = False
     is_auto_upload: bool = False
-    steps: List[NewTradeProcessStep] = field(default_factory=list)
+    steps: list[NewTradeProcessStep] = field(default_factory=list)
     raw_body: str = ""
     http_status: int = 200
-    error: Optional[str] = None
+    error: str | None = None
     is_transient: bool = False  # True for network errors and HTTP 5xx/429 (retryable)
 
 
@@ -184,11 +187,12 @@ class ExistingProcessResult:
     """Result of a getdropdown EXISTINGPROCESSID call — used for Step 2
     (get-or-reserve process_id), and doubles as the crash-recovery lookup
     if process_id was lost from the DB row."""
+
     found: bool
-    process_id: Optional[str] = None
-    description: Optional[str] = None
+    process_id: str | None = None
+    description: str | None = None
     raw_body: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     is_transient: bool = False
 
 
@@ -200,9 +204,10 @@ class AlreadyTriggeredResult:
     WAITING_FOR_COMPLETION (already_triggered=True) or TRIGGERED
     (already_triggered=False) — prevents a resumed pod double-firing.
     """
+
     already_triggered: bool
     raw_body: str = ""
-    error: Optional[str] = None
+    error: str | None = None
     is_transient: bool = False
 
 
@@ -211,11 +216,12 @@ class PostTradeTriggerResult:
     """Result of one of the 5 T+1 post-trade trigger calls. Unlike the
     segment trigger, there's no process_id — just an acknowledgement
     message that the job was started."""
+
     success: bool
     message: str = ""
     raw_body: str = ""
     http_status: int = 200
-    error: Optional[str] = None
+    error: str | None = None
     is_transient: bool = False
 
 
@@ -227,6 +233,7 @@ def to_ddmmmyyyy(d: date) -> str:
 # =============================================================================
 # Client
 # =============================================================================
+
 
 class CbosClient:
     """
@@ -244,7 +251,7 @@ class CbosClient:
         timeout_seconds: float = 30.0,
         password: str | None = None,
     ):
-        self.status_url = status_url.rstrip("/")    # http://10.167.202.234:8087
+        self.status_url = status_url.rstrip("/")  # http://10.167.202.234:8087
         self.process_url = process_url.rstrip("/")  # http://10.167.202.164:8003
         self.use_mock = use_mock
         self.timeout = timeout_seconds
@@ -256,8 +263,7 @@ class CbosClient:
             # misbehaves" (module docstring) - an empty PASSWORD would do
             # exactly that, so say it loudly at construction.
             logger.warning(
-                "[CBOS] CBOS_PASSWORD is not set - real-mode getNewTradeProcess "
-                "will send an empty PASSWORD field"
+                "[CBOS] CBOS_PASSWORD is not set - real-mode getNewTradeProcess will send an empty PASSWORD field"
             )
 
         # Mock state — controls when polls "become ready"
@@ -322,7 +328,8 @@ class CbosClient:
                 }
 
         status_result, process_result = await asyncio.gather(
-            _probe(self.status_url), _probe(self.process_url),
+            _probe(self.status_url),
+            _probe(self.process_url),
         )
         overall_ok = status_result["ok"] and process_result["ok"]
         return {
@@ -384,10 +391,7 @@ class CbosClient:
                 if include_segment
                 else file_process_status_payload_b(iso, process_name, user_id)
             )
-        logger.info(
-            f"[CBOS] segment={segment} api=file_process_status process={process_name} "
-            f"| POST {url}"
-        )
+        logger.info(f"[CBOS] segment={segment} api=file_process_status process={process_name} | POST {url}")
 
         t0 = _time.monotonic()
         try:
@@ -465,14 +469,14 @@ class CbosClient:
         # V5 shape from edpb_core (shared with the uploader) - includes the
         # PASSWORD field the v3-era inline dict omitted.
         payload = get_new_trade_process_payload(
-            group_name, trade_date.isoformat(), login_id, self.password,
+            group_name,
+            trade_date.isoformat(),
+            login_id,
+            self.password,
             str(process_id),
         )
         mode = "reserve_pid" if process_id == "0" else f"trigger(pid={process_id})"
-        logger.info(
-            f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
-            f"| POST {url}"
-        )
+        logger.info(f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} | POST {url}")
 
         t0 = _time.monotonic()
         try:
@@ -537,10 +541,7 @@ class CbosClient:
 
         url = f"{self.process_url}/v1/api/brokerage/getdropdown"
         payload = existing_process_id_payload(segment, trade_date.isoformat(), login_id)
-        logger.info(
-            f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
-            f"date={trade_date} | POST {url}"
-        )
+        logger.info(f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) date={trade_date} | POST {url}")
 
         t0 = _time.monotonic()
         try:
@@ -554,7 +555,8 @@ class CbosClient:
                         f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
                     )
                     return ExistingProcessResult(
-                        found=False, raw_body=body,
+                        found=False,
+                        raw_body=body,
                         error=f"HTTP {resp.status_code}",
                         is_transient=_is_transient_http_status(resp.status_code),
                     )
@@ -595,7 +597,9 @@ class CbosClient:
 
     @otel_trace
     async def trigger_collateral_valuation(
-        self, login_id: str, margin_date: date,
+        self,
+        login_id: str,
+        margin_date: date,
     ) -> PostTradeTriggerResult:
         """POST {PROCESS_URL}/v1/api/process/GetCollateralValuation — post-trade Process 1."""
         payload = {
@@ -604,30 +608,44 @@ class CbosClient:
             "MARGINDATE": to_ddmmmyyyy(margin_date),
         }
         return await self._post_trade_trigger(
-            "GetCollateralValuation", payload, segment="COLVAL",
+            "GetCollateralValuation",
+            payload,
+            segment="COLVAL",
         )
 
     @otel_trace
     async def trigger_collateral_allocation(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> PostTradeTriggerResult:
         """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessCollateralAllocation — post-trade Process 2."""
         return await self._trigger_post_trade_job(
-            "MTFTradeProcessCollateralAllocation", login_id, trade_date, segment="COLALLOC",
+            "MTFTradeProcessCollateralAllocation",
+            login_id,
+            trade_date,
+            segment="COLALLOC",
         )
 
     @otel_trace
     async def trigger_mtf_fund_transfer(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> PostTradeTriggerResult:
         """POST {PROCESS_URL}/v1/api/process/MTFTradeProcessFundTransfer — post-trade Process 3."""
         return await self._trigger_post_trade_job(
-            "MTFTradeProcessFundTransfer", login_id, trade_date, segment="MTFFT",
+            "MTFTradeProcessFundTransfer",
+            login_id,
+            trade_date,
+            segment="MTFFT",
         )
 
     @otel_trace
     async def trigger_daily_margin_reporting(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> PostTradeTriggerResult:
         """
         POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess — post-trade
@@ -641,12 +659,16 @@ class CbosClient:
             "MARGINDATE": to_ddmmmyyyy(trade_date),
         }
         return await self._post_trade_trigger(
-            "CombinedMarginProcess", payload, segment="DMRPT",
+            "CombinedMarginProcess",
+            payload,
+            segment="DMRPT",
         )
 
     @otel_trace
     async def trigger_daily_margin_statements(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> PostTradeTriggerResult:
         """
         POST {STATUS_URL}/api/edp/file_process_status with
@@ -657,8 +679,11 @@ class CbosClient:
         {LOGINID,TRADEDATE} shape.
         """
         result = await self.file_process_status(
-            segment="DMSTMT", process_name="DAILYMARGINSTATEMENT", user_id=login_id,
-            trade_date=trade_date, include_segment=False,
+            segment="DMSTMT",
+            process_name="DAILYMARGINSTATEMENT",
+            user_id=login_id,
+            trade_date=trade_date,
+            include_segment=False,
         )
         if result.is_error:
             return PostTradeTriggerResult(
@@ -683,7 +708,9 @@ class CbosClient:
 
     @otel_trace
     async def check_collateral_valuation_triggered(
-        self, login_id: str, margin_date: date,
+        self,
+        login_id: str,
+        margin_date: date,
     ) -> AlreadyTriggeredResult:
         """
         POST {PROCESS_URL}/v1/api/process/GetCollateralValuation with
@@ -698,7 +725,9 @@ class CbosClient:
 
     @otel_trace
     async def check_daily_margin_reporting_triggered(
-        self, login_id: str, margin_date: date,
+        self,
+        login_id: str,
+        margin_date: date,
     ) -> AlreadyTriggeredResult:
         """
         POST {PROCESS_URL}/v1/api/process/CombinedMarginProcess with
@@ -711,7 +740,9 @@ class CbosClient:
 
     @otel_trace
     async def check_collateral_allocation_triggered(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(MTFCOLLALLOC) — CBOS's own check
         endpoint for whether collateral allocation already ran today."""
@@ -719,22 +750,33 @@ class CbosClient:
 
     @otel_trace
     async def check_mtf_fund_transfer_triggered(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(MTFFUNDTRAN)."""
         return await self._already_triggered_via_file_status("MTFFT", "MTFFUNDTRAN", login_id, trade_date)
 
     @otel_trace
     async def check_daily_margin_statements_triggered(
-        self, login_id: str, trade_date: date,
+        self,
+        login_id: str,
+        trade_date: date,
     ) -> AlreadyTriggeredResult:
         """Reuses file_process_status(CHECKDAILYMARGINSTATEMENT)."""
         return await self._already_triggered_via_file_status(
-            "DMSTMT", "CHECKDAILYMARGINSTATEMENT", login_id, trade_date,
+            "DMSTMT",
+            "CHECKDAILYMARGINSTATEMENT",
+            login_id,
+            trade_date,
         )
 
     async def _already_triggered_via_file_status(
-        self, segment: str, process_name: str, user_id: str, trade_date: date | None = None,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date: date | None = None,
     ) -> AlreadyTriggeredResult:
         """
         Real mode: reuses file_process_status(process_name) but does NOT
@@ -753,19 +795,27 @@ class CbosClient:
             return self._mock_already_triggered(segment)
         # Shape B: these steps carry no Segment field in V5.
         result = await self.file_process_status(
-            segment=segment, process_name=process_name, user_id=user_id,
-            trade_date=trade_date, include_segment=False,
+            segment=segment,
+            process_name=process_name,
+            user_id=user_id,
+            trade_date=trade_date,
+            include_segment=False,
         )
         if result.is_error:
             return AlreadyTriggeredResult(
-                already_triggered=False, raw_body=result.raw_body,
-                error=result.error, is_transient=result.is_transient,
+                already_triggered=False,
+                raw_body=result.raw_body,
+                error=result.error,
+                is_transient=result.is_transient,
             )
         already_triggered = _parse_already_triggered_sentence(result.response)
         return AlreadyTriggeredResult(already_triggered=already_triggered, raw_body=result.raw_body)
 
     async def _already_triggered_check(
-        self, endpoint_name: str, payload: dict, segment: str,
+        self,
+        endpoint_name: str,
+        payload: dict,
+        segment: str,
     ) -> AlreadyTriggeredResult:
         """Shared REFRESH-variant call — same Table1-non-empty-means-running
         response shape as getNewTradeProcess, reused here for the "already
@@ -793,13 +843,16 @@ class CbosClient:
                         f"| HTTP {resp.status_code} elapsed_ms={elapsed_ms}"
                     )
                     return AlreadyTriggeredResult(
-                        already_triggered=False, raw_body=body,
-                        error=f"HTTP {resp.status_code}", is_transient=_is_transient_http_status(resp.status_code),
+                        already_triggered=False,
+                        raw_body=body,
+                        error=f"HTTP {resp.status_code}",
+                        is_transient=_is_transient_http_status(resp.status_code),
                     )
                 data = _json.loads(body)
                 if data.get("Status") != "Success":
                     return AlreadyTriggeredResult(
-                        already_triggered=False, raw_body=body,
+                        already_triggered=False,
+                        raw_body=body,
                         error=f"CBOS Status={data.get('Status')}",
                     )
                 table1 = data.get("Result", {}).get("Table1", [])
@@ -812,20 +865,26 @@ class CbosClient:
         except Exception as exc:
             elapsed_ms = int((_time.monotonic() - t0) * 1000)
             logger.error(
-                f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"[CBOS] segment={segment} api={endpoint_name}(REFRESH) | EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
             )
             return AlreadyTriggeredResult(already_triggered=False, error=str(exc), is_transient=True)
 
     async def _trigger_post_trade_job(
-        self, endpoint_name: str, login_id: str, trade_date: date, segment: str,
+        self,
+        endpoint_name: str,
+        login_id: str,
+        trade_date: date,
+        segment: str,
     ) -> PostTradeTriggerResult:
         """Shared body shape for the 4 post-trade endpoints that take {LOGINID, TRADEDATE}."""
         payload = {"LOGINID": login_id, "TRADEDATE": to_ddmmmyyyy(trade_date)}
         return await self._post_trade_trigger(endpoint_name, payload, segment=segment)
 
     async def _post_trade_trigger(
-        self, endpoint_name: str, payload: dict, segment: str,
+        self,
+        endpoint_name: str,
+        payload: dict,
+        segment: str,
     ) -> PostTradeTriggerResult:
         if self.use_mock:
             result = self._mock_post_trade_trigger()
@@ -864,19 +923,18 @@ class CbosClient:
                         f"is_transient={is_transient}"
                     )
                     return PostTradeTriggerResult(
-                        success=False, message=message, raw_body=body, error=message,
+                        success=False,
+                        message=message,
+                        raw_body=body,
+                        error=message,
                         is_transient=is_transient,
                     )
-                logger.info(
-                    f"[CBOS] segment={segment} api={endpoint_name} "
-                    f"| message={message} elapsed_ms={elapsed_ms}"
-                )
+                logger.info(f"[CBOS] segment={segment} api={endpoint_name} | message={message} elapsed_ms={elapsed_ms}")
                 return PostTradeTriggerResult(success=True, message=message, raw_body=body)
         except Exception as exc:
             elapsed_ms = int((_time.monotonic() - t0) * 1000)
             logger.error(
-                f"[CBOS] segment={segment} api={endpoint_name} "
-                f"| EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
+                f"[CBOS] segment={segment} api={endpoint_name} | EXCEPTION elapsed_ms={elapsed_ms} error={exc}"
             )
             return PostTradeTriggerResult(success=False, error=str(exc), is_transient=True)
 
@@ -909,9 +967,7 @@ class CbosClient:
             raw_body='{"Status":"Success","Data":[{"MSG":"FALSE"}]}',
         )
 
-    def _mock_new_trade_process(
-        self, group_name: str, trade_date: date, process_id: str
-    ) -> NewTradeProcessResult:
+    def _mock_new_trade_process(self, group_name: str, trade_date: date, process_id: str) -> NewTradeProcessResult:
         """
         Simulates getNewTradeProcess.
 
@@ -937,19 +993,28 @@ class CbosClient:
             if call_no == 1:
                 table2 = []
             else:
-                table2 = [{
-                    "ID": 1, "STEPNO": 1, "NAME": "TRADE_MERGER",
-                    "STATUS": "IN_PROGRESS", "STATUSDESC": None, "UPLOADID": 0,
-                    "STARTDATETIME": None, "ENDDATETIME": None,
-                }]
+                table2 = [
+                    {
+                        "ID": 1,
+                        "STEPNO": 1,
+                        "NAME": "TRADE_MERGER",
+                        "STATUS": "IN_PROGRESS",
+                        "STATUSDESC": None,
+                        "UPLOADID": 0,
+                        "STARTDATETIME": None,
+                        "ENDDATETIME": None,
+                    }
+                ]
 
-        body = _json.dumps({
-            "Status": "Success",
-            "Result": {
-                "Table1": [{"PROCESSID": int(fake_pid), "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
-                "Table2": table2,
-            },
-        })
+        body = _json.dumps(
+            {
+                "Status": "Success",
+                "Result": {
+                    "Table1": [{"PROCESSID": int(fake_pid), "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
+                    "Table2": table2,
+                },
+            }
+        )
         return NewTradeProcessResult(
             success=True,
             process_id=fake_pid,
@@ -1034,6 +1099,7 @@ class CbosClient:
 # =============================================================================
 # Response parsers
 # =============================================================================
+
 
 def _is_transient_http_status(status_code: int) -> bool:
     """Whether a non-200 HTTP status from CBOS should be retried (BLOCKED)

@@ -15,8 +15,6 @@ assertions on final states/categories/reasons/call counts/summary counts.
 
 from __future__ import annotations
 
-from datetime import date
-
 from src.agent.edp import repository
 from src.agent.edp.models import SegmentState, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
@@ -25,7 +23,6 @@ from src.agent.edp.utils.constants import SEGMENT_ORDER
 from src.tools.cbos_client import CbosClient, FileStatusResult
 
 from .. import helpers
-from ..fakes import FailingCbosClient
 
 # =============================================================================
 # Fakes specific to these scenarios (extending fakes.py's patterns/naming).
@@ -46,11 +43,24 @@ class MultiSkippingCbosClient(CbosClient):
         self._skip_segments = {s.upper() for s in skip_segments}
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() in self._skip_segments and process_name == "BeginFileUpload":
-            return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+            return FileStatusResult(
+                response="HOLIDAY",
+                raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}',
+                error=None,
+                is_transient=False,
+            )
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 class MultiFailingCbosClient(CbosClient):
@@ -66,7 +76,13 @@ class MultiFailingCbosClient(CbosClient):
         self._fail_pairs = {seg.upper(): proc for seg, proc in fail_pairs.items()}
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         if self._fail_pairs.get(segment.upper()) == process_name:
             return FileStatusResult(
@@ -75,7 +91,9 @@ class MultiFailingCbosClient(CbosClient):
                 error=f"Simulated permanent CBOS failure for {segment}/{process_name}",
                 is_transient=False,
             )
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 class CountingFileStatusCbosClient(CbosClient):
@@ -91,11 +109,19 @@ class CountingFileStatusCbosClient(CbosClient):
         self.call_counts: dict[str, int] = {}
 
     async def file_process_status(
-        self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
+        self,
+        segment: str,
+        process_name: str,
+        user_id: str,
+        trade_date=None,
+        *,
+        include_segment=True,
     ) -> FileStatusResult:
         key = segment.upper()
         self.call_counts[key] = self.call_counts.get(key, 0) + 1
-        return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+        return await super().file_process_status(
+            segment, process_name, user_id, trade_date, include_segment=include_segment
+        )
 
 
 # =============================================================================
@@ -113,7 +139,9 @@ async def test_mixed_holiday_day_some_segments_skip_others_complete(cfg, session
     to completion regardless of the mixed per-segment outcome mix.
     """
     cbos = MultiSkippingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, skip_segments=HOLIDAY_SEGMENTS,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        skip_segments=HOLIDAY_SEGMENTS,
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -168,7 +196,9 @@ FAIL_PAIRS = {"EQ": "BILLPOSTING", "NCDEX": "RECON"}
 
 
 async def test_partial_pipeline_failure_two_segments_two_stages_then_retry_recovers(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     EQ fails at BILLPOSTING (order=2), NCDEX fails at RECON (order=4) —
@@ -179,7 +209,9 @@ async def test_partial_pipeline_failure_two_segments_two_stages_then_retry_recov
     in) must bring both to COMPLETED.
     """
     failing_cbos = MultiFailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url, fail_pairs=FAIL_PAIRS,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_pairs=FAIL_PAIRS,
     )
     failing_cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, failing_cbos)
@@ -208,8 +240,7 @@ async def test_partial_pipeline_failure_two_segments_two_stages_then_retry_recov
     other_codes = [c for c in SEGMENT_ORDER if c not in FAIL_PAIRS]
     for code in other_codes:
         assert by_code[code].segment_status == SegmentStatus.COMPLETED, (
-            f"segment {code} expected COMPLETED (independent of EQ/NCDEX failures), "
-            f"got {by_code[code].segment_status}"
+            f"segment {code} expected COMPLETED (independent of EQ/NCDEX failures), got {by_code[code].segment_status}"
         )
 
     async with session_factory() as session:
@@ -242,8 +273,7 @@ async def test_partial_pipeline_failure_two_segments_two_stages_then_retry_recov
     by_code = {r.segment_code: r for r in rows}
     for code in SEGMENT_ORDER:
         assert by_code[code].segment_status == SegmentStatus.COMPLETED, (
-            f"segment {code} expected COMPLETED after retrying EQ and NCDEX, "
-            f"got {by_code[code].segment_status}"
+            f"segment {code} expected COMPLETED after retrying EQ and NCDEX, got {by_code[code].segment_status}"
         )
 
 
@@ -251,8 +281,11 @@ async def test_partial_pipeline_failure_two_segments_two_stages_then_retry_recov
 # Scenario 3 — Slow day: every segment needs multiple polls before ready.
 # =============================================================================
 
+
 async def test_slow_day_all_segments_need_multiple_polls_latest_response_recorded(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     Every one of the 9 segments requires several polls (mock_set_ready_after)
@@ -276,7 +309,10 @@ async def test_slow_day_all_segments_need_multiple_polls_latest_response_recorde
     # is slow, not just eventually within an enormous cap.
     bounded_max_cycles = 6 * POLLS_BEFORE_READY + 10
     rows = await helpers.drive_until_terminal(
-        orchestrator, session_factory, test_date, max_cycles=bounded_max_cycles,
+        orchestrator,
+        session_factory,
+        test_date,
+        max_cycles=bounded_max_cycles,
     )
     by_code = {r.segment_code: r for r in rows}
 
@@ -294,8 +330,7 @@ async def test_slow_day_all_segments_need_multiple_polls_latest_response_recorde
         init_step = init_steps.get("BeginFileUpload_STATUS", init_steps.get("BeginFileUpload"))
         assert init_step is not None, f"{code} missing INIT step data"
         assert init_step["last_response"] == "TRUE", (
-            f"{code}'s INIT step must record the LATEST (ready) response, "
-            f"got {init_step['last_response']!r}"
+            f"{code}'s INIT step must record the LATEST (ready) response, got {init_step['last_response']!r}"
         )
 
         for state in (
@@ -348,8 +383,7 @@ async def test_manual_skip_mid_day_freezes_call_count_others_unaffected(cfg, ses
         "test assumes NCDEXPHY is still PENDING/IN_PROGRESS at the moment of manual skip"
     )
     some_other_in_flight = [
-        c for c in SEGMENT_ORDER
-        if c != MANUAL_SKIP_SEGMENT and not repository.is_handled(by_code[c])
+        c for c in SEGMENT_ORDER if c != MANUAL_SKIP_SEGMENT and not repository.is_handled(by_code[c])
     ]
     assert some_other_in_flight, "test assumes at least one other segment is also still in flight"
 
@@ -357,7 +391,9 @@ async def test_manual_skip_mid_day_freezes_call_count_others_unaffected(cfg, ses
 
     async with session_factory() as session:
         skipped = await repository.skip_segment_manually(
-            session, test_date, MANUAL_SKIP_SEGMENT,
+            session,
+            test_date,
+            MANUAL_SKIP_SEGMENT,
             reason="Exchange declared no trades for this segment today",
             skipped_by="ops_user",
         )
@@ -409,14 +445,22 @@ async def test_end_of_day_summary_matches_real_mixed_outcomes_exactly(cfg, sessi
     else) -- get_day_summary()'s aggregate counts must exactly match the
     real per-segment outcomes, with zero PENDING/IN_PROGRESS left over.
     """
+
     class MixedOutcomeCbosClient(CbosClient):
         def __init__(self, status_url: str, process_url: str):
             super().__init__(status_url, process_url, use_mock=True)
 
-        async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
+        async def file_process_status(
+            self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True
+        ) -> FileStatusResult:
             seg = segment.upper()
             if seg in END_OF_DAY_HOLIDAY_SEGMENTS and process_name == "BeginFileUpload":
-                return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
+                return FileStatusResult(
+                    response="HOLIDAY",
+                    raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}',
+                    error=None,
+                    is_transient=False,
+                )
             if END_OF_DAY_FAIL_PAIRS.get(seg) == process_name:
                 return FileStatusResult(
                     response="FALSE",
@@ -424,7 +468,9 @@ async def test_end_of_day_summary_matches_real_mixed_outcomes_exactly(cfg, sessi
                     error=f"Simulated permanent CBOS failure for {seg}/{process_name}",
                     is_transient=False,
                 )
-            return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
+            return await super().file_process_status(
+                segment, process_name, user_id, trade_date, include_segment=include_segment
+            )
 
     cbos = MixedOutcomeCbosClient(cfg.cbos_status_url, cfg.cbos_process_url)
     cbos.mock_set_ready_after(1)
@@ -458,8 +504,7 @@ async def test_end_of_day_summary_matches_real_mixed_outcomes_exactly(cfg, sessi
     # Sanity: counts must exactly partition the day, no double-counting or
     # segment left out of the aggregate.
     assert (
-        summary["completed"] + summary["failed"] + summary["skipped"]
-        + summary["pending"] + summary["in_progress"]
+        summary["completed"] + summary["failed"] + summary["skipped"] + summary["pending"] + summary["in_progress"]
         == summary["total"]
     )
 

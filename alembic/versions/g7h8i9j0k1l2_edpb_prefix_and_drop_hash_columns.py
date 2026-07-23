@@ -24,35 +24,26 @@ Revises: f6a7b8c9d0e1
 Create Date: 2026-07-05 00:00:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "g7h8i9j0k1l2"
-down_revision: Union[str, Sequence[str], None] = "f6a7b8c9d0e1"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "f6a7b8c9d0e1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     # 1. Rename tables (and their indexes, for naming consistency).
     op.rename_table("edp_properties", "edpb_properties")
-    op.execute(
-        "ALTER INDEX ix_edp_properties_trade_date "
-        "RENAME TO ix_edpb_properties_trade_date"
-    )
-    op.execute(
-        "ALTER INDEX ix_edp_properties_one_active_per_date "
-        "RENAME TO ix_edpb_properties_one_active_per_date"
-    )
+    op.execute("ALTER INDEX ix_edp_properties_trade_date RENAME TO ix_edpb_properties_trade_date")
+    op.execute("ALTER INDEX ix_edp_properties_one_active_per_date RENAME TO ix_edpb_properties_one_active_per_date")
 
     op.rename_table("segment_execution", "edpb_segment_execution")
-    op.execute(
-        "ALTER INDEX ix_segment_execution_trade_date "
-        "RENAME TO ix_edpb_segment_execution_trade_date"
-    )
+    op.execute("ALTER INDEX ix_segment_execution_trade_date RENAME TO ix_edpb_segment_execution_trade_date")
 
     op.rename_table("agent_control", "edpb_agent_control")
 
@@ -68,25 +59,14 @@ def downgrade() -> None:
     )
     op.add_column(
         "edpb_properties",
-        sa.Column(
-            "content_hash", sa.String(length=64), nullable=False, server_default=""
-        ),
+        sa.Column("content_hash", sa.String(length=64), nullable=False, server_default=""),
     )
 
     op.rename_table("edpb_agent_control", "agent_control")
 
-    op.execute(
-        "ALTER INDEX ix_edpb_segment_execution_trade_date "
-        "RENAME TO ix_segment_execution_trade_date"
-    )
+    op.execute("ALTER INDEX ix_edpb_segment_execution_trade_date RENAME TO ix_segment_execution_trade_date")
     op.rename_table("edpb_segment_execution", "segment_execution")
 
-    op.execute(
-        "ALTER INDEX ix_edpb_properties_one_active_per_date "
-        "RENAME TO ix_edp_properties_one_active_per_date"
-    )
-    op.execute(
-        "ALTER INDEX ix_edpb_properties_trade_date "
-        "RENAME TO ix_edp_properties_trade_date"
-    )
+    op.execute("ALTER INDEX ix_edpb_properties_one_active_per_date RENAME TO ix_edp_properties_one_active_per_date")
+    op.execute("ALTER INDEX ix_edpb_properties_trade_date RENAME TO ix_edp_properties_trade_date")
     op.rename_table("edpb_properties", "edp_properties")

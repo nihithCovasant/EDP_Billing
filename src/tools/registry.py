@@ -2,13 +2,14 @@
 Tool Registry for centralizing tool management.
 """
 
-from typing import List, Dict, Any, Optional, Type
-from pathlib import Path
 import importlib.util
 import inspect
 import sys
+from pathlib import Path
+from typing import Any
 
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 # Infrastructure modules in src/tools/ — not LangChain tools. Loading them via
 # spec_from_file_location (instead of a normal package import) breaks @dataclass
@@ -29,16 +30,16 @@ class ToolRegistry:
 
     def __init__(self):
         """Initialize the tool registry."""
-        self._tools: Dict[str, Type] = {}
-        self._configs: Dict[str, Dict[str, Any]] = {}
-        self._instances: Dict[str, Any] = {}
+        self._tools: dict[str, type] = {}
+        self._configs: dict[str, dict[str, Any]] = {}
+        self._instances: dict[str, Any] = {}
 
     @otel_trace
     def register(
         self,
-        tool_class: Type,
-        name: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
+        tool_class: type,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
     ):
         """
         Register a tool class.
@@ -54,7 +55,7 @@ class ToolRegistry:
         logger.debug(f"Registered tool: {tool_name}")
 
     @otel_trace
-    def get_tools(self, tenant_id: str = "default") -> List[Any]:
+    def get_tools(self, tenant_id: str = "default") -> list[Any]:
         """
         Get initialized tool instances for a tenant.
 
@@ -128,14 +129,10 @@ class ToolRegistry:
                         # Skip private members, classes, and modules
                         if name.startswith("_") or inspect.isclass(obj) or inspect.ismodule(obj):
                             continue
-                        
+
                         # Check if it's a langchain StructuredTool (from @tool decorator)
                         # StructuredTool has name, description, and invoke method
-                        if (
-                            hasattr(obj, "name")
-                            and hasattr(obj, "description")
-                            and hasattr(obj, "invoke")
-                        ):
+                        if hasattr(obj, "name") and hasattr(obj, "description") and hasattr(obj, "invoke"):
                             # Register the tool instance directly
                             tool_name = getattr(obj, "name", name)
                             self._tools[tool_name] = obj
@@ -145,7 +142,7 @@ class ToolRegistry:
                 logger.error(f"Could not load tools from {file_path}: {e}", exc_info=True)
 
     @otel_trace
-    def validate_tools(self) -> Dict[str, bool]:
+    def validate_tools(self) -> dict[str, bool]:
         """
         Validate all registered tools.
 

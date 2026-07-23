@@ -21,14 +21,13 @@ import itertools
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Optional
 
 import httpx
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 from edpb_core import CORRELATION_HEADER
 from edpb_core.batch_api import BATCHES_PATH, DownloadOutcome
-
-from cams_otel_lib import Logger as logger, otel_trace
 
 from .config import load_edp_config
 
@@ -57,20 +56,20 @@ def _is_transient_status(status_code: int) -> bool:
 class DownloadResult:
     """Outcome of one bot download call, normalized across portals."""
 
-    status: str                       # success | partial | no_data | failed | error
-    manifest_path: Optional[str] = None
-    batch_id: Optional[str] = None
+    status: str  # success | partial | no_data | failed | error
+    manifest_path: str | None = None
+    batch_id: str | None = None
     message: str = ""
-    is_transient: bool = False        # True for network errors / 5xx / 429 (retryable)
+    is_transient: bool = False  # True for network errors / 5xx / 429 (retryable)
 
 
 @dataclass
 class BatchSubmitResult:
     """Outcome of handing a manifest to the uploader's POST /batches."""
 
-    accepted: bool                    # 202 queued or 200 already-known
-    batch_id: Optional[str] = None
-    batch_status: str = ""            # the uploader's reported status
+    accepted: bool  # 202 queued or 200 already-known
+    batch_id: str | None = None
+    batch_status: str = ""  # the uploader's reported status
     message: str = ""
     is_transient: bool = False
 
@@ -80,9 +79,9 @@ class BatchStatusResult:
     """GET /batches/{batch_id} — the uploader's per-batch verdict."""
 
     found: bool
-    status: str = ""                  # queued|uploading|confirmed|unconfirmed|incomplete|failed|rejected
+    status: str = ""  # queued|uploading|confirmed|unconfirmed|incomplete|failed|rejected
     missing_slots: list[dict] = field(default_factory=list)
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class EdpbClient:
@@ -122,12 +121,16 @@ class EdpbClient:
 
     @otel_trace
     async def request_download(
-        self, segment: str, trade_date: date, correlation_id: str | None = None,
+        self,
+        segment: str,
+        trade_date: date,
+        correlation_id: str | None = None,
     ) -> DownloadResult:
         seg = segment.upper()
         if seg not in _SEGMENT_ROUTES:
             return DownloadResult(
-                status=DownloadOutcome.ERROR.value, message=f"no download route for segment {seg}",
+                status=DownloadOutcome.ERROR.value,
+                message=f"no download route for segment {seg}",
             )
 
         if self.use_mock:
@@ -141,7 +144,9 @@ class EdpbClient:
                 resp = await client.post(url, json=payload, headers=self._headers(correlation_id))
         except httpx.HTTPError as exc:
             return DownloadResult(
-                status=DownloadOutcome.ERROR.value, message=f"bot unreachable: {exc}", is_transient=True,
+                status=DownloadOutcome.ERROR.value,
+                message=f"bot unreachable: {exc}",
+                is_transient=True,
             )
 
         if resp.status_code != 200:
@@ -175,7 +180,9 @@ class EdpbClient:
 
     @otel_trace
     async def submit_batch(
-        self, manifest_path: str, correlation_id: str | None = None,
+        self,
+        manifest_path: str,
+        correlation_id: str | None = None,
     ) -> BatchSubmitResult:
         if self.use_mock:
             return self._mock_submit(manifest_path)
@@ -184,13 +191,12 @@ class EdpbClient:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    url, json={"manifest_path": manifest_path},
+                    url,
+                    json={"manifest_path": manifest_path},
                     headers=self._headers(correlation_id),
                 )
         except httpx.HTTPError as exc:
-            return BatchSubmitResult(
-                accepted=False, message=f"uploader unreachable: {exc}", is_transient=True
-            )
+            return BatchSubmitResult(accepted=False, message=f"uploader unreachable: {exc}", is_transient=True)
 
         if resp.status_code in (200, 202):
             body = resp.json()
@@ -200,14 +206,10 @@ class EdpbClient:
                 batch_status=str(body.get("status", "")),
             )
         if _is_transient_status(resp.status_code):
-            return BatchSubmitResult(
-                accepted=False, message=f"uploader HTTP {resp.status_code}", is_transient=True
-            )
+            return BatchSubmitResult(accepted=False, message=f"uploader HTTP {resp.status_code}", is_transient=True)
         # 4xx — the manifest itself is the problem (schema/checksum); retrying
         # the same one cannot fix it.
-        return BatchSubmitResult(
-            accepted=False, message=f"uploader HTTP {resp.status_code}: {resp.text[:300]}"
-        )
+        return BatchSubmitResult(accepted=False, message=f"uploader HTTP {resp.status_code}: {resp.text[:300]}")
 
     def _mock_submit(self, manifest_path: str) -> BatchSubmitResult:
         batch_id = manifest_path.strip("/").replace("/", "-")
@@ -217,7 +219,9 @@ class EdpbClient:
 
     @otel_trace
     async def get_batch_status(
-        self, batch_id: str, correlation_id: str | None = None,
+        self,
+        batch_id: str,
+        correlation_id: str | None = None,
     ) -> BatchStatusResult:
         if self.use_mock:
             return BatchStatusResult(found=True, status=self._mock_batches.get(batch_id, "confirmed"))

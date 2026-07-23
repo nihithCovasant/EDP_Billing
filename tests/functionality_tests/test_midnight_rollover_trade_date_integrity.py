@@ -22,7 +22,8 @@ crosses midnight (NCDEX, configured 21:00->02:00) instead of the "wide open"
 
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -48,15 +49,23 @@ def _midnight_crossing_workflow_json() -> dict:
     segments = []
     for code in SEGMENT_ORDER:
         if code == NCDEX_SEGMENT:
-            segments.append({
-                "segment_code": code, "login_id": "CV0001",
-                "window_start": "21:00", "window_end": "02:00",
-            })
+            segments.append(
+                {
+                    "segment_code": code,
+                    "login_id": "CV0001",
+                    "window_start": "21:00",
+                    "window_end": "02:00",
+                }
+            )
         else:
-            segments.append({
-                "segment_code": code, "login_id": "CV0001",
-                "window_start": "00:00", "window_end": "23:59",
-            })
+            segments.append(
+                {
+                    "segment_code": code,
+                    "login_id": "CV0001",
+                    "window_start": "00:00",
+                    "window_end": "23:59",
+                }
+            )
     return build_default_workflow_json(segments)
 
 
@@ -80,6 +89,7 @@ async def _get_row(session_factory, trade_date: date, segment_code: str):
 # Scenario 1: mid-pipeline segment crossing midnight — trade_date must never
 # silently flip to T+1 while NCDEX's own row is still being driven.
 # ---------------------------------------------------------------------------
+
 
 async def test_segment_trade_date_stable_across_real_midnight_crossing(cfg, session_factory, test_date):
     """Drive NCDEX (real 21:00->02:00 overnight window) through several
@@ -111,8 +121,7 @@ async def test_segment_trade_date_stable_across_real_midnight_crossing(cfg, sess
 
         row = await _get_row(session_factory, trade_date, NCDEX_SEGMENT)
         assert row.trade_date == trade_date, (
-            f"trade_date silently drifted at now={now.isoformat()}: "
-            f"expected {trade_date}, got {row.trade_date}"
+            f"trade_date silently drifted at now={now.isoformat()}: expected {trade_date}, got {row.trade_date}"
         )
 
     # Final sanity: the row (looked up BY trade_date=T) still exists and is
@@ -162,11 +171,13 @@ async def test_segment_reaches_completion_with_trade_date_intact_across_midnight
 # call site in orchestrator.run_wake_cycle().
 # ---------------------------------------------------------------------------
 
+
 class _FixedDatetime(datetime):
     """A datetime subclass whose now()/now(tz) always returns a fixed
     instant — used to monkeypatch orchestrator.datetime so
     `datetime.now(self._tz)` inside run_wake_cycle() resolves to our chosen
     wall-clock instant, without touching any src/ file."""
+
     _fixed_now: datetime = None
 
     @classmethod
@@ -202,14 +213,20 @@ async def _run_real_wake_cycle_at(cfg, monkeypatch, fixed_now: datetime) -> tupl
 @pytest.mark.parametrize(
     "hour, minute, expect_yesterday",
     [
-        (4, 30, True),    # before cutoff (6) -> still processing yesterday's EDP
-        (5, 59, True),    # 05:59:59 below -> still yesterday
-        (6, 0, False),    # exactly at cutoff -> today
-        (6, 1, False),    # just after cutoff -> today (uses 06:00:01 below)
+        (4, 30, True),  # before cutoff (6) -> still processing yesterday's EDP
+        (5, 59, True),  # 05:59:59 below -> still yesterday
+        (6, 0, False),  # exactly at cutoff -> today
+        (6, 1, False),  # just after cutoff -> today (uses 06:00:01 below)
     ],
 )
 async def test_run_wake_cycle_resolves_active_date_across_default_cutoff(
-    cfg, session_factory, test_date, monkeypatch, hour, minute, expect_yesterday,
+    cfg,
+    session_factory,
+    test_date,
+    monkeypatch,
+    hour,
+    minute,
+    expect_yesterday,
 ):
     """Real run_wake_cycle() call (not the raw resolve_active_date function)
     at each side of the default active_date_cutoff_hour=6 boundary. We pin
@@ -247,8 +264,7 @@ async def test_run_wake_cycle_exactly_at_040001_and_055959_boundaries(cfg, sessi
         fixed_now = datetime.combine(test_date, dtime(hour, minute, second), tzinfo=IST)
         _, summary = await _run_real_wake_cycle_at(cfg, monkeypatch, fixed_now)
         assert summary["active_date"] == expected.isoformat(), (
-            f"at {hour:02d}:{minute:02d}:{second:02d} IST expected active_date={expected}, "
-            f"got {summary['active_date']}"
+            f"at {hour:02d}:{minute:02d}:{second:02d} IST expected active_date={expected}, got {summary['active_date']}"
         )
 
 
@@ -271,15 +287,23 @@ def _overnight_trigger_test_workflow_json() -> dict:
     segments = []
     for code in SEGMENT_ORDER:
         if code == SEGMENT_FOR_TRIGGER_TEST:
-            segments.append({
-                "segment_code": code, "login_id": "CV0001",
-                "window_start": "17:00", "window_end": "06:00",
-            })
+            segments.append(
+                {
+                    "segment_code": code,
+                    "login_id": "CV0001",
+                    "window_start": "17:00",
+                    "window_end": "06:00",
+                }
+            )
         else:
-            segments.append({
-                "segment_code": code, "login_id": "CV0001",
-                "window_start": "00:00", "window_end": "23:59",
-            })
+            segments.append(
+                {
+                    "segment_code": code,
+                    "login_id": "CV0001",
+                    "window_start": "00:00",
+                    "window_end": "23:59",
+                }
+            )
     return build_default_workflow_json(segments)
 
 
@@ -321,7 +345,9 @@ async def _prime_triggering_row(session_factory, orchestrator, trade_date: date,
 
 
 async def test_trigger_recovery_across_midnight_uses_persisted_trade_date_not_today(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """Segment enters TRIGGERED just before midnight on T (first trigger
     attempt commits the TRIGGERING marker). Agent then "resumes" after
@@ -403,8 +429,10 @@ async def test_trigger_recovery_when_cbos_already_received_call_across_midnight(
 
     # Simulate the "lost" trigger call actually reaching CBOS before the crash.
     pre_call = await cbos.get_new_trade_process(
-        group_name=SEGMENT_FOR_TRIGGER_TEST, login_id=cfg.cbos_login_id,
-        trade_date=trade_date, process_id=fake_pid,
+        group_name=SEGMENT_FOR_TRIGGER_TEST,
+        login_id=cfg.cbos_login_id,
+        trade_date=trade_date,
+        process_id=fake_pid,
     )
     assert pre_call.success
 
@@ -434,6 +462,7 @@ async def test_trigger_recovery_when_cbos_already_received_call_across_midnight(
 # Scenario 4: two consecutive real trade_dates processed "at once" in the
 # same wake cycle pass — must never cross-contaminate.
 # ---------------------------------------------------------------------------
+
 
 async def test_two_consecutive_trade_dates_handled_independently_in_same_pass(cfg, session_factory, test_date):
     """Simulate the agent having been down across a midnight: T's NCDEX
@@ -533,6 +562,7 @@ async def test_two_consecutive_trade_dates_handled_independently_in_same_pass(cf
 # Scenario 5: non-default active_date_cutoff_hour — cutoff shift changes
 # which side of midnight resolves to "today".
 # ---------------------------------------------------------------------------
+
 
 async def test_non_default_cutoff_hour_shifts_active_date_resolution(cfg, session_factory, test_date, monkeypatch):
     """With active_date_cutoff_hour=4 (instead of the default 6),

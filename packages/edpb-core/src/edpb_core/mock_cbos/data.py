@@ -23,6 +23,7 @@ from typing import TypedDict
 class Table2TemplateRow(TypedDict):
     """One Step-2 Table2 pipeline row as reserved fresh (per-process STATUS
     lives on mock_cbos.state.Step / the in-process mock's copies)."""
+
     STEPNO: int
     NAME: str
     STATUS: str
@@ -36,24 +37,89 @@ UPLOAD_SETTINGS: dict[str, dict] = {
     # EQ TRADE
     "81": {"NAME": "BSE SCRIP", "FILE NAME (CONTAINS)": "SCRIP", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": 30},
     "82": {"NAME": "NSE SCRIP", "FILE NAME (EQUALS)": "nnf_security", "FILEEXTENSION": "DAT", "NO. OF COLUMNS": 54},
-    "83": {"NAME": "NSE BSE INTEROPERABLE SCRIP MAPPING", "FILE NAME (CONTAINS)": "bse_scrip_series_mapping", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": 6},
+    "83": {
+        "NAME": "NSE BSE INTEROPERABLE SCRIP MAPPING",
+        "FILE NAME (CONTAINS)": "bse_scrip_series_mapping",
+        "FILEEXTENSION": "CSV",
+        "NO. OF COLUMNS": 6,
+    },
     "84": {"NAME": "STT INDICATOR", "FILE NAME (CONTAINS)": "C_STT_IND", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": 5},
     "85": {"NAME": "BSE TRADE FILE", "FILE NAME (CONTAINS)": "BR", "FILEEXTENSION": "446", "NO. OF COLUMNS": 32},
     "86": {"NAME": "NSE TRADE FILE", "FILE NAME (CONTAINS)": "_10412", "FILEEXTENSION": "TXT", "NO. OF COLUMNS": 25},
     "94": {"NAME": "STT NOT TO CHARGE", "FILE NAME (CONTAINS)": "C_STT", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": 4},
-    "451": {"NAME": "BSE AUCTION TRADE FILE", "FILE NAME (CONTAINS)": "AOFR", "FILEEXTENSION": "446", "NO. OF COLUMNS": 23},
-    "545": {"NAME": "NSE EQ TRADE FILE - UDIFF", "FILE NAME (CONTAINS)": "Trade_NSE_CM_0_TM_10412", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 46},
-    "546": {"NAME": "BSE EQ TRADE FILE - UDIFF", "FILE NAME (CONTAINS)": "Trade_BSE_CM_0_TM_446", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 46},
-    "551": {"NAME": "SETTLEMENT MASTER NCL - UDIFF", "FILE NAME (CONTAINS)": "SettlementMaster_NCL_CM", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 23},
-    "678": {"NAME": "SETTLEMENT MASTER ICCL - UDIFF", "FILE NAME (CONTAINS)": "SettlementMaster_ICCL_CM", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 23},
+    "451": {
+        "NAME": "BSE AUCTION TRADE FILE",
+        "FILE NAME (CONTAINS)": "AOFR",
+        "FILEEXTENSION": "446",
+        "NO. OF COLUMNS": 23,
+    },
+    "545": {
+        "NAME": "NSE EQ TRADE FILE - UDIFF",
+        "FILE NAME (CONTAINS)": "Trade_NSE_CM_0_TM_10412",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 46,
+    },
+    "546": {
+        "NAME": "BSE EQ TRADE FILE - UDIFF",
+        "FILE NAME (CONTAINS)": "Trade_BSE_CM_0_TM_446",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 46,
+    },
+    "551": {
+        "NAME": "SETTLEMENT MASTER NCL - UDIFF",
+        "FILE NAME (CONTAINS)": "SettlementMaster_NCL_CM",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 23,
+    },
+    "678": {
+        "NAME": "SETTLEMENT MASTER ICCL - UDIFF",
+        "FILE NAME (CONTAINS)": "SettlementMaster_ICCL_CM",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 23,
+    },
     # MCX TRADE
-    "127": {"NAME": "CONTRACT MASTER - MCXCOM", "FILE NAME (CONTAINS)": "MCX_PRODUCTMASTER", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": 68},
-    "128": {"NAME": "POSITION FILE MCX COM", "FILE NAME (CONTAINS)": "MCX_POSITION", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": 33},
-    "129": {"NAME": "MCX COM TRADE FILE", "FILE NAME (CONTAINS)": "MCX_TRD", "FILEEXTENSION": "CSV", "NO. OF COLUMNS": 37},
-    "534": {"NAME": "POSITION FILE MCX COM - UDIFF", "FILE NAME (CONTAINS)": "MCXCCL_CO_0_CM_55930", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 46},
-    "535": {"NAME": "MCX COM TRADE FILE - UDIFF", "FILE NAME (CONTAINS)": "MCX_CO_0_CM_55930", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 46},
-    "320": {"NAME": "MCX Physical Trade File", "FILE NAME (CONTAINS)": "MCX_EXDI_55930_", "FILEEXTENSION": "csv", "NO. OF COLUMNS": 19},
-    "221": {"NAME": "MCDX Peak File", "FILE NAME (CONTAINS)": "MCX_PeakMargin", "FILEEXTENSION": "*", "NO. OF COLUMNS": 12},
+    "127": {
+        "NAME": "CONTRACT MASTER - MCXCOM",
+        "FILE NAME (CONTAINS)": "MCX_PRODUCTMASTER",
+        "FILEEXTENSION": "CSV",
+        "NO. OF COLUMNS": 68,
+    },
+    "128": {
+        "NAME": "POSITION FILE MCX COM",
+        "FILE NAME (CONTAINS)": "MCX_POSITION",
+        "FILEEXTENSION": "CSV",
+        "NO. OF COLUMNS": 33,
+    },
+    "129": {
+        "NAME": "MCX COM TRADE FILE",
+        "FILE NAME (CONTAINS)": "MCX_TRD",
+        "FILEEXTENSION": "CSV",
+        "NO. OF COLUMNS": 37,
+    },
+    "534": {
+        "NAME": "POSITION FILE MCX COM - UDIFF",
+        "FILE NAME (CONTAINS)": "MCXCCL_CO_0_CM_55930",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 46,
+    },
+    "535": {
+        "NAME": "MCX COM TRADE FILE - UDIFF",
+        "FILE NAME (CONTAINS)": "MCX_CO_0_CM_55930",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 46,
+    },
+    "320": {
+        "NAME": "MCX Physical Trade File",
+        "FILE NAME (CONTAINS)": "MCX_EXDI_55930_",
+        "FILEEXTENSION": "csv",
+        "NO. OF COLUMNS": 19,
+    },
+    "221": {
+        "NAME": "MCDX Peak File",
+        "FILE NAME (CONTAINS)": "MCX_PeakMargin",
+        "FILEEXTENSION": "*",
+        "NO. OF COLUMNS": 12,
+    },
     "222": {"NAME": "MCDX EOD File", "FILE NAME (CONTAINS)": "MCX_MARGIN_", "FILEEXTENSION": "*", "NO. OF COLUMNS": 19},
 }
 
@@ -62,8 +128,12 @@ def upload_setting(upload_id: str) -> dict:
     """Step-4 rule for an UPLOADID, with a generic fallback."""
     row = UPLOAD_SETTINGS.get(str(upload_id))
     if row is None:
-        return {"NAME": f"UPLOAD {upload_id}", "FILE NAME (CONTAINS)": f"UPLOAD{upload_id}",
-                "FILEEXTENSION": "TXT", "NO. OF COLUMNS": 0}
+        return {
+            "NAME": f"UPLOAD {upload_id}",
+            "FILE NAME (CONTAINS)": f"UPLOAD{upload_id}",
+            "FILEEXTENSION": "TXT",
+            "NO. OF COLUMNS": 0,
+        }
     return row
 
 

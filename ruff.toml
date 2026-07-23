@@ -1,0 +1,47 @@
+# Ruff config - parity with mofsl_file_download_rpa_bot and
+# EDPBilling_FIle_Upload (same rule families), adopted repo-wide after the
+# feat/edpb-alignment merge-point became the shared mainline.
+#
+# line-length 120 (not the siblings' 100): this repo carries the CAMS agent
+# scaffold plus LLM prompt/tool code with naturally longer prose lines;
+# 120 keeps the gate enforceable without hundreds of low-value rewraps.
+# Tighten to 100 later if the team wants full parity.
+line-length = 120
+target-version = "py311"
+src = ["src", "packages/edpb-core/src"]
+extend-exclude = ["chat_ui", "docs", "dev"]  # dev/ holds the vendored cams_otel_lib stub
+
+[lint]
+select = [
+    "E", "F", "W",     # pycodestyle + pyflakes
+    "I",               # isort
+    "N",               # pep8-naming
+    "UP",              # pyupgrade
+    "B",               # bugbear
+    "C4",              # comprehensions
+    "ASYNC",           # async correctness
+    "RUF",             # ruff-specific
+]
+ignore = [
+    "B008",   # FastAPI Depends() in defaults is idiomatic
+    "N813",   # `Logger as logger` etc. - the cams_otel_lib import idiom, used everywhere
+    "N999",   # CamelCase module names (RealSegmentStateMachine.py ...) are this repo's convention
+]
+
+[lint.per-file-ignores]
+# Deliberate import-after-code ordering:
+#   __main__.py     - queue-based logging MUST install before app imports
+#   tools/__init__  - OTEL client MUST initialize before @otel_trace imports
+#   live agent tests - RUN_LIVE_AGENT_TESTS skip-guard runs before imports
+"src/agent/__main__.py" = ["E402"]
+"src/tools/__init__.py" = ["E402"]
+"tests/agent_tests/test_live_*.py" = ["E402"]
+# Mock CBOS request models/handlers mirror CBOS's own wire field names
+# (paraM9, CurrentChunk, UPLOADID ...) - renaming them would break the wire.
+"packages/edpb-core/src/edpb_core/mock_cbos/app.py" = ["N803", "N815"]
+# Test-local UPPER_CASE constants and fake-class scratch attributes are the
+# established test idiom here.
+"tests/*" = ["N806", "RUF012"]
+
+[lint.isort]
+known-first-party = ["src", "edpb_core", "global_email_service", "mock_cbos"]

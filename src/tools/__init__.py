@@ -1,20 +1,22 @@
-﻿"""
+"""
 Tool registry for the agent.
 Manages available tools and their initialization.
 """
 
 import json
 import os
-from typing import List, Dict, Any, Optional
 from pathlib import Path
+from typing import Any
 
 # Load .env before anything else so OTEL_ENABLED, OTEL_CONFIG_UUID, etc. are
 # visible to os.getenv() when we call initialize_otel_client() below.
 from dotenv import load_dotenv
+
 load_dotenv()
 
+from cams_otel_lib import Otel_Client, otel_trace
+
 from .registry import ToolRegistry
-from cams_otel_lib import otel_trace, Otel_Client
 
 
 def _read_agent_instance_id() -> str:
@@ -22,16 +24,11 @@ def _read_agent_instance_id() -> str:
     try:
         ext = os.getenv("APP_CONFIG_PATH")
         cfg_path = (
-            Path(ext)
-            if ext and Path(ext).exists()
-            else Path(__file__).parent.parent / "config" / "agent_config.json"
+            Path(ext) if ext and Path(ext).exists() else Path(__file__).parent.parent / "config" / "agent_config.json"
         )
         with open(cfg_path) as f:
             data = json.load(f)
-        return (
-            data.get("runtime_context", {}).get("instance_id")
-            or data.get("instance_id", "N/A")
-        )
+        return data.get("runtime_context", {}).get("instance_id") or data.get("instance_id", "N/A")
     except Exception:
         return "N/A"
 
@@ -50,7 +47,7 @@ _registry = ToolRegistry()
 
 
 @otel_trace
-def get_available_tools(tenant_id: str = "default") -> List[Any]:
+def get_available_tools(tenant_id: str = "default") -> list[Any]:
     """
     Get available tools for a tenant.
 
@@ -64,7 +61,7 @@ def get_available_tools(tenant_id: str = "default") -> List[Any]:
 
 
 @otel_trace
-def register_tool(tool_class, name: Optional[str] = None, **config):
+def register_tool(tool_class, name: str | None = None, **config):
     """
     Register a tool with the registry.
 
@@ -77,7 +74,7 @@ def register_tool(tool_class, name: Optional[str] = None, **config):
 
 
 @otel_trace
-def discover_tools(directory: Optional[Path] = None):
+def discover_tools(directory: Path | None = None):
     """
     Discover and register tools from a directory.
 
@@ -91,7 +88,7 @@ def discover_tools(directory: Optional[Path] = None):
 
 
 @otel_trace
-def validate_tools() -> Dict[str, bool]:
+def validate_tools() -> dict[str, bool]:
     """
     Validate all registered tools.
 
@@ -108,9 +105,9 @@ def validate_tools() -> Dict[str, bool]:
 discover_tools()
 
 __all__ = [
+    "ToolRegistry",
+    "discover_tools",
     "get_available_tools",
     "register_tool",
-    "discover_tools",
     "validate_tools",
-    "ToolRegistry",
 ]

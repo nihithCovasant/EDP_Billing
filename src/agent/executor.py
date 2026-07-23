@@ -1,27 +1,29 @@
-﻿"""
+"""
 Main agent executor with LangGraph implementation.
 This is the core file you'll customise for your specific agent logic.
 """
 
 import asyncio
 from contextlib import nullcontext
-from typing import Annotated, Any, Dict, List, Optional
-from typing_extensions import TypedDict
+from typing import Annotated, Any
 
-from langchain_core.messages import BaseMessage, HumanMessage
-from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
-from a2a.server.agent_execution import AgentExecutor as A2AAgentExecutor, RequestContext
+from a2a.server.agent_execution import AgentExecutor as A2AAgentExecutor
+from a2a.server.agent_execution import RequestContext
 from a2a.server.events import EventQueue
 from a2a.utils import new_agent_text_message
-
-
-from .nodes import QueryProcessorNode, ContextRetrieverNode, ResponseGeneratorNode, AgentNode, ToolNode, should_continue
-from src.tools import get_available_tools
-from src.config.agent_config import load_agent_config, get_secrets
-from src.config.settings import settings
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
+
+from src.config.agent_config import get_secrets, load_agent_config
+from src.config.settings import settings
+from src.tools import get_available_tools
+
+from .nodes import AgentNode, ContextRetrieverNode, QueryProcessorNode, ResponseGeneratorNode, ToolNode, should_continue
 
 
 def _stringify_message_content(content: Any) -> str:
@@ -56,7 +58,8 @@ class AgentState(TypedDict):
     Agent state definition — customise this for your agent's needs.
     Add or remove fields based on what your agent tracks.
     """
-    messages: Annotated[List[BaseMessage], add_messages]
+
+    messages: Annotated[list[BaseMessage], add_messages]
     search_query: str
     retrieved_context: str
     final_response: str
@@ -64,10 +67,10 @@ class AgentState(TypedDict):
     thread_id: str
     needs_retrieval: bool
     # Langfuse trace context (zebra pattern); present but None when langfuse disabled
-    _langfuse_trace_id: Optional[str]
-    _langfuse_span_id: Optional[str]
+    _langfuse_trace_id: str | None
+    _langfuse_span_id: str | None
     # LiteLLM custom headers forwarded from the frontend
-    litellm_headers: Optional[dict]
+    litellm_headers: dict | None
 
 
 class AgentExecutor(A2AAgentExecutor):
@@ -86,10 +89,10 @@ class AgentExecutor(A2AAgentExecutor):
         self.config = load_agent_config()
         self.tools = get_available_tools()
 
-        secrets = get_secrets("default", self.config)
+        get_secrets("default", self.config)
 
-        self.observability = None   # default; overridden below when langfuse is selected
-        self.error_tracker = None   # default; overridden below when sentry is selected
+        self.observability = None  # default; overridden below when langfuse is selected
+        self.error_tracker = None  # default; overridden below when sentry is selected
 
         logger.info(f"Agent executor initialised with {len(self.tools)} local tools")
 
@@ -103,7 +106,7 @@ class AgentExecutor(A2AAgentExecutor):
         self._checkpointer = MemorySaver()
 
         # Compiled graph cache — keyed by tenant_id to avoid rebuilding LLM clients per request
-        self._compiled_graphs: Dict[str, Any] = {}
+        self._compiled_graphs: dict[str, Any] = {}
         self._graph_cache_lock = asyncio.Lock()
 
     @otel_trace
@@ -179,14 +182,12 @@ class AgentExecutor(A2AAgentExecutor):
         tenant_id = self._extract_tenant_id(context)
         thread_id = self._extract_thread_id(context)
 
-        user_input: Optional[str] = None
+        user_input: str | None = None
         try:
             user_input = context.get_user_input()
             if not user_input:
                 logger.warning("Empty user input received")
-                await event_queue.enqueue_event(
-                    new_agent_text_message("Please provide a question.")
-                )
+                await event_queue.enqueue_event(new_agent_text_message("Please provide a question."))
                 return
 
             logger.info(f"Processing agent request: input_length={len(user_input)}")
@@ -197,7 +198,9 @@ class AgentExecutor(A2AAgentExecutor):
                 trace_id = getattr(agent_span, "trace_id", None) if agent_span else None
                 span_id = getattr(agent_span, "id", None) if agent_span else None
 
-                logger.info(f"Trace context established: trace_id={trace_id}, observability_enabled={agent_span is not None}")
+                logger.info(
+                    f"Trace context established: trace_id={trace_id}, observability_enabled={agent_span is not None}"
+                )
 
                 litellm_headers = self._extract_litellm_headers(context)
 
@@ -222,9 +225,7 @@ class AgentExecutor(A2AAgentExecutor):
                             output={
                                 "final_response": final_state.get("final_response", ""),
                                 "search_query": final_state.get("search_query", ""),
-                                "retrieved_context_length": len(
-                                    final_state.get("retrieved_context", "")
-                                ),
+                                "retrieved_context_length": len(final_state.get("retrieved_context", "")),
                             }
                         )
                     except Exception:
@@ -240,12 +241,10 @@ class AgentExecutor(A2AAgentExecutor):
                     await event_queue.enqueue_event(new_agent_text_message(response))
 
         except Exception as e:
-            logger.error(f"Error processing agent request: {type(e).__name__}: {str(e)}")
+            logger.error(f"Error processing agent request: {type(e).__name__}: {e!s}")
 
             await event_queue.enqueue_event(
-                new_agent_text_message(
-                    "Sorry, I encountered an error processing your request."
-                )
+                new_agent_text_message("Sorry, I encountered an error processing your request.")
             )
 
     # FEATURE:postgresql
@@ -255,15 +254,18 @@ class AgentExecutor(A2AAgentExecutor):
             return self._pg_checkpointer
         async with self._pg_init_lock:
             if self._pg_checkpointer is None:
+                # Imported here, not at module top: the postgres checkpointer is a
+                # feature-gated optional path (FEATURE:postgresql) - the missing
+                # import was a dormant NameError found by ruff F821.
+                from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
                 pg_checkpointer = AsyncPostgresSaver.from_conn_string(self._postgres_conn_string)
                 await pg_checkpointer.setup()
                 self._pg_checkpointer = pg_checkpointer
         return self._pg_checkpointer
 
     @otel_trace
-    async def _run_graph(
-        self, initial_state: AgentState, tenant_id: str, thread_id: str
-    ) -> AgentState:
+    async def _run_graph(self, initial_state: AgentState, tenant_id: str, thread_id: str) -> AgentState:
         """Compile and run the LangGraph workflow with checkpointing for multi-turn memory."""
         # Lazy-load config-based MCP tools once before the first graph compile.
         if not self._mcp_initialized:
@@ -271,13 +273,11 @@ class AgentExecutor(A2AAgentExecutor):
                 if not self._mcp_initialized:
                     try:
                         from src.tools.mcp_loader import load_mcp_tools
+
                         mcp_tools = await load_mcp_tools()
                         if mcp_tools:
                             self.tools = self.tools + mcp_tools
-                            logger.info(
-                                f"Added {len(mcp_tools)} MCP tools from config. "
-                                f"Total tools: {len(self.tools)}"
-                            )
+                            logger.info(f"Added {len(mcp_tools)} MCP tools from config. Total tools: {len(self.tools)}")
                     except Exception as _mcp_err:
                         logger.warning(f"MCP tool init skipped: {_mcp_err}")
                     self._mcp_initialized = True
@@ -300,6 +300,7 @@ class AgentExecutor(A2AAgentExecutor):
         # If final_response wasn't set (e.g. build_react_graph), extract from last AI message
         if not final_state.get("final_response") and final_state.get("messages"):
             from langchain_core.messages import AIMessage as _AIMessage
+
             for msg in reversed(final_state["messages"]):
                 if isinstance(msg, _AIMessage) and not getattr(msg, "tool_calls", None):
                     final_state = dict(final_state)
@@ -320,13 +321,14 @@ class AgentExecutor(A2AAgentExecutor):
             metadata = getattr(context, "metadata", {}) or {}
             return metadata.get("tenant_uuid") or metadata.get("tenant_id") or "unknown"
         except Exception as e:
-            logger.warning(f"Error extracting tenant_uuid: {str(e)}")
+            logger.warning(f"Error extracting tenant_uuid: {e!s}")
             return "unknown"
 
     @otel_trace
     def _extract_thread_id(self, context: RequestContext) -> str:
         try:
             import uuid
+
             metadata = getattr(context, "metadata", {})
             thread_id = metadata.get("thread_id")
             if not thread_id:
@@ -335,11 +337,12 @@ class AgentExecutor(A2AAgentExecutor):
             return thread_id
         except Exception as e:
             import uuid
-            logger.warning(f"Error extracting thread_id, generating new one: {str(e)}")
+
+            logger.warning(f"Error extracting thread_id, generating new one: {e!s}")
             return f"thread_{uuid.uuid4().hex[:16]}"
 
     @otel_trace
-    def _extract_litellm_headers(self, context: RequestContext) -> Optional[dict]:
+    def _extract_litellm_headers(self, context: RequestContext) -> dict | None:
         """
         Extract LiteLLM custom headers from request metadata.
 
@@ -348,6 +351,7 @@ class AgentExecutor(A2AAgentExecutor):
         """
         try:
             import uuid
+
             metadata = getattr(context, "metadata", {})
             headers = {}
             for key in ("tenantid", "userid", "appid", "agentname", "workspaceid"):
@@ -358,7 +362,7 @@ class AgentExecutor(A2AAgentExecutor):
                 logger.debug(f"Extracted LiteLLM headers: {list(headers.keys())}")
             return headers or None
         except Exception as e:
-            logger.warning(f"Error extracting LiteLLM headers: {str(e)}")
+            logger.warning(f"Error extracting LiteLLM headers: {e!s}")
             return None
 
     @otel_trace

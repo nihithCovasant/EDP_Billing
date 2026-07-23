@@ -1,20 +1,20 @@
 """initial edp schema
 
 Revision ID: 5846a2847710
-Revises: 
+Revises:
 Create Date: 2026-07-02 10:44:32.538499
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "5846a2847710"
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -134,9 +134,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "trade_date", "domain", "segment_code", name="uq_segment_execution_per_day"
-        ),
+        sa.UniqueConstraint("trade_date", "domain", "segment_code", name="uq_segment_execution_per_day"),
     )
     op.create_index(
         op.f("ix_segment_execution_trade_date"),
@@ -177,13 +175,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        op.f("ix_workflow_properties_trade_date"), table_name="workflow_properties"
-    )
+    op.drop_index(op.f("ix_workflow_properties_trade_date"), table_name="workflow_properties")
     op.drop_table("workflow_properties")
-    op.drop_index(
-        op.f("ix_segment_execution_trade_date"), table_name="segment_execution"
-    )
+    op.drop_index(op.f("ix_segment_execution_trade_date"), table_name="segment_execution")
     op.drop_table("segment_execution")
     op.drop_table("agent_control")
     op.execute("DROP TYPE IF EXISTS agentcontrolaction")

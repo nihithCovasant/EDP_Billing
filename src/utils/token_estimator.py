@@ -1,4 +1,4 @@
-﻿"""
+"""
 Token estimation for LLM usage tracking.
 
 Provides utilities to estimate token counts when exact counts aren't available
@@ -6,7 +6,6 @@ from the LLM provider (e.g., during streaming or with certain APIs).
 """
 
 import re
-from typing import Dict
 
 from cams_otel_lib import otel_trace
 
@@ -43,7 +42,7 @@ def estimate_tokens(text: str) -> int:
 
 
 @otel_trace
-def estimate_usage(prompt: str, completion: str) -> Dict[str, int]:
+def estimate_usage(prompt: str, completion: str) -> dict[str, int]:
     """
     Estimate token usage for Langfuse from prompt and completion text.
 

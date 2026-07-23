@@ -14,19 +14,18 @@ params), and the extra _validate_workflow_json() checks added alongside it
 from __future__ import annotations
 
 import uuid
-
-import httpx
-import pytest
-from fastapi import FastAPI
-
 from datetime import timedelta
 
+import httpx
 import pydantic
+import pytest
+from fastapi import FastAPI, HTTPException
 
-from src.agent.edp import repository
 import src.agent.edp.api.workflow as workflow_module
+from src.agent.edp import repository
 from src.agent.edp.api.schemas import WorkflowUploadRequest
-from src.agent.edp.api.workflow import router as workflow_router, _validate_workflow_json
+from src.agent.edp.api.workflow import _validate_workflow_json
+from src.agent.edp.api.workflow import router as workflow_router
 from src.agent.edp.config import build_default_workflow_json
 
 from . import helpers
@@ -52,11 +51,16 @@ def _simple_workflow_json() -> dict:
 # Repository layer
 # =============================================================================
 
+
 async def test_upload_with_version_name_attaches_it_to_new_row(cfg, session_factory, test_date):
     name = _version_name()
     async with session_factory() as session:
         row, is_new = await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -73,7 +77,11 @@ async def test_get_by_version_name_is_case_insensitive(cfg, session_factory, tes
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -87,14 +95,22 @@ async def test_upload_duplicate_version_name_without_overwrite_raises(cfg, sessi
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
     async with session_factory() as session:
         with pytest.raises(ValueError):
             await repository.upload(
-                session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+                session,
+                test_date,
+                _simple_workflow_json(),
+                uploaded_by="test",
+                version_name=name,
             )
 
 
@@ -102,14 +118,22 @@ async def test_upload_duplicate_version_name_with_overwrite_moves_it(cfg, sessio
     name = _version_name()
     async with session_factory() as session:
         first_row, _ = await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
     async with session_factory() as session:
         second_row, _ = await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test",
-            version_name=name, overwrite_version=True,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
+            overwrite_version=True,
         )
         await session.commit()
 
@@ -135,7 +159,11 @@ async def test_list_versions_only_returns_named_rows(cfg, session_factory, test_
 
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -150,7 +178,11 @@ async def test_clear_version_name_detaches_but_keeps_row(cfg, session_factory, t
     name = _version_name()
     async with session_factory() as session:
         row, _ = await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -185,16 +217,24 @@ async def test_bootstrap_style_upload_keeps_default_name_moving_forward(cfg, ses
     try:
         async with session_factory() as session:
             first_row, _ = await repository.upload(
-                session, test_date, _simple_workflow_json(), uploaded_by="agent-bootstrap",
-                version_name="default", overwrite_version=True,
+                session,
+                test_date,
+                _simple_workflow_json(),
+                uploaded_by="agent-bootstrap",
+                version_name="default",
+                overwrite_version=True,
             )
             await session.commit()
         assert first_row.version_name == "default"
 
         async with session_factory() as session:
             second_row, _ = await repository.upload(
-                session, next_day, _simple_workflow_json(), uploaded_by="agent-bootstrap",
-                version_name="default", overwrite_version=True,
+                session,
+                next_day,
+                _simple_workflow_json(),
+                uploaded_by="agent-bootstrap",
+                version_name="default",
+                overwrite_version=True,
             )
             await session.commit()
 
@@ -213,6 +253,7 @@ async def test_bootstrap_style_upload_keeps_default_name_moving_forward(cfg, ses
 # API layer -- version_name is a required field on WorkflowUploadRequest
 # =============================================================================
 
+
 def test_workflow_upload_request_requires_version_name():
     with pytest.raises(pydantic.ValidationError):
         WorkflowUploadRequest(workflow_json=_simple_workflow_json(), uploaded_by="ops")
@@ -225,7 +266,9 @@ def test_workflow_upload_request_rejects_blank_version_name():
 
 def test_workflow_upload_request_accepts_valid_version_name():
     req = WorkflowUploadRequest(
-        workflow_json=_simple_workflow_json(), uploaded_by="ops", version_name="my_config",
+        workflow_json=_simple_workflow_json(),
+        uploaded_by="ops",
+        version_name="my_config",
     )
     assert req.version_name == "my_config"
 
@@ -234,37 +277,51 @@ def test_workflow_upload_request_accepts_valid_version_name():
 # API layer -- validation
 # =============================================================================
 
+
 def test_validate_workflow_json_rejects_malformed_window_time():
-    bad = build_default_workflow_json([
-        {"segment_code": "EQ", "login_id": "CV0001", "window_start": "5pm", "window_end": "06:00"},
-    ])
+    bad = build_default_workflow_json(
+        [
+            {"segment_code": "EQ", "login_id": "CV0001", "window_start": "5pm", "window_end": "06:00"},
+        ]
+    )
     with pytest.raises(Exception) as exc_info:
         _validate_workflow_json(bad)
     assert "window_start" in str(exc_info.value)
 
 
 def test_validate_workflow_json_rejects_out_of_range_time():
-    bad = build_default_workflow_json([
-        {"segment_code": "EQ", "login_id": "CV0001", "window_start": "25:00", "window_end": "06:00"},
-    ])
-    with pytest.raises(Exception):
+    bad = build_default_workflow_json(
+        [
+            {"segment_code": "EQ", "login_id": "CV0001", "window_start": "25:00", "window_end": "06:00"},
+        ]
+    )
+    with pytest.raises(HTTPException):
         _validate_workflow_json(bad)
 
 
 def test_validate_workflow_json_rejects_unknown_segment_code():
-    bad = build_default_workflow_json([
-        {"segment_code": "NOT_A_REAL_SEGMENT", "login_id": "CV0001", "window_start": "17:00", "window_end": "06:00"},
-    ])
+    bad = build_default_workflow_json(
+        [
+            {
+                "segment_code": "NOT_A_REAL_SEGMENT",
+                "login_id": "CV0001",
+                "window_start": "17:00",
+                "window_end": "06:00",
+            },
+        ]
+    )
     with pytest.raises(Exception) as exc_info:
         _validate_workflow_json(bad)
     assert "unknown segment_code" in str(exc_info.value)
 
 
 def test_validate_workflow_json_rejects_duplicate_segment_code():
-    bad = build_default_workflow_json([
-        {"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "06:00"},
-        {"segment_code": "EQ", "login_id": "CV0002", "window_start": "17:00", "window_end": "06:00"},
-    ])
+    bad = build_default_workflow_json(
+        [
+            {"segment_code": "EQ", "login_id": "CV0001", "window_start": "17:00", "window_end": "06:00"},
+            {"segment_code": "EQ", "login_id": "CV0002", "window_start": "17:00", "window_end": "06:00"},
+        ]
+    )
     with pytest.raises(Exception) as exc_info:
         _validate_workflow_json(bad)
     assert "duplicate segment_code" in str(exc_info.value)
@@ -299,7 +356,11 @@ async def test_list_and_get_version_endpoints(cfg, session_factory, test_date, a
     # far-future test_date, so it's not useful to drive from here.
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -319,7 +380,11 @@ async def test_list_and_get_version_endpoints(cfg, session_factory, test_date, a
 
 
 async def test_apply_workflow_version_is_noop_when_already_active(
-    cfg, session_factory, test_date, api_client, monkeypatch,
+    cfg,
+    session_factory,
+    test_date,
+    api_client,
+    monkeypatch,
 ):
     """
     Applying a version that's already today's active config must NOT
@@ -333,7 +398,11 @@ async def test_apply_workflow_version_is_noop_when_already_active(
 
     async with session_factory() as session:
         row, _ = await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -352,14 +421,22 @@ async def test_apply_workflow_version_is_noop_when_already_active(
 
 
 async def test_apply_workflow_version_creates_new_row_and_moves_name_when_not_active(
-    cfg, session_factory, test_date, api_client, monkeypatch,
+    cfg,
+    session_factory,
+    test_date,
+    api_client,
+    monkeypatch,
 ):
     name = _version_name()
     monkeypatch.setattr(workflow_module, "resolve_active_date", lambda *a, **k: test_date)
 
     async with session_factory() as session:
         saved_row, _ = await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -389,7 +466,11 @@ async def test_delete_workflow_version_endpoint(cfg, session_factory, test_date,
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -406,11 +487,16 @@ async def test_delete_workflow_version_endpoint(cfg, session_factory, test_date,
 # API layer -- mutating endpoints require the System Administrator role
 # =============================================================================
 
+
 async def test_apply_workflow_version_rejects_non_admin_role(cfg, session_factory, test_date, api_client):
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 
@@ -419,7 +505,9 @@ async def test_apply_workflow_version_rejects_non_admin_role(cfg, session_factor
         assert no_role_resp.status_code == 403
 
         wrong_role_resp = await client.post(
-            f"/edp/workflow/versions/{name}/apply", json={}, headers={"X-User-Role": "Viewer"},
+            f"/edp/workflow/versions/{name}/apply",
+            json={},
+            headers={"X-User-Role": "Viewer"},
         )
         assert wrong_role_resp.status_code == 403
 
@@ -431,7 +519,11 @@ async def test_delete_workflow_version_allowed_without_any_role(cfg, session_fac
     name = _version_name()
     async with session_factory() as session:
         await repository.upload(
-            session, test_date, _simple_workflow_json(), uploaded_by="test", version_name=name,
+            session,
+            test_date,
+            _simple_workflow_json(),
+            uploaded_by="test",
+            version_name=name,
         )
         await session.commit()
 

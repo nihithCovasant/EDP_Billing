@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from src.agent.edp.models import SegmentState
 from src.agent.edp.utils.json_helpers import (
     get_pid_reservation,
     get_state,
@@ -45,7 +46,6 @@ from src.agent.edp.utils.json_helpers import (
     set_state,
     set_step,
 )
-from src.agent.edp.models import SegmentState
 
 
 class FakeRow:

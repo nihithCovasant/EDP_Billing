@@ -21,6 +21,11 @@ from __future__ import annotations
 
 import pytest
 
+from src.agent.edp.state_machine.SegmentFactory import SegmentFactory
+from src.agent.edp.state_machine.TradeSegmentTransitionFactory import (
+    POST_TRADE_TRANSITION_MAP,
+    REAL_SEGMENT_TRANSITION_MAP,
+)
 from src.agent.edp.utils.constants import (
     POST_TRADE_ORDER,
     SEGMENT_ORDER,
@@ -28,12 +33,6 @@ from src.agent.edp.utils.constants import (
     get_sequence_order,
     is_post_trade_process,
 )
-from src.agent.edp.state_machine.SegmentFactory import SegmentFactory
-from src.agent.edp.state_machine.TradeSegmentTransitionFactory import (
-    POST_TRADE_TRANSITION_MAP,
-    REAL_SEGMENT_TRANSITION_MAP,
-)
-
 
 # ---------------------------------------------------------------------------
 # Class 1: Valid real segment — boundaries (first/last of SEGMENT_ORDER) plus
@@ -229,7 +228,7 @@ def test_none_segment_factory_raises_value_error_not_type_error():
 
 
 def test_post_trade_code_rejected_by_real_segment_transition_map():
-    """"COLVAL" is a valid post-trade code but is NOT in SEGMENT_ORDER, so
+    """ "COLVAL" is a valid post-trade code but is NOT in SEGMENT_ORDER, so
     REAL_SEGMENT_TRANSITION_MAP (built over SEGMENT_ORDER) must reject it."""
     with pytest.raises(ValueError, match="COLVAL"):
         REAL_SEGMENT_TRANSITION_MAP.check_valid_segment("COLVAL")

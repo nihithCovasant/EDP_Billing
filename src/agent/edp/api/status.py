@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -18,7 +20,6 @@ from ..database import get_session
 from ..repository import get_day_summary, get_one, retry_segment, skip_segment_manually
 from ..utils.serializers import serialize_segment
 from .schemas import DaySummaryResponse, SegmentDetailResponse
-from cams_otel_lib import Logger as logger, otel_trace
 
 router = APIRouter()
 
@@ -26,6 +27,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Read endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("/status/{trade_date}", response_model=DaySummaryResponse)
 @otel_trace
@@ -67,6 +69,7 @@ async def get_segment_status(trade_date: date, segment_code: str):
 # ---------------------------------------------------------------------------
 # Operational control endpoints
 # ---------------------------------------------------------------------------
+
 
 class SkipRequest(BaseModel):
     reason: str
@@ -119,7 +122,9 @@ async def skip_segment(trade_date: date, segment_code: str, body: SkipRequest):
     """
     async with get_session() as session:
         row = await skip_segment_manually(
-            session, trade_date, segment_code,
+            session,
+            trade_date,
+            segment_code,
             reason=body.reason,
             skipped_by=body.skipped_by,
         )
@@ -127,8 +132,7 @@ async def skip_segment(trade_date: date, segment_code: str, body: SkipRequest):
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Cannot skip segment={segment_code} on {trade_date}: "
-                f"segment not found or already in a terminal state"
+                f"Cannot skip segment={segment_code} on {trade_date}: segment not found or already in a terminal state"
             ),
         )
     logger.info(f"Segment {segment_code} manually skipped on {trade_date} by {body.skipped_by}")

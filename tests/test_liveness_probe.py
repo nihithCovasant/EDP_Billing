@@ -13,10 +13,7 @@ simulate "a cycle started N seconds ago and never finished".
 
 from __future__ import annotations
 
-import asyncio
 import time
-
-import pytest
 
 from src.agent.edp.config import EdpBootstrapConfig
 from src.agent.edp.loop import EdpWakeLoop
@@ -36,7 +33,7 @@ class _FakeTask:
 
 async def test_liveness_healthy_before_any_cycle_has_run():
     loop = _make_loop()
-    ok, reason = await loop.liveness_check()
+    ok, _reason = await loop.liveness_check()
     assert ok is True
 
 
@@ -51,7 +48,7 @@ async def test_liveness_healthy_shortly_after_a_cycle_starts():
     loop = _make_loop(wake_interval_seconds=60)
     loop._task = _FakeTask()
     loop._last_cycle_started_at = time.monotonic()  # just started
-    ok, reason = await loop.liveness_check()
+    ok, _reason = await loop.liveness_check()
     assert ok is True
 
 
@@ -72,7 +69,7 @@ async def test_liveness_uses_a_floor_threshold_for_short_intervals():
     loop = _make_loop(wake_interval_seconds=1)
     loop._task = _FakeTask()
     loop._last_cycle_started_at = time.monotonic() - 30  # 30s, well under the 120s floor
-    ok, reason = await loop.liveness_check()
+    ok, _reason = await loop.liveness_check()
     assert ok is True
 
 

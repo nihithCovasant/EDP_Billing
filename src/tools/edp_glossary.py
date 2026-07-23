@@ -11,8 +11,6 @@ registration needed.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from langchain_core.tools import tool
 
 _SEGMENT_GLOSSARY = {
@@ -29,9 +27,11 @@ _SEGMENT_GLOSSARY = {
 
 _POST_TRADE_GLOSSARY = {
     "COLVAL": "Collateral Valuation — values client collateral for margin purposes. Runs T+1.",
-    "COLALLOC": "Collateral Allocation — allocates valued collateral against margin requirements. Runs T+1, after COLVAL.",
+    "COLALLOC": "Collateral Allocation — allocates valued collateral against margin "
+    "requirements. Runs T+1, after COLVAL.",
     "MTFFT": "MTF Fund Transfer — funds transfer step for Margin Trading Facility. Runs T+1.",
-    "DMRPT": "Daily Margin Reporting — regulatory margin reporting. Runs T+1, depends on the prior post-trade process completing.",
+    "DMRPT": "Daily Margin Reporting — regulatory margin reporting. Runs T+1, depends "
+    "on the prior post-trade process completing.",
     "DMSTMT": "Daily Margin Statements — client-facing margin statements. Runs T+1, last in the post-trade chain.",
 }
 
@@ -85,7 +85,7 @@ _TERM_GLOSSARY = {
 
 
 @tool
-async def get_edp_glossary(term: Optional[str] = None) -> str:
+async def get_edp_glossary(term: str | None = None) -> str:
     """
     Explain a segment/process code or a common EDP domain term in plain
     language. Use this when a new staff member asks "what does EQ mean",

@@ -31,6 +31,7 @@ async def test_trigger_daily_margin_statements_hits_status_api_per_step_38(monke
         captured["process_name"] = process_name
         captured["user_id"] = user_id
         from src.tools.cbos_client import FileStatusResult
+
         return FileStatusResult(response="TRUE")
 
     async def fake_trigger_post_trade_job(endpoint_name, login_id, trade_date, segment):

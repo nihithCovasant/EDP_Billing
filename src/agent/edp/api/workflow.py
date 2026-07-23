@@ -22,33 +22,34 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from fastapi import APIRouter, Depends, HTTPException
 
-from .auth import require_admin_role
 from ..config import load_edp_config
 from ..database import get_session
 from ..models import AuditAction
 from ..repository import (
-    upload,
+    clear_version_name,
     get_active,
+    get_by_version_name,
     get_latest_effective,
     get_workflow_history,
-    get_by_version_name,
-    list_versions,
-    clear_version_name,
     has_processing_started,
+    list_versions,
     record_audit_event,
+    upload,
 )
-from ..utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER
+from ..utils.constants import POST_TRADE_ORDER, SEGMENT_ORDER
 from ..utils.datetime_utils import now_ist, resolve_active_date
+from .auth import require_admin_role
 from .schemas import (
+    WorkflowDetailResponse,
     WorkflowUploadRequest,
     WorkflowUploadResponse,
-    WorkflowDetailResponse,
-    WorkflowVersionSummary,
     WorkflowVersionApplyRequest,
+    WorkflowVersionSummary,
 )
-from cams_otel_lib import Logger as logger, otel_trace
 
 try:
     from cams_otel_lib import get_request_context
@@ -112,8 +113,7 @@ def _validate_workflow_json(workflow_json: dict) -> None:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"Segment[{i}] has unknown segment_code {code!r} "
-                    f"— must be one of {sorted(_VALID_SEGMENT_CODES)}"
+                    f"Segment[{i}] has unknown segment_code {code!r} — must be one of {sorted(_VALID_SEGMENT_CODES)}"
                 ),
             )
         if code in seen_segment_codes:
@@ -193,11 +193,7 @@ def _resolve_actor(explicit: str) -> str:
 
 
 def _index_by_code(items: list, key: str) -> dict:
-    return {
-        item.get(key): item
-        for item in (items or [])
-        if isinstance(item, dict) and item.get(key)
-    }
+    return {item.get(key): item for item in (items or []) if isinstance(item, dict) and item.get(key)}
 
 
 _DIFF_WATCHED_FIELDS = ("window_start", "window_end", "login_id")
@@ -216,10 +212,15 @@ def _diff_section(old_items: list, new_items: list, key: str) -> list[dict]:
             if field in old_item or field in new_item:
                 old_value, new_value = old_item.get(field), new_item.get(field)
                 if old_value != new_value:
-                    changes.append({
-                        "code": code, "change": "modified", "field": field,
-                        "old": old_value, "new": new_value,
-                    })
+                    changes.append(
+                        {
+                            "code": code,
+                            "change": "modified",
+                            "field": field,
+                            "old": old_value,
+                            "new": new_value,
+                        }
+                    )
     for code in old_by_code:
         if code not in new_by_code:
             changes.append({"code": code, "change": "removed"})
@@ -238,7 +239,9 @@ def diff_workflow_configs(old_json: dict | None, new_json: dict) -> tuple[str, d
 
     seg_changes = _diff_section(old_json.get("segments"), new_json.get("segments"), "segment_code")
     pt_changes = _diff_section(
-        old_json.get("post_trade_processes"), new_json.get("post_trade_processes"), "process_code",
+        old_json.get("post_trade_processes"),
+        new_json.get("post_trade_processes"),
+        "process_code",
     )
     all_changes = seg_changes + pt_changes
     if not all_changes:
@@ -292,7 +295,7 @@ async def _upload_workflow_for_date(
                 overwrite_version=overwrite_version,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         if is_new:
             summary, changes = diff_workflow_configs(old_workflow_json, workflow_json)
@@ -327,9 +330,7 @@ async def _upload_workflow_for_date(
         "uploaded_by": row.uploaded_by,
         "uploaded_at": row.uploaded_at,
         "segment_count": len(row.workflow_json.get("segments", [])),
-        "post_trade_process_count": (
-            len(post_trade_processes) if post_trade_processes is not None else None
-        ),
+        "post_trade_process_count": (len(post_trade_processes) if post_trade_processes is not None else None),
         "version_name": row.version_name,
     }
 
@@ -372,9 +373,7 @@ def _version_summary(row) -> dict:
         "uploaded_by": row.uploaded_by,
         "uploaded_at": row.uploaded_at,
         "segment_count": len(row.workflow_json.get("segments", [])),
-        "post_trade_process_count": (
-            len(post_trade_processes) if post_trade_processes is not None else None
-        ),
+        "post_trade_process_count": (len(post_trade_processes) if post_trade_processes is not None else None),
     }
 
 
@@ -447,14 +446,15 @@ async def apply_workflow_version(version_name: str, body: WorkflowVersionApplyRe
                 "uploaded_by": saved.uploaded_by,
                 "uploaded_at": saved.uploaded_at,
                 "segment_count": len(saved.workflow_json.get("segments", [])),
-                "post_trade_process_count": (
-                    len(post_trade_processes) if post_trade_processes is not None else None
-                ),
+                "post_trade_process_count": (len(post_trade_processes) if post_trade_processes is not None else None),
                 "version_name": saved.version_name,
             }
     return await _upload_workflow_for_date(
-        today, saved.workflow_json, body.uploaded_by,
-        version_name=version_name, overwrite_version=True,
+        today,
+        saved.workflow_json,
+        body.uploaded_by,
+        version_name=version_name,
+        overwrite_version=True,
     )
 
 
@@ -516,9 +516,7 @@ async def get_workflow(trade_date: date, effective: bool = True):
         "uploaded_at": row.uploaded_at,
         "segment_count": len(row.workflow_json.get("segments", [])),
         "post_trade_process_count": (
-            len(row.workflow_json["post_trade_processes"])
-            if "post_trade_processes" in row.workflow_json
-            else None
+            len(row.workflow_json["post_trade_processes"]) if "post_trade_processes" in row.workflow_json else None
         ),
         "workflow_json": row.workflow_json,
         "requested_trade_date": trade_date,

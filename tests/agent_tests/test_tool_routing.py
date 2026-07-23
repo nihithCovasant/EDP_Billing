@@ -67,11 +67,10 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from src.agent.__main__ import build_app
 import src.tools.edp_status as edp_status_module
-import src.tools.simple_test_tool as simple_test_tool_module
 import src.tools.edpb_download as edpb_download_module
-
+import src.tools.simple_test_tool as simple_test_tool_module
+from src.agent.__main__ import build_app
 
 GET_LLM_MODEL_PATCH_TARGET = "src.agent.nodes.agent_node.get_llm_model"
 
@@ -129,6 +128,7 @@ def _tool_call(name: str, args: dict, call_id: str = "call_1") -> dict:
 # ---------------------------------------------------------------------------
 # 1. Status query -> get_edp_status, no args
 # ---------------------------------------------------------------------------
+
 
 def test_status_query_routes_to_get_edp_status(client):
     seeded_day_summary = {
@@ -195,9 +195,11 @@ def test_status_query_routes_to_get_edp_status(client):
 
     spy = AsyncMock(wraps=edp_status_module.get_edp_status.coroutine)
 
-    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), \
-         patch.object(edp_status_module.get_edp_status, "coroutine", spy), \
-         patch.object(edp_status_module.httpx, "AsyncClient", FakeAsyncClient):
+    with (
+        patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm),
+        patch.object(edp_status_module.get_edp_status, "coroutine", spy),
+        patch.object(edp_status_module.httpx, "AsyncClient", FakeAsyncClient),
+    ):
         resp = client.post("/agent/run", json={"query": "how is today's processing going?"})
 
     assert resp.status_code == 200
@@ -287,6 +289,7 @@ async def test_get_edp_status_tool_output_directly_for_cross_check():
 # 2. Calculator query -> simple_calculator with {"expression": "15 * 0.2"}
 # ---------------------------------------------------------------------------
 
+
 def test_calculator_query_routes_to_simple_calculator(client):
     real_result = eval("15 * 0.2", {"__builtins__": {}}, {})  # 3.0, computed independently
     assert real_result == 3.0
@@ -309,8 +312,10 @@ def test_calculator_query_routes_to_simple_calculator(client):
     # invokes `.func` synchronously under the hood for sync tools.
     spy = MagicMock(wraps=simple_test_tool_module.simple_calculator.func)
 
-    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), \
-         patch.object(simple_test_tool_module.simple_calculator, "func", spy):
+    with (
+        patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm),
+        patch.object(simple_test_tool_module.simple_calculator, "func", spy),
+    ):
         resp = client.post("/agent/run", json={"query": "what is 15 * 0.2?"})
 
     assert resp.status_code == 200
@@ -336,6 +341,7 @@ def test_calculator_query_routes_to_simple_calculator(client):
 # 3. Text-counter query -> text_counter with a known fixed string
 # ---------------------------------------------------------------------------
 
+
 def test_text_counter_query_routes_to_text_counter(client):
     fixed_text = "The quick brown fox jumps"
     expected_chars = len(fixed_text)  # 25
@@ -349,16 +355,16 @@ def test_text_counter_query_routes_to_text_counter(client):
                 content="",
                 tool_calls=[_tool_call("text_counter", {"text": fixed_text})],
             ),
-            lambda: AIMessage(
-                content=f"That text has {expected_chars} characters and {expected_words} words."
-            ),
+            lambda: AIMessage(content=f"That text has {expected_chars} characters and {expected_words} words."),
         ]
     )
 
     spy = MagicMock(wraps=simple_test_tool_module.text_counter.func)
 
-    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), \
-         patch.object(simple_test_tool_module.text_counter, "func", spy):
+    with (
+        patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm),
+        patch.object(simple_test_tool_module.text_counter, "func", spy),
+    ):
         resp = client.post(
             "/agent/run",
             json={"query": f'Count the characters and words in: "{fixed_text}"'},
@@ -383,12 +389,13 @@ def test_text_counter_query_routes_to_text_counter(client):
 # 4. Download query -> download_file with a specific segment/process code
 # ---------------------------------------------------------------------------
 
+
 def test_download_query_routes_to_download_file_with_exact_identifier(client):
     code = "MCX"
 
     class FakeHTTPResponse:
         status_code = 200
-        text = '{"status": "success", "file_name": "%s_09072026.txt"}' % code
+        text = f'{{"status": "success", "file_name": "{code}_09072026.txt"}}'
 
         def json(self):
             return {"status": "success", "file_name": f"{code}_09072026.txt"}
@@ -420,12 +427,12 @@ def test_download_query_routes_to_download_file_with_exact_identifier(client):
 
     spy = AsyncMock(wraps=edpb_download_module.download_file.coroutine)
 
-    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), \
-         patch.object(edpb_download_module.download_file, "coroutine", spy), \
-         patch.object(edpb_download_module.httpx, "AsyncClient", FakeAsyncClient):
-        resp = client.post(
-            "/agent/run", json={"query": f"download the files for {code}"}
-        )
+    with (
+        patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm),
+        patch.object(edpb_download_module.download_file, "coroutine", spy),
+        patch.object(edpb_download_module.httpx, "AsyncClient", FakeAsyncClient),
+    ):
+        resp = client.post("/agent/run", json={"query": f"download the files for {code}"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -446,6 +453,7 @@ def test_download_query_routes_to_download_file_with_exact_identifier(client):
 # ---------------------------------------------------------------------------
 # 5. No-tool-needed capability question
 # ---------------------------------------------------------------------------
+
 
 def test_capability_question_needs_no_tool(client):
     """
@@ -471,14 +479,14 @@ def test_capability_question_needs_no_tool(client):
         AsyncMock(wraps=edpb_download_module.download_file.coroutine),
     ]
 
-    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), \
-         patch.object(edp_status_module.get_edp_status, "coroutine", tool_spies[0]), \
-         patch.object(simple_test_tool_module.simple_calculator, "func", tool_spies[1]), \
-         patch.object(simple_test_tool_module.text_counter, "func", tool_spies[2]), \
-         patch.object(edpb_download_module.download_file, "coroutine", tool_spies[3]):
-        resp = client.post(
-            "/agent/run", json={"query": "what can you help me with?"}
-        )
+    with (
+        patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm),
+        patch.object(edp_status_module.get_edp_status, "coroutine", tool_spies[0]),
+        patch.object(simple_test_tool_module.simple_calculator, "func", tool_spies[1]),
+        patch.object(simple_test_tool_module.text_counter, "func", tool_spies[2]),
+        patch.object(edpb_download_module.download_file, "coroutine", tool_spies[3]),
+    ):
+        resp = client.post("/agent/run", json={"query": "what can you help me with?"})
 
     assert resp.status_code == 200
     body = resp.json()

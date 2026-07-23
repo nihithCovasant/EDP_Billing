@@ -22,7 +22,8 @@ as the rest of the suite — nothing here is mocked at the database layer.
 
 from __future__ import annotations
 
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime, timedelta
+from datetime import time as dtime
 
 from src.agent.edp import repository
 from src.agent.edp.api.workflow import _upload_workflow_for_date
@@ -58,8 +59,11 @@ async def _upload_and_seed_post_trade(session_factory, trade_date, post_trade_pr
 # to trade_date+1 14:00, never trade_date 14:00.
 # ---------------------------------------------------------------------------
 
+
 async def test_same_day_looking_window_start_still_anchors_to_trade_date_plus_1(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     An ops person configuring COLVAL's window_start as "14:00" might
@@ -77,7 +81,8 @@ async def test_same_day_looking_window_start_still_anchors_to_trade_date_plus_1(
     # OPENING gate's T+1 anchoring, not the closing deadline (that's
     # covered separately in scenario 2/6).
     await _upload_and_seed_post_trade(
-        session_factory, test_date,
+        session_factory,
+        test_date,
         [{"process_code": "COLVAL", "login_id": "G_LID", "window_start": "14:00", "window_end": "23:59"}],
     )
 
@@ -90,8 +95,7 @@ async def test_same_day_looking_window_start_still_anchors_to_trade_date_plus_1(
         workflow = await repository.get_active(session, test_date)
     window_start = _resolve_post_trade_window("COLVAL", workflow.workflow_json, test_date, orchestrator._tz)
     assert window_start.date() == test_date + timedelta(days=1), (
-        "window_start must resolve on trade_date+1, never trade_date itself, "
-        "regardless of the configured HH:MM value"
+        "window_start must resolve on trade_date+1, never trade_date itself, regardless of the configured HH:MM value"
     )
     assert (window_start.hour, window_start.minute) == (14, 0)
 
@@ -100,9 +104,7 @@ async def test_same_day_looking_window_start_still_anchors_to_trade_date_plus_1(
     same_day_14 = datetime.combine(test_date, dtime(14, 0), tzinfo=orchestrator._tz)
     orchestrator._cycle_now = same_day_14
     outcome = await orchestrator._process_one_post_trade("COLVAL")
-    assert outcome == "blocked", (
-        "trade_date 14:00 must NOT open the window — the true anchor is trade_date+1"
-    )
+    assert outcome == "blocked", "trade_date 14:00 must NOT open the window — the true anchor is trade_date+1"
     rows = await helpers.get_post_trade_rows(session_factory, test_date)
     colval = next(r for r in rows if r.segment_code == "COLVAL")
     assert colval.segment_status == SegmentStatus.PENDING
@@ -121,8 +123,11 @@ async def test_same_day_looking_window_start_still_anchors_to_trade_date_plus_1(
 # config). Tested empirically; no validation is assumed to exist.
 # ---------------------------------------------------------------------------
 
+
 async def test_window_end_before_default_window_start_makes_process_immediately_past_deadline(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     Ops configures window_end="02:00" for COLALLOC but leaves window_start
@@ -151,7 +156,8 @@ async def test_window_end_before_default_window_start_makes_process_immediately_
     window in which it could actually run.
     """
     await _upload_and_seed_post_trade(
-        session_factory, test_date,
+        session_factory,
+        test_date,
         [{"process_code": "COLALLOC", "login_id": "G_LID", "window_end": "02:00"}],
     )
 
@@ -179,7 +185,9 @@ async def test_window_end_before_default_window_start_makes_process_immediately_
     # Before 02:30 T+1: window not open yet -> blocked, PENDING (window gate
     # runs first and wins, since it's checked before the deadline check).
     before_open = datetime.combine(
-        test_date + timedelta(days=1), dtime(2, 15), tzinfo=orchestrator._tz,
+        test_date + timedelta(days=1),
+        dtime(2, 15),
+        tzinfo=orchestrator._tz,
     )
     orchestrator._cycle_now = before_open
     outcome = await orchestrator._process_one_post_trade("COLALLOC")
@@ -198,7 +206,9 @@ async def test_window_end_before_default_window_start_makes_process_immediately_
     # real, observed consequence -- COLALLOC can never run, ever, for this
     # trade_date.
     at_open = datetime.combine(
-        test_date + timedelta(days=1), dtime(2, 30), tzinfo=orchestrator._tz,
+        test_date + timedelta(days=1),
+        dtime(2, 30),
+        tzinfo=orchestrator._tz,
     )
     orchestrator._cycle_now = at_open
     outcome = await orchestrator._process_one_post_trade("COLALLOC")
@@ -218,8 +228,11 @@ async def test_window_end_before_default_window_start_makes_process_immediately_
 # process must resolve independently, with no cross-contamination.
 # ---------------------------------------------------------------------------
 
+
 async def test_mixed_custom_windows_resolve_independently_per_process(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     COLVAL window_start="01:00", DMSTMT window_start="05:00", DMRPT/MTFFT/
@@ -227,7 +240,8 @@ async def test_mixed_custom_windows_resolve_independently_per_process(
     process. No process's custom time should leak into another's.
     """
     await _upload_and_seed_post_trade(
-        session_factory, test_date,
+        session_factory,
+        test_date,
         [
             {"process_code": "COLVAL", "login_id": "G_LID", "window_start": "01:00"},
             {"process_code": "COLALLOC", "login_id": "G_LID"},
@@ -239,7 +253,8 @@ async def test_mixed_custom_windows_resolve_independently_per_process(
 
     orchestrator_tz_cfg = cfg
     orchestrator = EdpOrchestrator(
-        orchestrator_tz_cfg, CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True),
+        orchestrator_tz_cfg,
+        CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True),
     )
     tz = orchestrator._tz
     next_day = test_date + timedelta(days=1)
@@ -275,8 +290,11 @@ async def test_mixed_custom_windows_resolve_independently_per_process(
 # does not bypass waiting for MTFFT.
 # ---------------------------------------------------------------------------
 
+
 async def test_dmrpt_early_custom_window_does_not_bypass_mtfft_dependency_gate(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     DMRPT configured with window_start="00:30" (T+1) -- well before MTFFT
@@ -288,7 +306,8 @@ async def test_dmrpt_early_custom_window_does_not_bypass_mtfft_dependency_gate(
     let DMRPT skip the DB-dependency check.
     """
     await _upload_and_seed_post_trade(
-        session_factory, test_date,
+        session_factory,
+        test_date,
         [
             {"process_code": "COLVAL", "login_id": "G_LID"},
             {"process_code": "COLALLOC", "login_id": "G_LID"},
@@ -313,7 +332,9 @@ async def test_dmrpt_early_custom_window_does_not_bypass_mtfft_dependency_gate(
     # MTFFT has not run at all yet (still PENDING, never even seeded/started
     # in this cycle since we only drive DMRPT directly).
     early_now = datetime.combine(
-        test_date + timedelta(days=1), dtime(1, 0), tzinfo=orchestrator._tz,
+        test_date + timedelta(days=1),
+        dtime(1, 0),
+        tzinfo=orchestrator._tz,
     )
     orchestrator._cycle_now = early_now
     outcome = await orchestrator._process_one_post_trade("DMRPT")
@@ -333,9 +354,8 @@ async def test_dmrpt_early_custom_window_does_not_bypass_mtfft_dependency_gate(
     # same early "now" -- it must now proceed, proving the DB gate (not the
     # window gate) was the only thing holding it back.
     orchestrator._cycle_now = helpers.fixed_post_trade_now_for(test_date, orchestrator._tz)
-    mtfft_outcome = "blocked"
     for _ in range(20):
-        mtfft_outcome = await orchestrator._process_one_post_trade("MTFFT")
+        await orchestrator._process_one_post_trade("MTFFT")
         async with session_factory() as session:
             mtfft = await repository.get_one(session, test_date, "MTFFT")
         if repository.is_handled(mtfft):
@@ -355,8 +375,11 @@ async def test_dmrpt_early_custom_window_does_not_bypass_mtfft_dependency_gate(
 # retroactively alter the currently-active day's post-trade window.
 # ---------------------------------------------------------------------------
 
+
 async def test_post_trade_config_change_mid_chain_defers_to_next_trade_date(
-    cfg, session_factory, test_date,
+    cfg,
+    session_factory,
+    test_date,
 ):
     """
     Following test_workflow_defer_midday.py's pattern but specifically for
@@ -371,7 +394,8 @@ async def test_post_trade_config_change_mid_chain_defers_to_next_trade_date(
     await helpers.cleanup_day(session_factory, next_day)
     try:
         await _upload_and_seed_post_trade(
-            session_factory, test_date,
+            session_factory,
+            test_date,
             [{"process_code": "COLVAL", "login_id": "G_LID", "window_start": "02:30"}],
         )
 
@@ -401,10 +425,14 @@ async def test_post_trade_config_change_mid_chain_defers_to_next_trade_date(
         assert still_active_today.id == original_id
 
         orchestrator = EdpOrchestrator(
-            cfg, CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True),
+            cfg,
+            CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True),
         )
         window_start_today = _resolve_post_trade_window(
-            "COLVAL", still_active_today.workflow_json, test_date, orchestrator._tz,
+            "COLVAL",
+            still_active_today.workflow_json,
+            test_date,
+            orchestrator._tz,
         )
         assert (window_start_today.hour, window_start_today.minute) == (2, 30), (
             "the deferred config's window_start (23:00) must NOT retroactively alter "
@@ -416,7 +444,10 @@ async def test_post_trade_config_change_mid_chain_defers_to_next_trade_date(
             active_next_day = await repository.get_active(session, next_day)
         assert active_next_day is not None
         window_start_next_day = _resolve_post_trade_window(
-            "COLVAL", active_next_day.workflow_json, next_day, orchestrator._tz,
+            "COLVAL",
+            active_next_day.workflow_json,
+            next_day,
+            orchestrator._tz,
         )
         assert (window_start_next_day.hour, window_start_next_day.minute) == (23, 0), (
             "the new config's custom window_start must apply once it takes effect on "
@@ -434,6 +465,7 @@ async def test_post_trade_config_change_mid_chain_defers_to_next_trade_date(
 # time instead of the hardcoded 02:30/06:00 defaults.
 # ---------------------------------------------------------------------------
 
+
 async def test_custom_window_start_boundary_is_inclusive(cfg, session_factory, test_date):
     """
     is_my_time_window() uses `now >= window_start` (AbstractStateMachine.
@@ -444,7 +476,8 @@ async def test_custom_window_start_boundary_is_inclusive(cfg, session_factory, t
     regardless of where the time value came from.
     """
     await _upload_and_seed_post_trade(
-        session_factory, test_date,
+        session_factory,
+        test_date,
         [{"process_code": "COLVAL", "login_id": "G_LID", "window_start": "04:15"}],
     )
 
@@ -482,7 +515,8 @@ async def test_custom_window_end_boundary_is_exclusive_for_over_check(cfg, sessi
     instead of the hardcoded default 06:00.
     """
     await _upload_and_seed_post_trade(
-        session_factory, test_date,
+        session_factory,
+        test_date,
         [{"process_code": "COLVAL", "login_id": "G_LID", "window_end": "04:45"}],
     )
 
@@ -499,8 +533,7 @@ async def test_custom_window_end_boundary_is_exclusive_for_over_check(cfg, sessi
     orchestrator._cycle_now = exactly_at_end
     outcome = await orchestrator._process_one_post_trade("COLVAL")
     assert outcome != "failed", (
-        "exactly at window_end, now > window_end is False -- must not be treated as "
-        "past-deadline yet"
+        "exactly at window_end, now > window_end is False -- must not be treated as past-deadline yet"
     )
 
     # Reset back to PENDING to isolate the deadline check at the next

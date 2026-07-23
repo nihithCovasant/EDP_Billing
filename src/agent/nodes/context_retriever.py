@@ -1,23 +1,30 @@
-﻿"""
+"""
 Retrieval node with remote configuration support.
 Executes retrieval tools to gather context - customize for your knowledge sources.
 """
 
 import asyncio
-from typing import Dict, Any, List
+from typing import Any
+
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 from src.config.agent_config import get_node_configuration
 from src.utils.langfuse_decorator import trace_node
-from cams_otel_lib import Logger as logger, otel_trace
 
 # FEATURE:prometheus
 try:
-    from src.utils.metrics import track_node_metrics, get_metrics_collector
+    from src.utils.metrics import get_metrics_collector, track_node_metrics
+
     _METRICS_AVAILABLE = True
 except ImportError:
+
     def track_node_metrics(name):
-        def decorator(func): return func
+        def decorator(func):
+            return func
+
         return decorator
+
     _METRICS_AVAILABLE = False
 
 
@@ -32,9 +39,7 @@ class ContextRetrieverNode:
     """
 
     @otel_trace
-    def __init__(
-        self, config: Dict[str, Any], tools: List[Any], tenant_id: str = "default"
-    ):
+    def __init__(self, config: dict[str, Any], tools: list[Any], tenant_id: str = "default"):
         """Initialize retrieval node with tenant-aware configuration."""
         self.global_config = config
         self.tools = tools
@@ -60,7 +65,7 @@ class ContextRetrieverNode:
         },
     )
     @otel_trace
-    async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, state: dict[str, Any]) -> dict[str, Any]:
         """
         Retrieve context using available tools.
 
@@ -77,9 +82,7 @@ class ContextRetrieverNode:
             return {"retrieved_context": ""}
 
         # Get tenant-specific retrieval config
-        tenant_config = self.global_config.get(
-            state.get("tenant_id", "default"), self.global_config.get("default", {})
-        )
+        tenant_config = self.global_config.get(state.get("tenant_id", "default"), self.global_config.get("default", {}))
         retrieval_config = tenant_config.get("retrieval_config", {})
 
         top_k = retrieval_config.get("top_k", 5)
@@ -88,18 +91,14 @@ class ContextRetrieverNode:
         logger.info(f"Retrieving context for query: {search_query}")
 
         # Execute retrieval (customize this for your tools)
-        retrieved_context = await self._retrieve_context(
-            search_query, top_k=top_k, score_threshold=score_threshold
-        )
+        retrieved_context = await self._retrieve_context(search_query, top_k=top_k, score_threshold=score_threshold)
 
         logger.info(f"Retrieved context length: {len(retrieved_context)}")
 
         return {"retrieved_context": retrieved_context}
 
     @otel_trace
-    async def _retrieve_context(
-        self, query: str, top_k: int = 5, score_threshold: float = 0.7
-    ) -> str:
+    async def _retrieve_context(self, query: str, top_k: int = 5, score_threshold: float = 0.7) -> str:
         """
         Execute retrieval using available tools.
 
@@ -118,6 +117,7 @@ class ContextRetrieverNode:
                 logger.debug(f"Invoking tool: {tool_name}")
 
                 import time as _time
+
                 _tool_start = _time.time()
                 result = await asyncio.to_thread(tool.invoke, query)
                 _tool_duration = _time.time() - _tool_start
@@ -147,13 +147,13 @@ class ContextRetrieverNode:
 
         # Combine results into context
         context_parts = []
-        for i, result in enumerate(results[:top_k], 1):
+        for _i, result in enumerate(results[:top_k], 1):
             context_parts.append(f"[Tool: {result['tool']}]\n{result['content']}\n")
 
         return "\n".join(context_parts)
 
     @otel_trace
-    def _format_results(self, results: List[Any]) -> str:
+    def _format_results(self, results: list[Any]) -> str:
         """
         Format retrieval results into context string.
 

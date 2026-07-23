@@ -67,6 +67,7 @@ class ChunkedFile:
 
     Indexed by CurrentChunk rather than appended, so a repeat of chunk 3
     overwrites chunk 3 instead of corrupting the file by growing it."""
+
     file_name: str
     total_chunks: int = 0
     chunks: dict[int, bytes] = field(default_factory=dict)
@@ -167,8 +168,9 @@ class MockState:
                 Step(stepno=r["STEPNO"], name=r["NAME"], uploadid=r["UPLOADID"], status=r["STATUS"])
                 for r in data.table2_for(segment)
             ]
-            proc = Process(process_id=pid, segment=segment.upper(), login_id=login_id,
-                           trade_date=trade_date, steps=steps)
+            proc = Process(
+                process_id=pid, segment=segment.upper(), login_id=login_id, trade_date=trade_date, steps=steps
+            )
             self.processes[pid] = proc
             self.latest_pid_by_segment[segment.upper()] = pid
             self.pid_by_seg_date[(segment.upper(), trade_date)] = pid
@@ -192,8 +194,7 @@ class MockState:
         return self.latest_process(segment)
 
     # --- uploads --------------------------------------------------------------
-    def add_chunk(self, guid: str, filename: str, chunk: bytes,
-                  current_chunk: int, total_chunks: int) -> GuidFolder:
+    def add_chunk(self, guid: str, filename: str, chunk: bytes, current_chunk: int, total_chunks: int) -> GuidFolder:
         """Store one chunk's bytes at its declared index, so the file can be
         reassembled and checksummed later. Chunks may legitimately arrive in
         any order; storing by index rather than appending is what makes the

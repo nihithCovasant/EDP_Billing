@@ -24,7 +24,7 @@ from datetime import timedelta
 # NCDEX/MCX, run immediately after their respective segment.
 # Canonical vocabulary lives in edpb-core (shared with the uploader and the
 # RPA bot); re-exported here so existing imports keep working.
-from edpb_core import SEGMENT_ORDER as SEGMENT_ORDER  # noqa: E402
+from edpb_core import SEGMENT_ORDER as SEGMENT_ORDER
 
 # Human display labels.
 SEGMENT_NAMES: dict[str, str] = {

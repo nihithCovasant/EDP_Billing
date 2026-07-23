@@ -9,8 +9,8 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 _ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic.ini"
 

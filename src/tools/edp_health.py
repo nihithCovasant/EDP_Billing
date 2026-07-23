@@ -19,7 +19,7 @@ registration needed.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any
 
 import httpx
 from langchain_core.tools import tool
@@ -30,7 +30,7 @@ def _base_url() -> str:
     return f"http://localhost:{port}"
 
 
-async def _get(path: str) -> tuple[int, Dict[str, Any]]:
+async def _get(path: str) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{_base_url()}{path}")
     try:

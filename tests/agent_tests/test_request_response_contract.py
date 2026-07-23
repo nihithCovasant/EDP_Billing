@@ -23,7 +23,6 @@ Run with:
 from __future__ import annotations
 
 import re
-from typing import Optional
 from unittest.mock import patch
 
 import pytest
@@ -31,7 +30,6 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 from src.agent.__main__ import build_app
-
 
 # ---------------------------------------------------------------------------
 # Fake LLM — mimics the "no tool call needed, just answer" path.
@@ -75,9 +73,9 @@ class _FakeRaisingLLM:
 # separator row) -- what app.js's renderMarkdown() must be able to handle.
 _MARKDOWN_TOOL_STYLE_RESPONSE = "\n".join(
     [
-        "### \U0001F4C5 EDP Status — 2026-07-13",
+        "### \U0001f4c5 EDP Status — 2026-07-13",
         "",
-        "**Total:** 5  |  \U0001F553 Pending: 1  |  ⏳ In progress: 1  |  "
+        "**Total:** 5  |  \U0001f553 Pending: 1  |  ⏳ In progress: 1  |  "
         "✅ Completed: 2  |  ⏭️ Skipped: 0  |  ❌ Failed: 1",
         "",
         "| # | Segment | Status | Current step | Notes |",

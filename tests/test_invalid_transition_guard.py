@@ -29,7 +29,10 @@ SEGMENT = "CUR"
 
 
 async def test_illegal_state_skip_is_rejected_and_fails_segment(
-    cfg, session_factory, test_date, monkeypatch,
+    cfg,
+    session_factory,
+    test_date,
+    monkeypatch,
 ):
     cbos = CbosClient(cfg.cbos_status_url, cfg.cbos_process_url, use_mock=True)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -67,8 +70,7 @@ async def test_illegal_state_skip_is_rejected_and_fails_segment(
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, SEGMENT)
     assert row.segment_status == SegmentStatus.FAILED, (
-        "an illegal transition must durably FAIL the row, not silently "
-        "apply the bad state and keep looping"
+        "an illegal transition must durably FAIL the row, not silently apply the bad state and keep looping"
     )
     assert row.skip_category == "SYSTEM_ERROR"
     assert "Invalid transition" in (row.skip_reason or "")

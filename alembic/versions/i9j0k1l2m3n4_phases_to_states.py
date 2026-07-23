@@ -1,4 +1,5 @@
-"""replace SegmentPhase (segmentphase enum, current_phase column) with SegmentState (segmentstate enum, current_state column)
+"""replace SegmentPhase (segmentphase enum, current_phase column) with
+SegmentState (segmentstate enum, current_state column)
 
 Manager directive: eliminate the concept of "phases" entirely, replacing the
 old 7-step/3-step SegmentPhase chains with the flat, happy-flow SegmentState
@@ -21,27 +22,40 @@ Revises: h8i9j0k1l2m3
 Create Date: 2026-07-10 00:00:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "i9j0k1l2m3n4"
-down_revision: Union[str, Sequence[str], None] = "h8i9j0k1l2m3"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "h8i9j0k1l2m3"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _OLD_PHASES = (
-    "HOLIDAY_CHECK", "RESERVE_PID", "AWAIT_FILE_UPLOAD", "TRIGGER",
-    "AWAIT_BILLPOSTING", "AWAIT_RECON", "AWAIT_CONTRACT_NOTE",
-    "AWAIT_GTG", "TRIGGER_JOB", "AWAIT_CONFIRM", "DONE",
+    "HOLIDAY_CHECK",
+    "RESERVE_PID",
+    "AWAIT_FILE_UPLOAD",
+    "TRIGGER",
+    "AWAIT_BILLPOSTING",
+    "AWAIT_RECON",
+    "AWAIT_CONTRACT_NOTE",
+    "AWAIT_GTG",
+    "TRIGGER_JOB",
+    "AWAIT_CONFIRM",
+    "DONE",
 )
 
 _NEW_STATES = (
-    "INIT", "WAITING_FOR_FILE_UPLOAD", "TRIGGERED", "WAITING_FOR_BILLPOSTING",
-    "WAITING_FOR_RECON", "WAITING_FOR_CONTRACT_NOTE_GENERATION",
-    "WAITING_FOR_GTG", "WAITING_FOR_COMPLETION",
+    "INIT",
+    "WAITING_FOR_FILE_UPLOAD",
+    "TRIGGERED",
+    "WAITING_FOR_BILLPOSTING",
+    "WAITING_FOR_RECON",
+    "WAITING_FOR_CONTRACT_NOTE_GENERATION",
+    "WAITING_FOR_GTG",
+    "WAITING_FOR_COMPLETION",
 )
 
 

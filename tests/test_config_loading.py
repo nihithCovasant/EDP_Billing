@@ -24,8 +24,16 @@ import pytest
 import src.agent.edp.config as edp_config
 
 _ENV_KEYS = (
-    "DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USERNAME", "DB_PASSWORD",
-    "CBOS_STATUS_URL", "CBOS_PROCESS_URL", "CBOS_USE_MOCK", "EDP_STRICT_CONFIG",
+    "DATABASE_URL",
+    "DB_HOST",
+    "DB_PORT",
+    "DB_NAME",
+    "DB_USERNAME",
+    "DB_PASSWORD",
+    "CBOS_STATUS_URL",
+    "CBOS_PROCESS_URL",
+    "CBOS_USE_MOCK",
+    "EDP_STRICT_CONFIG",
 )
 
 
@@ -57,10 +65,9 @@ def test_missing_edp_section_defaults_other_settings_but_does_not_raise(clean_en
 
     assert cfg.cbos_use_mock is True
     assert cfg.database_url == "postgresql+asyncpg://user:pw@dbhost:5432/edp"
-    assert any(
-        "falling through to hardcoded defaults" in record.message
-        for record in caplog.records
-    ), "must log a visible warning about which settings defaulted"
+    assert any("falling through to hardcoded defaults" in record.message for record in caplog.records), (
+        "must log a visible warning about which settings defaulted"
+    )
 
 
 def test_malformed_edp_section_is_ignored_and_logged(clean_env, caplog):
@@ -72,32 +79,30 @@ def test_malformed_edp_section_is_ignored_and_logged(clean_env, caplog):
     cfg = edp_config.load_edp_config()
 
     assert cfg.cbos_use_mock is True
-    assert any(
-        "not an object" in record.message
-        for record in caplog.records
-    )
+    assert any("not an object" in record.message for record in caplog.records)
 
 
 def test_explicit_config_values_are_not_flagged_as_defaulted(clean_env, caplog):
-    clean_env.setattr(edp_config, "load_agent_config", lambda: {
-        "default": {
-            "edp": {
-                "database_url": "postgresql+asyncpg://user:pw@dbhost:5432/edp",
-                "cbos_status_url": "http://real-cbos:8087",
-                "cbos_process_url": "http://real-cbos:8003",
-                "cbos_use_mock": False,
+    clean_env.setattr(
+        edp_config,
+        "load_agent_config",
+        lambda: {
+            "default": {
+                "edp": {
+                    "database_url": "postgresql+asyncpg://user:pw@dbhost:5432/edp",
+                    "cbos_status_url": "http://real-cbos:8087",
+                    "cbos_process_url": "http://real-cbos:8003",
+                    "cbos_use_mock": False,
+                }
             }
-        }
-    })
+        },
+    )
 
     cfg = edp_config.load_edp_config()
 
     assert cfg.cbos_use_mock is False
     assert cfg.database_url == "postgresql+asyncpg://user:pw@dbhost:5432/edp"
-    assert not any(
-        "falling through to hardcoded defaults" in record.message
-        for record in caplog.records
-    )
+    assert not any("falling through to hardcoded defaults" in record.message for record in caplog.records)
 
 
 def test_env_vars_are_not_flagged_as_defaulted(clean_env, caplog):
@@ -116,10 +121,7 @@ def test_env_vars_are_not_flagged_as_defaulted(clean_env, caplog):
     cfg = edp_config.load_edp_config()
 
     assert cfg.cbos_use_mock is False
-    assert not any(
-        "falling through to hardcoded defaults" in record.message
-        for record in caplog.records
-    )
+    assert not any("falling through to hardcoded defaults" in record.message for record in caplog.records)
 
 
 def test_strict_config_raises_when_settings_are_unconfigured(clean_env):

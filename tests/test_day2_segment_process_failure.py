@@ -24,8 +24,10 @@ FAILING_PROCESS = "BILLPOSTING"  # 2nd process (order=2) in the per-segment pipe
 
 async def test_second_process_failure_does_not_block_other_segments(cfg, session_factory, test_date):
     cbos = FailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        fail_segment=FAILING_SEGMENT, fail_process=FAILING_PROCESS,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment=FAILING_SEGMENT,
+        fail_process=FAILING_PROCESS,
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -49,8 +51,7 @@ async def test_second_process_failure_does_not_block_other_segments(cfg, session
     for code in other_codes:
         row = by_code[code]
         assert row.segment_status == SegmentStatus.COMPLETED, (
-            f"segment {code} expected COMPLETED (independent of {FAILING_SEGMENT}'s failure), "
-            f"got {row.segment_status}"
+            f"segment {code} expected COMPLETED (independent of {FAILING_SEGMENT}'s failure), got {row.segment_status}"
         )
 
     # --- Day summary must reflect exactly one FAILED, rest COMPLETED ---
@@ -68,8 +69,10 @@ async def test_manual_retry_then_day_completes(cfg, session_factory, test_date):
     """retry_segment() resets a FAILED segment to PENDING so the day can
     run to completion once the underlying CBOS issue is resolved."""
     failing_cbos = FailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        fail_segment=FAILING_SEGMENT, fail_process=FAILING_PROCESS,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment=FAILING_SEGMENT,
+        fail_process=FAILING_PROCESS,
     )
     failing_cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, failing_cbos)

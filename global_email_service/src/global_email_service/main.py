@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +20,8 @@ from .table_renderer import render_email_body
 # cams_otel_lib is a CAMS-platform-private package — optional so this module
 # still runs standalone (outside CAMS) with plain stdlib logging.
 try:
-    from cams_otel_lib import Logger as _CamsLogger, Otel_Client  # type: ignore
+    from cams_otel_lib import Logger as _CamsLogger  # type: ignore
+    from cams_otel_lib import Otel_Client
 
     _CamsLogger.info("global_email_service: cams_otel_lib detected — OTEL enabled")
     Otel_Client.initialize_otel_client(
@@ -50,9 +51,7 @@ app.add_middleware(
 def _is_misconfigured(config) -> bool:
     """True when this instance cannot actually send mail: not in dry-run mode
     but missing one or more required Microsoft Graph credentials."""
-    return not config.dry_run and not (
-        config.graph_tenant_id and config.graph_client_id and config.graph_client_secret
-    )
+    return not config.dry_run and not (config.graph_tenant_id and config.graph_client_id and config.graph_client_secret)
 
 
 @app.get("/health")
@@ -64,9 +63,7 @@ async def health() -> Response:
         "service": "global-email-service",
         "dry_run": config.dry_run,
         "graph_sender": config.graph_sender,
-        "graph_configured": bool(
-            config.graph_tenant_id and config.graph_client_id and config.graph_client_secret
-        ),
+        "graph_configured": bool(config.graph_tenant_id and config.graph_client_id and config.graph_client_secret),
         "default_to_configured": bool(config.default_to),
     }
     return Response(
@@ -90,12 +87,12 @@ async def readiness() -> Response:
 
 
 @app.get("/health/live")
-async def liveness() -> Dict[str, str]:
+async def liveness() -> dict[str, str]:
     return {"status": "alive"}
 
 
 @app.post("/send")
-async def send(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def send(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         result = send_alert_email(payload)
     except InvalidPayloadError as exc:
@@ -105,7 +102,10 @@ async def send(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     logger.info(
         "POST /send: success=%s dry_run=%s subject=%r to=%s",
-        result.success, result.dry_run, result.subject, result.to,
+        result.success,
+        result.dry_run,
+        result.subject,
+        result.to,
     )
     return {
         "success": result.success,
@@ -118,29 +118,35 @@ async def send(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.post("/preview", response_class=HTMLResponse)
-async def preview(payload: Dict[str, Any]) -> str:
+async def preview(payload: dict[str, Any]) -> str:
     try:
         request = parse_payload(payload)
     except InvalidPayloadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     html_body, _ = render_email_body(
-        request.rows, title=request.title, summary=request.summary,
-        columns=request.columns, color_overrides=request.color_overrides,
+        request.rows,
+        title=request.title,
+        summary=request.summary,
+        columns=request.columns,
+        color_overrides=request.color_overrides,
     )
     return html_body
 
 
 @app.post("/preview.text", response_class=PlainTextResponse)
-async def preview_text(payload: Dict[str, Any]) -> str:
+async def preview_text(payload: dict[str, Any]) -> str:
     try:
         request = parse_payload(payload)
     except InvalidPayloadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _, text_body = render_email_body(
-        request.rows, title=request.title, summary=request.summary,
-        columns=request.columns, color_overrides=request.color_overrides,
+        request.rows,
+        title=request.title,
+        summary=request.summary,
+        columns=request.columns,
+        color_overrides=request.color_overrides,
     )
     return text_body
 
@@ -156,5 +162,8 @@ if __name__ == "__main__":
     reload_enabled = os.getenv("UVICORN_RELOAD", "false").strip().lower() in ("1", "true", "yes")
     uvicorn.run(
         "global_email_service.main:app",
-        host=host, port=port, reload=reload_enabled, log_level=log_level.lower(),
+        host=host,
+        port=port,
+        reload=reload_enabled,
+        log_level=log_level.lower(),
     )

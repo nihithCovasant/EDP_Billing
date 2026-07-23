@@ -21,12 +21,12 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
+from langchain_core.tools import tool
 
 try:
     from cams_otel_lib import get_request_context
@@ -41,11 +41,18 @@ except ImportError:  # pragma: no cover - defensive
 IST = ZoneInfo("Asia/Kolkata")
 
 _DATE_FORMATS = (
-    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
-    "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%B %d, %Y", "%b %d, %Y",
+    "%Y-%m-%d",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+    "%d %B %Y",
+    "%d %b %Y",
+    "%B %d %Y",
+    "%b %d %Y",
+    "%B %d, %Y",
+    "%b %d, %Y",
 )
 _ORDINAL_SUFFIX_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
-_RELATIVE_DAYS: Dict[str, int] = {
+_RELATIVE_DAYS: dict[str, int] = {
     "today": 0,
     "yesterday": -1,
     "the day before yesterday": -2,
@@ -81,10 +88,10 @@ def _base_url() -> str:
     return f"http://localhost:{port}"
 
 
-def _actor_headers() -> Dict[str, str]:
+def _actor_headers() -> dict[str, str]:
     """Forward caller identity/role to this agent's own /edp/* API — see
     edp_status.py's identical helper docstring for the full rationale."""
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if get_request_context is not None:
         try:
             ctx = get_request_context()
@@ -103,7 +110,7 @@ def _actor_headers() -> Dict[str, str]:
     return headers
 
 
-async def _get(path: str) -> tuple[int, Dict[str, Any]]:
+async def _get(path: str) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{_base_url()}{path}", headers=_actor_headers())
     try:
@@ -112,7 +119,7 @@ async def _get(path: str) -> tuple[int, Dict[str, Any]]:
         return resp.status_code, {"raw": resp.text[:500]}
 
 
-async def _post(path: str, json_body: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+async def _post(path: str, json_body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(f"{_base_url()}{path}", json=json_body, headers=_actor_headers())
     try:
@@ -129,24 +136,30 @@ _DIFF_WATCHED_FIELDS = ("window_start", "window_end", "login_id")
 # these sets, that segment/post-trade process was removed from the active
 # model after the version was saved (e.g. MF's removal — see constants.py)
 # and would be silently ignored, not applied, if reapplied today.
-_VALID_SEGMENT_CODES = frozenset({
-    "EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM",
-})
+_VALID_SEGMENT_CODES = frozenset(
+    {
+        "EQ",
+        "DR",
+        "CUR",
+        "SLB",
+        "NCDEX",
+        "NCDEXPHY",
+        "MCX",
+        "MCXPHY",
+        "NSECOM",
+    }
+)
 _VALID_POST_TRADE_CODES = frozenset({"COLVAL", "COLALLOC", "MTFFT", "DMRPT", "DMSTMT"})
 
 
-def _index_by_code(items: Optional[List[dict]], key: str) -> Dict[str, dict]:
-    return {
-        item.get(key): item
-        for item in (items or [])
-        if isinstance(item, dict) and item.get(key)
-    }
+def _index_by_code(items: list[dict] | None, key: str) -> dict[str, dict]:
+    return {item.get(key): item for item in (items or []) if isinstance(item, dict) and item.get(key)}
 
 
-def _diff_section(old_items: Optional[List[dict]], new_items: Optional[List[dict]], key: str) -> List[dict]:
+def _diff_section(old_items: list[dict] | None, new_items: list[dict] | None, key: str) -> list[dict]:
     old_by_code = _index_by_code(old_items, key)
     new_by_code = _index_by_code(new_items, key)
-    changes: List[dict] = []
+    changes: list[dict] = []
     for code, new_item in new_by_code.items():
         old_item = old_by_code.get(code)
         if old_item is None:
@@ -156,17 +169,22 @@ def _diff_section(old_items: Optional[List[dict]], new_items: Optional[List[dict
             if field in old_item or field in new_item:
                 old_value, new_value = old_item.get(field), new_item.get(field)
                 if old_value != new_value:
-                    changes.append({
-                        "code": code, "change": "modified", "field": field,
-                        "old": old_value, "new": new_value,
-                    })
+                    changes.append(
+                        {
+                            "code": code,
+                            "change": "modified",
+                            "field": field,
+                            "old": old_value,
+                            "new": new_value,
+                        }
+                    )
     for code in old_by_code:
         if code not in new_by_code:
             changes.append({"code": code, "change": "removed"})
     return changes
 
 
-def _diff_workflow_json(old_json: Optional[dict], new_json: dict) -> str:
+def _diff_workflow_json(old_json: dict | None, new_json: dict) -> str:
     """Human-readable summary of the differences between two workflow_json
     configs — same watched fields (window_start/window_end/login_id) as the
     upload-time audit diff, but usable on any two configs, not just an
@@ -176,11 +194,16 @@ def _diff_workflow_json(old_json: Optional[dict], new_json: dict) -> str:
 
     segment_changes = _diff_section(old_json.get("segments"), new_json.get("segments"), "segment_code")
     process_changes = _diff_section(
-        old_json.get("post_trade_processes"), new_json.get("post_trade_processes"), "process_code",
+        old_json.get("post_trade_processes"),
+        new_json.get("post_trade_processes"),
+        "process_code",
     )
     all_changes = segment_changes + process_changes
     if not all_changes:
-        return "No differences — the two configs are identical (segments and post-trade processes match on window_start/window_end/login_id)."
+        return (
+            "No differences — the two configs are identical (segments and post-trade "
+            "processes match on window_start/window_end/login_id)."
+        )
 
     lines = []
     for c in all_changes:
@@ -193,7 +216,7 @@ def _diff_workflow_json(old_json: Optional[dict], new_json: dict) -> str:
     return "\n".join(lines)
 
 
-async def _fetch_named_version_json(version_name: str) -> tuple[Optional[dict], Optional[str]]:
+async def _fetch_named_version_json(version_name: str) -> tuple[dict | None, str | None]:
     """Returns (workflow_json, error_message) — workflow_json is None if the
     named version wasn't found or the fetch failed, with error_message set."""
     status_code, data = await _get(f"/edp/workflow/versions/{version_name}")
@@ -204,18 +227,23 @@ async def _fetch_named_version_json(version_name: str) -> tuple[Optional[dict], 
     return data.get("workflow_json"), None
 
 
-async def _fetch_active_json(trade_date: str) -> tuple[Optional[dict], Optional[str], Optional[str]]:
+async def _fetch_active_json(trade_date: str) -> tuple[dict | None, str | None, str | None]:
     """Returns (workflow_json, active_version_name, error_message)."""
     status_code, data = await _get(f"/edp/workflow/{trade_date}")
     if status_code == 404:
         return None, None, f"No active workflow config for **{trade_date}**."
     if status_code >= 400:
-        return None, None, f"❌ Could not fetch the active config for **{trade_date}** (HTTP {status_code}): {data.get('detail', data)}"
+        return (
+            None,
+            None,
+            f"❌ Could not fetch the active config for **{trade_date}** "
+            f"(HTTP {status_code}): {data.get('detail', data)}",
+        )
     return data.get("workflow_json"), data.get("version_name"), None
 
 
 @tool
-async def get_edp_active_version(trade_date: Optional[str] = None) -> str:
+async def get_edp_active_version(trade_date: str | None = None) -> str:
     """
     Show which saved EDP workflow version is currently active for a trading
     date, and whether it was carried forward from an earlier upload. Use
@@ -254,8 +282,8 @@ async def get_edp_active_version(trade_date: Optional[str] = None) -> str:
 @tool
 async def diff_edp_workflow_versions(
     version_a: str,
-    version_b: Optional[str] = None,
-    trade_date: Optional[str] = None,
+    version_b: str | None = None,
+    trade_date: str | None = None,
 ) -> str:
     """
     Compare two saved EDP workflow versions and show exactly what differs —
@@ -296,7 +324,7 @@ async def diff_edp_workflow_versions(
 async def clone_edp_workflow_version(
     source_version_name: str,
     new_version_name: str,
-    uploaded_by: Optional[str] = None,
+    uploaded_by: str | None = None,
     overwrite_version: bool = False,
 ) -> str:
     """
@@ -317,9 +345,7 @@ async def clone_edp_workflow_version(
     if err:
         return err
 
-    logger.info(
-        f"[EDP_CHAT] cloning workflow version {source_version_name!r} as {new_version_name!r}"
-    )
+    logger.info(f"[EDP_CHAT] cloning workflow version {source_version_name!r} as {new_version_name!r}")
     status_code, data = await _post(
         "/edp/workflow/upload",
         {
@@ -372,7 +398,10 @@ async def check_edp_version_name_reuse(version_name: str, limit: int = 200) -> s
 
     matches = [e for e in (data or []) if e.get("version_name") == version_name]
     if not matches:
-        return f"No audit history found for version name **{version_name}** in the last {limit} entries — looks unused (within that window)."
+        return (
+            f"No audit history found for version name **{version_name}** in the last "
+            f"{limit} entries — looks unused (within that window)."
+        )
     if len(matches) == 1:
         m = matches[0]
         return (
@@ -418,11 +447,13 @@ async def check_edp_version_segment_validity(version_name: str) -> str:
         return err
 
     stale_segments = [
-        s.get("segment_code") for s in (workflow_json.get("segments") or [])
+        s.get("segment_code")
+        for s in (workflow_json.get("segments") or [])
         if s.get("segment_code") not in _VALID_SEGMENT_CODES
     ]
     stale_processes = [
-        p.get("process_code") for p in (workflow_json.get("post_trade_processes") or [])
+        p.get("process_code")
+        for p in (workflow_json.get("post_trade_processes") or [])
         if p.get("process_code") not in _VALID_POST_TRADE_CODES
     ]
 

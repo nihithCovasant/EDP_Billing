@@ -100,10 +100,10 @@ import httpx
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
+import src.tools.edp_status as edp_status_module
 from src.agent.__main__ import build_app
 from src.agent.edp.orchestrator import EdpOrchestrator
 from src.agent.edp.utils.constants import SEGMENT_ORDER
-import src.tools.edp_status as edp_status_module
 
 from .. import helpers
 from ..fakes import FailingCbosClient
@@ -179,8 +179,10 @@ async def seeded_day_with_one_failure(cfg, session_factory, test_date):
     CBOS response for this one (segment, process) pair.
     """
     cbos = FailingCbosClient(
-        cfg.cbos_status_url, cfg.cbos_process_url,
-        fail_segment=FAILING_SEGMENT, fail_process=FAILING_PROCESS,
+        cfg.cbos_status_url,
+        cfg.cbos_process_url,
+        fail_segment=FAILING_SEGMENT,
+        fail_process=FAILING_PROCESS,
     )
     cbos.mock_set_ready_after(1)
     orchestrator = EdpOrchestrator(cfg, cbos)
@@ -195,6 +197,7 @@ async def seeded_day_with_one_failure(cfg, session_factory, test_date):
 #    real failed segment by code.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skip(
     reason=(
         "get_edp_status's self-call into the app crosses an event-loop boundary "
@@ -204,22 +207,24 @@ async def seeded_day_with_one_failure(cfg, session_factory, test_date):
     )
 )
 def test_day_status_query_reports_correct_counts_and_failed_segment(
-    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
+    client,
+    route_edp_status_through_app,
+    seeded_day_with_one_failure,
+    test_date,
 ):
     response_text = _ask(client, f"How is EDP processing going for {test_date.isoformat()}?")
     print(f"\n--- LIVE RESPONSE (day status) ---\n{response_text}\n")
 
     assert str(TOTAL_SEGMENTS) in response_text
     assert FAILING_SEGMENT in response_text
-    assert any(
-        word in response_text.lower() for word in ["fail", "issue", "problem", "error"]
-    )
+    assert any(word in response_text.lower() for word in ["fail", "issue", "problem", "error"])
 
 
 # ---------------------------------------------------------------------------
 # 2. Same seeded day, differently phrased query -> must still surface the
 #    real failed segment (robustness to real LLM phrasing variance).
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skip(
     reason=(
@@ -230,7 +235,10 @@ def test_day_status_query_reports_correct_counts_and_failed_segment(
     )
 )
 def test_differently_phrased_query_still_surfaces_failure(
-    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
+    client,
+    route_edp_status_through_app,
+    seeded_day_with_one_failure,
+    test_date,
 ):
     response_text = _ask(
         client,
@@ -239,15 +247,14 @@ def test_differently_phrased_query_still_surfaces_failure(
     print(f"\n--- LIVE RESPONSE (rephrased) ---\n{response_text}\n")
 
     assert FAILING_SEGMENT in response_text
-    assert any(
-        word in response_text.lower() for word in ["fail", "issue", "problem", "error"]
-    )
+    assert any(word in response_text.lower() for word in ["fail", "issue", "problem", "error"])
 
 
 # ---------------------------------------------------------------------------
 # 3. Segment-specific query -> must be specific to that ONE segment, not a
 #    dump of the whole day's summary.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skip(
     reason=(
@@ -259,19 +266,18 @@ def test_differently_phrased_query_still_surfaces_failure(
     )
 )
 def test_segment_specific_query_is_specific_to_that_segment(
-    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
+    client,
+    route_edp_status_through_app,
+    seeded_day_with_one_failure,
+    test_date,
 ):
     other_segment = next(c for c in SEGMENT_ORDER if c != FAILING_SEGMENT)
 
-    response_text = _ask(
-        client, f"What's the status of segment {FAILING_SEGMENT} on {test_date.isoformat()}?"
-    )
+    response_text = _ask(client, f"What's the status of segment {FAILING_SEGMENT} on {test_date.isoformat()}?")
     print(f"\n--- LIVE RESPONSE (segment-specific) ---\n{response_text}\n")
 
     assert FAILING_SEGMENT in response_text
-    assert any(
-        word in response_text.lower() for word in ["fail", "billposting", "error"]
-    )
+    assert any(word in response_text.lower() for word in ["fail", "billposting", "error"])
     # Should not read like a full day dump listing every other segment code.
     assert other_segment not in response_text
 
@@ -279,6 +285,7 @@ def test_segment_specific_query_is_specific_to_that_segment(
 # ---------------------------------------------------------------------------
 # 4. A date with genuinely NO seeded data -> must not hallucinate status.
 # ---------------------------------------------------------------------------
+
 
 @pytest_asyncio.fixture
 async def empty_test_date(session_factory):
@@ -304,7 +311,9 @@ async def empty_test_date(session_factory):
     )
 )
 def test_empty_date_does_not_hallucinate_status(
-    client, route_edp_status_through_app, empty_test_date,
+    client,
+    route_edp_status_through_app,
+    empty_test_date,
 ):
     response_text = _ask(client, f"How is EDP processing going for {empty_test_date.isoformat()}?")
     print(f"\n--- LIVE RESPONSE (empty date) ---\n{response_text}\n")
@@ -314,8 +323,15 @@ def test_empty_date_does_not_hallucinate_status(
     assert any(
         phrase in lowered
         for phrase in [
-            "no workflow", "no data", "not been processed", "hasn't", "has not",
-            "not started", "no record", "no segments", "not yet",
+            "no workflow",
+            "no data",
+            "not been processed",
+            "hasn't",
+            "has not",
+            "not started",
+            "no record",
+            "no segments",
+            "not yet",
         ]
     ), f"Expected an honest 'no data' answer, got: {response_text}"
     # Must NOT fabricate a completed/failed count for a day with zero rows.
@@ -326,6 +342,7 @@ def test_empty_date_does_not_hallucinate_status(
 # 5. A segment code that doesn't exist -> must not invent a fake status.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skip(
     reason=(
         "Same asyncpg/event-loop-boundary limitation as the other scenarios: "
@@ -334,20 +351,29 @@ def test_empty_date_does_not_hallucinate_status(
     )
 )
 def test_nonexistent_segment_code_is_handled_gracefully(
-    client, route_edp_status_through_app, seeded_day_with_one_failure, test_date,
+    client,
+    route_edp_status_through_app,
+    seeded_day_with_one_failure,
+    test_date,
 ):
-    response_text = _ask(
-        client, f"What's the status of segment ZZZZZZ on {test_date.isoformat()}?"
-    )
+    response_text = _ask(client, f"What's the status of segment ZZZZZZ on {test_date.isoformat()}?")
     print(f"\n--- LIVE RESPONSE (nonexistent segment) ---\n{response_text}\n")
 
     lowered = response_text.lower()
     assert any(
         phrase in lowered
         for phrase in [
-            "don't recognize", "do not recognize", "not recognize", "no record",
-            "not a valid", "not found", "unknown segment", "doesn't exist",
-            "does not exist", "couldn't find", "could not find",
+            "don't recognize",
+            "do not recognize",
+            "not recognize",
+            "no record",
+            "not a valid",
+            "not found",
+            "unknown segment",
+            "doesn't exist",
+            "does not exist",
+            "couldn't find",
+            "could not find",
         ]
     ), f"Expected a graceful 'unrecognized segment' answer, got: {response_text}"
     # Must not claim a concrete status for a segment that was never seeded.

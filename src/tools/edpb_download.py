@@ -28,11 +28,11 @@ import asyncio
 import os
 import re
 from datetime import date, datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
-from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
+from langchain_core.tools import tool
 
 from src.config.agent_config import get_secrets, load_agent_config
 
@@ -60,40 +60,67 @@ _DEFAULT_API_BASE_URL = "http://localhost:7000"
 # for slower environments without editing code.
 _DEFAULT_TIMEOUT_SECONDS = 180.0
 
-_cached_edpb_config: Optional[Dict[str, Any]] = None
+_cached_edpb_config: dict[str, Any] | None = None
 
 _DATE_FORMATS = (
-    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
-    "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%B %d, %Y", "%b %d, %Y",
+    "%Y-%m-%d",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+    "%d %B %Y",
+    "%d %b %Y",
+    "%B %d %Y",
+    "%b %d %Y",
+    "%B %d, %Y",
+    "%b %d, %Y",
 )
 _ORDINAL_SUFFIX_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
 
 # Same segment/process code <-> common-name aliases as src/tools/edp_status.py
 # (kept local rather than imported, for the same decoupling reason as the
 # rest of this file — these rarely change).
-_CODE_ALIASES: Dict[str, str] = {
-    "EQ": "EQ", "CASH": "EQ", "EQUITY": "EQ",
-    "DR": "DR", "F&O": "DR", "FO": "DR", "FNO": "DR", "DERIVATIVES": "DR",
-    "CUR": "CUR", "CD": "CUR", "CURRENCY": "CUR",
+_CODE_ALIASES: dict[str, str] = {
+    "EQ": "EQ",
+    "CASH": "EQ",
+    "EQUITY": "EQ",
+    "DR": "DR",
+    "F&O": "DR",
+    "FO": "DR",
+    "FNO": "DR",
+    "DERIVATIVES": "DR",
+    "CUR": "CUR",
+    "CD": "CUR",
+    "CURRENCY": "CUR",
     "SLB": "SLB",
     "NCDEX": "NCDEX",
-    "NCDEXPHY": "NCDEXPHY", "NCDEX PHY": "NCDEXPHY", "NCDEX PHYSICAL": "NCDEXPHY",
+    "NCDEXPHY": "NCDEXPHY",
+    "NCDEX PHY": "NCDEXPHY",
+    "NCDEX PHYSICAL": "NCDEXPHY",
     "MCX": "MCX",
-    "MCXPHY": "MCXPHY", "MCX PHY": "MCXPHY", "MCX PHYSICAL": "MCXPHY",
-    "NSECOM": "NSECOM", "NSE COMMODITY": "NSECOM", "COMMODITY": "NSECOM",
-    "COLVAL": "COLVAL", "COLLATERAL VALUATION": "COLVAL",
-    "COLALLOC": "COLALLOC", "COLLATERAL ALLOCATION": "COLALLOC",
-    "MTFFT": "MTFFT", "MTF FUND TRANSFER": "MTFFT", "MTF": "MTFFT",
-    "DMRPT": "DMRPT", "DAILY MARGIN REPORTING": "DMRPT",
-    "DMSTMT": "DMSTMT", "DAILY MARGIN STATEMENTS": "DMSTMT",
+    "MCXPHY": "MCXPHY",
+    "MCX PHY": "MCXPHY",
+    "MCX PHYSICAL": "MCXPHY",
+    "NSECOM": "NSECOM",
+    "NSE COMMODITY": "NSECOM",
+    "COMMODITY": "NSECOM",
+    "COLVAL": "COLVAL",
+    "COLLATERAL VALUATION": "COLVAL",
+    "COLALLOC": "COLALLOC",
+    "COLLATERAL ALLOCATION": "COLALLOC",
+    "MTFFT": "MTFFT",
+    "MTF FUND TRANSFER": "MTFFT",
+    "MTF": "MTFFT",
+    "DMRPT": "DMRPT",
+    "DAILY MARGIN REPORTING": "DMRPT",
+    "DMSTMT": "DMSTMT",
+    "DAILY MARGIN STATEMENTS": "DMSTMT",
 }
 
 
-def _resolve_code(identifier: str) -> Optional[str]:
+def _resolve_code(identifier: str) -> str | None:
     return _CODE_ALIASES.get(identifier.strip().upper())
 
 
-def _get_edpb_config() -> Dict[str, Any]:
+def _get_edpb_config() -> dict[str, Any]:
     """agent_config.json -> agent_config.secrets.edpb_download, loaded once and cached."""
     global _cached_edpb_config
     if _cached_edpb_config is None:
@@ -131,7 +158,7 @@ def _normalize_date(raw: str) -> str:
 
 
 @tool
-async def download_file(identifier: str, trade_date: Optional[str] = None) -> str:
+async def download_file(identifier: str, trade_date: str | None = None) -> str:
     """
     Download EDPB files for a trade segment or post-trade process on a
     given trade date.
@@ -166,7 +193,7 @@ async def download_file(identifier: str, trade_date: Optional[str] = None) -> st
     logger.info(f"[EDPB_DOWNLOAD] code={code} trade_date={resolved_trade_date} | POST {api_url}")
 
     resp = None
-    last_connect_error: Optional[Exception] = None
+    last_connect_error: Exception | None = None
     for attempt in range(1, _CONNECT_RETRY_ATTEMPTS + 1):
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -207,9 +234,7 @@ async def download_file(identifier: str, trade_date: Optional[str] = None) -> st
         )
 
     if resp.status_code != 200:
-        logger.error(
-            f"[EDPB_DOWNLOAD] code={code} | HTTP {resp.status_code} body={resp.text[:500]}"
-        )
+        logger.error(f"[EDPB_DOWNLOAD] code={code} | HTTP {resp.status_code} body={resp.text[:500]}")
         return (
             f"EDPB download API returned HTTP {resp.status_code} for "
             f"**{code}** (trade_date={resolved_trade_date}): {resp.text[:500]}"
@@ -220,10 +245,7 @@ async def download_file(identifier: str, trade_date: Optional[str] = None) -> st
     try:
         data = resp.json()
     except Exception:
-        return (
-            f"EDPB download API response for **{code}** (trade_date={resolved_trade_date}):\n"
-            f"{resp.text[:2000]}"
-        )
+        return f"EDPB download API response for **{code}** (trade_date={resolved_trade_date}):\n{resp.text[:2000]}"
 
     status = data.get("status", "unknown")
     icon = "✅" if status in ("success", "SUCCESS") else "❌"

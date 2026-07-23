@@ -56,21 +56,17 @@ Config-based MCP tools (this file) are merged with code tools automatically.
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import urlparse
 
 from cams_otel_lib import Logger as logger
 
 
-def load_tool_configs() -> List[Dict[str, Any]]:
+def load_tool_configs() -> list[dict[str, Any]]:
     """Read tools array from agent_config.json (checks agent_config section then tenant default)."""
     try:
         ext = os.getenv("APP_CONFIG_PATH")
-        cfg_path = (
-            Path(ext)
-            if ext
-            else Path(__file__).parent.parent / "config" / "agent_config.json"
-        )
+        cfg_path = Path(ext) if ext else Path(__file__).parent.parent / "config" / "agent_config.json"
         logger.info(f"MCP loader: reading config from {cfg_path} (exists={cfg_path.exists()})")
         if not cfg_path.exists():
             logger.warning(f"MCP loader: config file not found at {cfg_path}")
@@ -93,7 +89,7 @@ def load_tool_configs() -> List[Dict[str, Any]]:
     return []
 
 
-async def load_mcp_tools() -> List[Any]:
+async def load_mcp_tools() -> list[Any]:
     """
     Load MCP tools from agent_config.tools as LangChain-compatible tool objects.
 
@@ -118,8 +114,8 @@ async def load_mcp_tools() -> List[Any]:
     # Group by unique mcp_url — one SSE connection per server, not per tool.
     # Multiple tools can share the same server; connecting twice duplicates all tools.
 
-    seen_urls: Dict[str, str] = {}  # mcp_url → unique server alias
-    alias_counts: Dict[str, int] = {}  # base alias → count (handles same-host different-path)
+    seen_urls: dict[str, str] = {}  # mcp_url → unique server alias
+    alias_counts: dict[str, int] = {}  # base alias → count (handles same-host different-path)
 
     for tool in tool_configs:
         mcp_url = (tool.get("mcp_url") or "").strip()
@@ -136,10 +132,7 @@ async def load_mcp_tools() -> List[Any]:
         alias_counts[base_alias] = count + 1
         seen_urls[mcp_url] = alias
 
-    servers: Dict[str, Any] = {
-        alias: {"url": url, "transport": "sse"}
-        for url, alias in seen_urls.items()
-    }
+    servers: dict[str, Any] = {alias: {"url": url, "transport": "sse"} for url, alias in seen_urls.items()}
 
     if not servers:
         return []
@@ -148,9 +141,7 @@ async def load_mcp_tools() -> List[Any]:
         logger.info(f"MCP loader: connecting to {len(servers)} server(s): {list(servers.keys())}")
         client = MultiServerMCPClient(servers)
         tools = await client.get_tools()
-        logger.info(
-            f"Loaded {len(tools)} MCP tools from config: {[t.name for t in tools]}"
-        )
+        logger.info(f"Loaded {len(tools)} MCP tools from config: {[t.name for t in tools]}")
         return tools
     except Exception as e:
         logger.error(f"Failed to load MCP tools from config: {e}")

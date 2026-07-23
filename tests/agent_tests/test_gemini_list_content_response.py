@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 from src.agent.__main__ import build_app
-from tests.agent_tests.test_tool_routing import ScriptedLLM, GET_LLM_MODEL_PATCH_TARGET
+from tests.agent_tests.test_tool_routing import GET_LLM_MODEL_PATCH_TARGET, ScriptedLLM
 
 
 @pytest.fixture()
@@ -73,7 +73,6 @@ def test_gemini_style_list_content_final_answer_is_flattened_to_a_string(client)
 def test_gemini_style_list_content_after_a_tool_call_is_also_flattened(client):
     """Same shape bug, but on the 2nd (post-tool-call) LLM turn, which is the
     path _run_graph's fallback-extraction branch actually hits in practice."""
-    from unittest.mock import AsyncMock
     import src.tools.edp_status as edp_status_module
 
     async def fake_get(path):
@@ -89,8 +88,7 @@ def test_gemini_style_list_content_after_a_tool_call_is_also_flattened(client):
         ]
     )
 
-    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), \
-         patch.object(edp_status_module, "_get", fake_get):
+    with patch(GET_LLM_MODEL_PATCH_TARGET, return_value=llm), patch.object(edp_status_module, "_get", fake_get):
         resp = client.post("/agent/run", json={"query": "what versions have I saved?"})
 
     assert resp.status_code == 200

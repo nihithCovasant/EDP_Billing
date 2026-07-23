@@ -18,11 +18,11 @@ from edpb_core.dates import folder_date_to_iso, iso_to_folder_date
 from edpb_core.segments import DOWNLOAD_SEGMENTS, POST_TRADE_ORDER, SEGMENT_ORDER, Segment
 
 __all__ = [
-    "BatchStatus",
     "CORRELATION_HEADER",
     "DOWNLOAD_SEGMENTS",
     "POST_TRADE_ORDER",
     "SEGMENT_ORDER",
+    "BatchStatus",
     "Segment",
     "folder_date_to_iso",
     "iso_to_folder_date",

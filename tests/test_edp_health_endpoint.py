@@ -13,8 +13,6 @@ in-memory/mocked components wired up exactly like __main__.py does.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from src.agent.edp.alert_health import get_alert_health, record_alert_attempt
@@ -22,10 +20,10 @@ from src.agent.edp.config import EdpBootstrapConfig
 from src.agent.edp.loop import EdpWakeLoop
 from src.tools.cbos_client import CbosClient
 
-
 # =============================================================================
 # EdpWakeLoop.health_snapshot()
 # =============================================================================
+
 
 class _FakeTask:
     def __init__(self, is_done: bool = False):
@@ -51,6 +49,7 @@ def test_health_snapshot_reports_running_and_cycle_times_after_a_cycle():
     loop._cycle_count = 3
 
     from src.agent.edp.utils.datetime_utils import now_ist
+
     started = now_ist()
     loop._last_cycle_started_at_wall = started
     loop._last_cycle_ended_at_wall = now_ist()
@@ -78,6 +77,7 @@ def test_cbos_property_is_none_before_the_loop_has_started():
 # CbosClient.check_connectivity()
 # =============================================================================
 
+
 async def test_cbos_connectivity_mock_mode_always_reports_mock_and_ok():
     client = CbosClient(status_url="http://fake-status", process_url="http://fake-process", use_mock=True)
     result = await client.check_connectivity()
@@ -90,7 +90,9 @@ async def test_cbos_connectivity_real_mode_reports_error_for_unreachable_urls():
     # Ports deliberately unused/closed -- guaranteed connection failure, no
     # real network dependency for the test.
     client = CbosClient(
-        status_url="http://127.0.0.1:1", process_url="http://127.0.0.1:2", use_mock=False,
+        status_url="http://127.0.0.1:1",
+        process_url="http://127.0.0.1:2",
+        use_mock=False,
     )
     result = await client.check_connectivity()
     assert result["status"] == "error"
@@ -102,6 +104,7 @@ async def test_cbos_connectivity_real_mode_reports_error_for_unreachable_urls():
 # =============================================================================
 # database.check_connectivity()
 # =============================================================================
+
 
 async def test_database_connectivity_reports_error_when_not_initialized(monkeypatch):
     from src.agent.edp import database as db_module
@@ -126,6 +129,7 @@ async def test_database_connectivity_reports_ok_against_the_real_test_db():
 # =============================================================================
 # alert_health.py
 # =============================================================================
+
 
 def test_alert_health_reports_all_none_before_any_alert():
     import src.agent.edp.alert_health as alert_health_module
@@ -174,10 +178,12 @@ def test_alert_health_a_later_success_clears_the_previous_error():
 # CBOS/DB startup needed, mirrors how the other __main__.py tests do it).
 # =============================================================================
 
+
 @pytest.fixture()
 def edp_health_client(monkeypatch):
     monkeypatch.setenv("EDP_LOOP_ENABLED", "false")
     from fastapi.testclient import TestClient
+
     from src.agent.__main__ import build_app
 
     app = build_app()
@@ -207,9 +213,18 @@ def test_edp_health_endpoint_response_shape_has_all_required_sections(edp_health
     body = resp.json()
     assert set(body.keys()) >= {"status", "checked_at", "billing_loop", "database", "cbos", "alerts"}
     assert set(body["billing_loop"].keys()) >= {
-        "running", "cycle_count", "last_cycle_started_at", "last_cycle_ended_at",
-        "wake_interval_seconds", "enabled", "alive", "alive_reason",
+        "running",
+        "cycle_count",
+        "last_cycle_started_at",
+        "last_cycle_ended_at",
+        "wake_interval_seconds",
+        "enabled",
+        "alive",
+        "alive_reason",
     }
     assert set(body["alerts"].keys()) == {
-        "last_attempt_at", "last_success_at", "last_failure_at", "last_error",
+        "last_attempt_at",
+        "last_success_at",
+        "last_failure_at",
+        "last_error",
     }

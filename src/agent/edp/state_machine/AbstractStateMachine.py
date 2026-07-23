@@ -27,9 +27,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Optional
 
+from cams_otel_lib import Logger as logger
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.tools.cbos_client import CbosClient
 
 from .. import repository
 from ..models import SegmentExecution, SegmentState, SegmentStatus
@@ -44,8 +46,6 @@ from .SegmentHandlerResult import (
     SegmentHandlerResult,
 )
 from .SegmentTransitionMap import SegmentTransitionMap
-from src.tools.cbos_client import CbosClient
-from cams_otel_lib import Logger as logger
 
 HandlerFn = Callable[
     [CbosClient, SegmentExecution, AsyncSession, str, datetime],
@@ -63,7 +63,7 @@ class AbstractSegmentStateMachine(ABC):
         self.transition_map = transition_map
 
     @abstractmethod
-    def get_state_handler(self, state: SegmentState | None) -> Optional[HandlerFn]:
+    def get_state_handler(self, state: SegmentState | None) -> HandlerFn | None:
         """Resolve the handler bound to the current state. Returns None for
         an already-terminal or an unmapped/corrupt state — never raises."""
         raise NotImplementedError
@@ -86,8 +86,12 @@ class AbstractSegmentStateMachine(ABC):
         """
         if result.next_status is not None:
             await repository.move_to_state(
-                session, row, result.next_status,
-                category=result.category, reason=result.reason, now=now,
+                session,
+                row,
+                result.next_status,
+                category=result.category,
+                reason=result.reason,
+                now=now,
             )
             return
         if result.next_state is not None:
@@ -128,40 +132,62 @@ class AbstractSegmentStateMachine(ABC):
     # -------------------------------------------------------------------
 
     def _fail_result(
-        self, row: SegmentExecution, category: str, reason: str, now: datetime,
+        self,
+        row: SegmentExecution,
+        category: str,
+        reason: str,
+        now: datetime,
     ) -> SegmentHandlerResult:
-        logger.error(stage_log(
-            row.segment_code,
-            row.current_state.value if row.current_state else "UNKNOWN",
-            "State FAILED — marking segment FAILED",
+        logger.error(
+            stage_log(
+                row.segment_code,
+                row.current_state.value if row.current_state else "UNKNOWN",
+                "State FAILED — marking segment FAILED",
+                category=category,
+                reason=reason,
+                failed_at=now.strftime("%H:%M:%S %Z"),
+            )
+        )
+        return SegmentHandlerResult(
+            outcome=FAILED,
+            next_status=SegmentStatus.FAILED,
             category=category,
             reason=reason,
-            failed_at=now.strftime("%H:%M:%S %Z"),
-        ))
-        return SegmentHandlerResult(
-            outcome=FAILED, next_status=SegmentStatus.FAILED, category=category, reason=reason,
         )
 
     def _skip_result(
-        self, row: SegmentExecution, category: str, reason: str, now: datetime,
+        self,
+        row: SegmentExecution,
+        category: str,
+        reason: str,
+        now: datetime,
     ) -> SegmentHandlerResult:
-        logger.info(stage_log(
-            row.segment_code,
-            row.current_state.value if row.current_state else "UNKNOWN",
-            "Segment SKIPPED",
+        logger.info(
+            stage_log(
+                row.segment_code,
+                row.current_state.value if row.current_state else "UNKNOWN",
+                "Segment SKIPPED",
+                category=category,
+                reason=reason,
+                skipped_at=now.strftime("%H:%M:%S %Z"),
+            )
+        )
+        return SegmentHandlerResult(
+            outcome=SKIPPED,
+            next_status=SegmentStatus.SKIPPED,
             category=category,
             reason=reason,
-            skipped_at=now.strftime("%H:%M:%S %Z"),
-        ))
-        return SegmentHandlerResult(
-            outcome=SKIPPED, next_status=SegmentStatus.SKIPPED, category=category, reason=reason,
         )
 
     def _complete_result(self, row: SegmentExecution, now: datetime) -> SegmentHandlerResult:
-        logger.info(stage_log(
-            row.segment_code, "SUCCEEDED", "Segment fully COMPLETED",
-            completed_at=now.strftime("%H:%M:%S %Z"),
-        ))
+        logger.info(
+            stage_log(
+                row.segment_code,
+                "SUCCEEDED",
+                "Segment fully COMPLETED",
+                completed_at=now.strftime("%H:%M:%S %Z"),
+            )
+        )
         return SegmentHandlerResult(outcome=COMPLETED, next_status=SegmentStatus.COMPLETED)
 
     # -------------------------------------------------------------------
@@ -195,53 +221,76 @@ class AbstractSegmentStateMachine(ABC):
 
         if self.is_my_window_over(now, window_end) and state is not None:
             timed_out_state = state.value
-            logger.warning(stage_log(
-                row.segment_code,
-                timed_out_state,
-                "Window deadline exceeded while IN_PROGRESS — marking FAILED",
-                deadline=window_end.strftime("%H:%M:%S %Z"),
-                now=now.strftime("%H:%M:%S %Z"),
-                state=timed_out_state,
-            ))
-            await self.update_state(session, row, SegmentHandlerResult(
-                outcome=FAILED,
-                next_status=SegmentStatus.FAILED,
-                category="TIMEOUT",
-                reason=f"Exceeded window deadline {window_end.isoformat()} at state {timed_out_state}",
-            ), now)
+            logger.warning(
+                stage_log(
+                    row.segment_code,
+                    timed_out_state,
+                    "Window deadline exceeded while IN_PROGRESS — marking FAILED",
+                    deadline=window_end.strftime("%H:%M:%S %Z"),
+                    now=now.strftime("%H:%M:%S %Z"),
+                    state=timed_out_state,
+                )
+            )
+            await self.update_state(
+                session,
+                row,
+                SegmentHandlerResult(
+                    outcome=FAILED,
+                    next_status=SegmentStatus.FAILED,
+                    category="TIMEOUT",
+                    reason=f"Exceeded window deadline {window_end.isoformat()} at state {timed_out_state}",
+                ),
+                now,
+            )
             return FAILED
 
         handler = self.get_state_handler(state)
 
         if handler is None:
-            logger.error(stage_log(
-                row.segment_code, str(state),
-                "No handler registered for this state — marking FAILED",
-            ))
-            await self.update_state(session, row, SegmentHandlerResult(
-                outcome=FAILED,
-                next_status=SegmentStatus.FAILED,
-                category="SYSTEM_ERROR",
-                reason=f"No handler registered for state={state}",
-            ), now)
+            logger.error(
+                stage_log(
+                    row.segment_code,
+                    str(state),
+                    "No handler registered for this state — marking FAILED",
+                )
+            )
+            await self.update_state(
+                session,
+                row,
+                SegmentHandlerResult(
+                    outcome=FAILED,
+                    next_status=SegmentStatus.FAILED,
+                    category="SYSTEM_ERROR",
+                    reason=f"No handler registered for state={state}",
+                ),
+                now,
+            )
             return FAILED
 
         result: SegmentHandlerResult = await handler(cbos, row, session, login_id, now)
 
         if not self._validate_transition(state, result):
             target = self._resolve_target_state(state, result)
-            logger.error(stage_log(
-                row.segment_code, state.value if state else str(state),
-                "Invalid state transition attempted — marking FAILED",
-                attempted_target=str(target),
-                allowed=str(self.transition_map.get_segment_transitions(self.SEGMENT_CODE).get(state)),
-            ))
-            await self.update_state(session, row, SegmentHandlerResult(
-                outcome=FAILED,
-                next_status=SegmentStatus.FAILED,
-                category="SYSTEM_ERROR",
-                reason=f"Invalid transition {state} -> {target}",
-            ), now)
+            logger.error(
+                stage_log(
+                    row.segment_code,
+                    state.value if state else str(state),
+                    "Invalid state transition attempted — marking FAILED",
+                    attempted_target=str(target),
+                    allowed=str(self.transition_map.get_segment_transitions(self.SEGMENT_CODE).get(state)),
+                )
+            )
+            await self.update_state(
+                session,
+                row,
+                SegmentHandlerResult(
+                    outcome=FAILED,
+                    next_status=SegmentStatus.FAILED,
+                    category="SYSTEM_ERROR",
+                    reason=f"Invalid transition {state} -> {target}",
+                ),
+                now,
+            )
             return FAILED
 
         await self.update_state(session, row, result, now)
@@ -251,11 +300,13 @@ class AbstractSegmentStateMachine(ABC):
 
         if result.outcome == ADVANCE:
             next_state = row.current_state
-            logger.info(stage_log(
-                row.segment_code,
-                state.value if state else str(state),
-                f"State complete — advancing to {next_state.value if next_state else next_state}",
-            ))
+            logger.info(
+                stage_log(
+                    row.segment_code,
+                    state.value if state else str(state),
+                    f"State complete — advancing to {next_state.value if next_state else next_state}",
+                )
+            )
             return ADVANCE
 
         # BLOCKED — no state change; will re-check the same state next cycle.

@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 load_dotenv(ROOT / ".env")
 
 from src.agent.edp.config import load_edp_config, to_alembic_url  # noqa: E402
-from src.agent.edp.models import Base  # noqa: E402, F401 — registers all models
+from src.agent.edp.models import Base  # noqa: E402 — registers all models
 
 config = context.config
 

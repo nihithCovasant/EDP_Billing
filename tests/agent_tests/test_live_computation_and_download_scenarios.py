@@ -30,6 +30,7 @@ Key facts (see test_tool_routing.py docstring for full detail):
 """
 
 import os
+
 import pytest
 
 pytestmark = pytest.mark.skipif(
@@ -70,6 +71,7 @@ def client(app):
 # 1. Arithmetic correctness
 # ---------------------------------------------------------------------------
 
+
 def test_live_percentage_calculation_is_correct(client):
     resp = client.post("/agent/run", json={"query": "what's 15% of 2400?"})
     assert resp.status_code == 200
@@ -107,6 +109,7 @@ def test_live_split_calculation_is_correct(client):
 #    Python len()/split() on the exact same string sent to the agent).
 # ---------------------------------------------------------------------------
 
+
 def test_live_text_counter_is_correct(client):
     phrase = "the quick brown fox jumps over the lazy dog"
     expected_chars = len(phrase)
@@ -114,12 +117,7 @@ def test_live_text_counter_is_correct(client):
 
     resp = client.post(
         "/agent/run",
-        json={
-            "query": (
-                f"how many characters and words are in the phrase "
-                f"'{phrase}'?"
-            )
-        },
+        json={"query": (f"how many characters and words are in the phrase '{phrase}'?")},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -137,10 +135,9 @@ def test_live_text_counter_is_correct(client):
 #    fabricate success
 # ---------------------------------------------------------------------------
 
+
 def test_live_download_with_no_server_reports_failure(client):
-    resp = client.post(
-        "/agent/run", json={"query": "download the files for MCX for today"}
-    )
+    resp = client.post("/agent/run", json={"query": "download the files for MCX for today"})
     assert resp.status_code == 200
     body = resp.json()
     assert "error" not in body
@@ -178,10 +175,9 @@ def test_live_download_with_no_server_reports_failure(client):
 #    no fabricated numeric answer.
 # ---------------------------------------------------------------------------
 
+
 def test_live_malformed_calculation_handled_gracefully(client):
-    resp = client.post(
-        "/agent/run", json={"query": "what's the square root of banana?"}
-    )
+    resp = client.post("/agent/run", json={"query": "what's the square root of banana?"})
     assert resp.status_code == 200
     body = resp.json()
     assert "error" not in body
@@ -199,9 +195,8 @@ def test_live_malformed_calculation_handled_gracefully(client):
     # or "is <number>" pattern is used to state a fabricated result immediately
     # following the word "banana"/"square root".
     import re
-    fabricated_answer_pattern = re.compile(
-        r"square root of banana (is|=|equals)\s*\d", re.IGNORECASE
-    )
+
+    fabricated_answer_pattern = re.compile(r"square root of banana (is|=|equals)\s*\d", re.IGNORECASE)
     assert not fabricated_answer_pattern.search(response_text), (
         f"Agent appears to have fabricated a numeric answer: {response_text}"
     )
@@ -211,6 +206,7 @@ def test_live_malformed_calculation_handled_gracefully(client):
 # 5. Compound request needing two tools in a single message
 # ---------------------------------------------------------------------------
 
+
 def test_live_compound_request_uses_both_tools_correctly(client):
     phrase = "hello world"
     expected_words = len(phrase.split())
@@ -218,12 +214,7 @@ def test_live_compound_request_uses_both_tools_correctly(client):
 
     resp = client.post(
         "/agent/run",
-        json={
-            "query": (
-                f"count the words in '{phrase}' and also tell me what 12 "
-                f"times 12 is"
-            )
-        },
+        json={"query": (f"count the words in '{phrase}' and also tell me what 12 times 12 is")},
     )
     assert resp.status_code == 200
     body = resp.json()

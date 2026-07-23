@@ -59,9 +59,11 @@ def test_end_equal_to_start_rolls_to_next_day_rather_than_a_zero_width_window():
 # window-deadline check, shared with real segments).
 # ---------------------------------------------------------------------------
 
+
 def test_post_trade_window_end_defaults_to_06_00_on_trade_date_plus_1():
     workflow_json = build_default_workflow_json(
-        [], post_trade_processes=[{"process_code": "COLVAL", "login_id": "G_LID"}],
+        [],
+        post_trade_processes=[{"process_code": "COLVAL", "login_id": "G_LID"}],
     )
     window_end = _resolve_post_trade_window_end("COLVAL", workflow_json, TRADE_DATE, IST)
 

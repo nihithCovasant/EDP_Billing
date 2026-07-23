@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -25,7 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _split_addresses(raw: str) -> List[str]:
+def _split_addresses(raw: str) -> list[str]:
     return [addr.strip() for addr in raw.split(",") if addr.strip()]
 
 
@@ -45,7 +44,7 @@ def _env_first(*names: str, default: str = "") -> str:
     return default
 
 
-def _env_or_file(name: str) -> Optional[str]:
+def _env_or_file(name: str) -> str | None:
     """`NAME` env var, or the contents of the file at `NAME_FILE` (stripped).
 
     Supports the common Kubernetes/Docker-secrets pattern of mounting a
@@ -65,16 +64,16 @@ def _env_or_file(name: str) -> Optional[str]:
 @dataclass
 class EmailServiceConfig:
     # Microsoft Graph — OAuth2 client-credentials + sendMail as the sender mailbox.
-    graph_tenant_id: Optional[str] = None
-    graph_client_id: Optional[str] = None
-    graph_client_secret: Optional[str] = None
+    graph_tenant_id: str | None = None
+    graph_client_id: str | None = None
+    graph_client_secret: str | None = None
     graph_sender: str = "rms@covasant.com"
     timeout_seconds: float = 15.0
 
     from_name: str = "EDP Billing Alerts"
 
-    default_to: List[str] = field(default_factory=list)
-    default_cc: List[str] = field(default_factory=list)
+    default_to: list[str] = field(default_factory=list)
+    default_cc: list[str] = field(default_factory=list)
 
     max_retries: int = 2
     retry_backoff_seconds: float = 2.0

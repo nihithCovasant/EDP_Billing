@@ -25,7 +25,7 @@ Two targets:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -53,7 +53,7 @@ def sm() -> AbstractSegmentStateMachine:
     return _MinimalStateMachine(transition_map=None)
 
 
-_ANCHOR = datetime(2026, 7, 11, 9, 0, 0, 0, tzinfo=timezone.utc)
+_ANCHOR = datetime(2026, 7, 11, 9, 0, 0, 0, tzinfo=UTC)
 _ONE_US = timedelta(microseconds=1)
 
 
@@ -64,7 +64,7 @@ def test_now_equal_to_window_start_is_inside_the_window(sm):
     itself must already count as inside the window.
     """
     window_start = _ANCHOR
-    now = datetime(2026, 7, 11, 9, 0, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 11, 9, 0, 0, 0, tzinfo=UTC)
     assert now == window_start  # sanity: genuinely identical instants
     assert sm.is_my_time_window(now, window_start) is True
 
@@ -94,7 +94,7 @@ def test_now_equal_to_window_end_is_not_yet_over(sm):
     interval) rather than an accidental off-by-one.
     """
     window_end = _ANCHOR
-    now = datetime(2026, 7, 11, 9, 0, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 11, 9, 0, 0, 0, tzinfo=UTC)
     assert now == window_end  # sanity: genuinely identical instants
     assert sm.is_my_window_over(now, window_end) is False
 

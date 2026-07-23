@@ -10,19 +10,20 @@ Revises: j0k1l2m3n4o5
 Create Date: 2026-07-18 00:00:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "k1l2m3n4o5p6"
-down_revision: Union[str, Sequence[str], None] = "j0k1l2m3n4o5"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "j0k1l2m3n4o5"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _AUDIT_ACTION_ENUM = sa.Enum(
-    "WORKFLOW_UPLOAD", "WORKFLOW_VERSION_DELETE",
+    "WORKFLOW_UPLOAD",
+    "WORKFLOW_VERSION_DELETE",
     name="auditaction",
 )
 

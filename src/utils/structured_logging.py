@@ -3,23 +3,23 @@ Structured logging utility with OpenTelemetry support.
 Provides JSON-formatted logs with context propagation and request tracking.
 """
 
-import logging
 import json
+import logging
 import sys
-from typing import Any, Dict, Optional
-from datetime import datetime
 from contextvars import ContextVar
-from enum import Enum
+from datetime import datetime
+from enum import StrEnum
+from typing import Any
 
 # Context variables for request tracking
-request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
-tenant_id_var: ContextVar[Optional[str]] = ContextVar("tenant_id", default=None)
-thread_id_var: ContextVar[Optional[str]] = ContextVar("thread_id", default=None)
-trace_id_var: ContextVar[Optional[str]] = ContextVar("trace_id", default=None)
-span_id_var: ContextVar[Optional[str]] = ContextVar("span_id", default=None)
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+tenant_id_var: ContextVar[str | None] = ContextVar("tenant_id", default=None)
+thread_id_var: ContextVar[str | None] = ContextVar("thread_id", default=None)
+trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
+span_id_var: ContextVar[str | None] = ContextVar("span_id", default=None)
 
 
-class LogLevel(str, Enum):
+class LogLevel(StrEnum):
     """Log levels."""
 
     DEBUG = "DEBUG"
@@ -75,9 +75,7 @@ class StructuredLogger:
             handler.setFormatter(logging.Formatter("%(message)s"))
             self._logger.addHandler(handler)
 
-    def _build_log_entry(
-        self, severity: str, message: str, **kwargs: Any
-    ) -> Dict[str, Any]:
+    def _build_log_entry(self, severity: str, message: str, **kwargs: Any) -> dict[str, Any]:
         """
         Build structured log entry.
 
@@ -163,7 +161,7 @@ class StructuredLogger:
 
         # Add exception details
         if exc_info and sys.exc_info()[0] is not None:
-            exc_type, exc_value, exc_tb = sys.exc_info()
+            exc_type, exc_value, _exc_tb = sys.exc_info()
             entry["exception"] = {
                 "type": exc_type.__name__ if exc_type else None,
                 "message": str(exc_value),
@@ -186,11 +184,11 @@ class LogContext:
 
     def __init__(
         self,
-        request_id: Optional[str] = None,
-        tenant_id: Optional[str] = None,
-        thread_id: Optional[str] = None,
-        trace_id: Optional[str] = None,
-        span_id: Optional[str] = None,
+        request_id: str | None = None,
+        tenant_id: str | None = None,
+        thread_id: str | None = None,
+        trace_id: str | None = None,
+        span_id: str | None = None,
     ):
         """
         Initialize log context.
@@ -232,10 +230,10 @@ class LogContext:
 
 
 # Global logger registry
-_loggers: Dict[str, StructuredLogger] = {}
+_loggers: dict[str, StructuredLogger] = {}
 
 
-def get_logger(name: str, level: Optional[str] = None) -> StructuredLogger:
+def get_logger(name: str, level: str | None = None) -> StructuredLogger:
     """
     Get or create a structured logger.
 

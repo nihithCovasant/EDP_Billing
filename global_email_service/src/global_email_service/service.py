@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .colors import resolve_row_style
 from .config import EmailServiceConfig, load_email_config
@@ -15,22 +15,31 @@ from .table_renderer import render_email_body
 logger = logging.getLogger("global_email_service")
 
 _META_KEYS = {
-    "rows", "row", "to", "cc", "bcc", "subject", "title", "summary",
-    "severity_field", "columns", "color_overrides",
+    "rows",
+    "row",
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "title",
+    "summary",
+    "severity_field",
+    "columns",
+    "color_overrides",
 }
 
 
 @dataclass
 class AlertEmailRequest:
-    rows: List[dict]
-    to: List[str] = field(default_factory=list)
-    cc: List[str] = field(default_factory=list)
-    bcc: List[str] = field(default_factory=list)
-    subject: Optional[str] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    columns: Optional[List[str]] = None
-    color_overrides: Optional[Dict[str, tuple]] = None
+    rows: list[dict]
+    to: list[str] = field(default_factory=list)
+    cc: list[str] = field(default_factory=list)
+    bcc: list[str] = field(default_factory=list)
+    subject: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    columns: list[str] | None = None
+    color_overrides: dict[str, tuple] | None = None
 
 
 @dataclass
@@ -38,12 +47,12 @@ class EmailSendResult:
     success: bool
     message: str
     subject: str
-    to: List[str]
-    cc: List[str] = field(default_factory=list)
+    to: list[str]
+    cc: list[str] = field(default_factory=list)
     dry_run: bool = False
 
 
-def _as_list(value: Any) -> List[str]:
+def _as_list(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -70,8 +79,7 @@ def parse_payload(payload: dict) -> AlertEmailRequest:
 
     if not rows:
         raise InvalidPayloadError(
-            "No row data found — provide 'rows' (list), 'row' (object), "
-            "or top-level fields describing a single record."
+            "No row data found — provide 'rows' (list), 'row' (object), or top-level fields describing a single record."
         )
 
     return AlertEmailRequest(
@@ -87,14 +95,14 @@ def parse_payload(payload: dict) -> AlertEmailRequest:
     )
 
 
-def _default_subject(rows: List[dict]) -> str:
+def _default_subject(rows: list[dict]) -> str:
     if len(rows) == 1:
         row = rows[0]
         style = resolve_row_style(row)
         identifier = row.get("segment_code") or row.get("name") or row.get("id") or "Record"
         return f"EDP Alert: {identifier} - {style.label}"
 
-    counts: Dict[str, int] = {}
+    counts: dict[str, int] = {}
     for row in rows:
         label = resolve_row_style(row).label
         counts[label] = counts.get(label, 0) + 1
@@ -104,20 +112,18 @@ def _default_subject(rows: List[dict]) -> str:
 
 def send_alert_email(
     payload: dict,
-    config: Optional[EmailServiceConfig] = None,
+    config: EmailServiceConfig | None = None,
 ) -> EmailSendResult:
     config = config or load_email_config()
     request = parse_payload(payload)
 
     to = request.to or list(config.default_to)
     if not to:
-        raise InvalidPayloadError(
-            "No recipients resolved — pass 'to' in the payload or set EMAIL_DEFAULT_TO."
-        )
+        raise InvalidPayloadError("No recipients resolved — pass 'to' in the payload or set EMAIL_DEFAULT_TO.")
     cc = request.cc or list(config.default_cc)
 
     subject = request.subject or _default_subject(request.rows)
-    html_body, text_body = render_email_body(
+    html_body, _text_body = render_email_body(
         request.rows,
         title=request.title,
         summary=request.summary,
@@ -128,12 +134,19 @@ def send_alert_email(
     if config.dry_run:
         logger.info(
             "[global_email_service][DRY_RUN] subject=%r to=%s cc=%s rows=%d",
-            subject, to, cc, len(request.rows),
+            subject,
+            to,
+            cc,
+            len(request.rows),
         )
         logger.debug("[global_email_service][DRY_RUN] HTML body:\n%s", html_body)
         return EmailSendResult(
-            success=True, message="dry_run — not actually sent",
-            subject=subject, to=to, cc=cc, dry_run=True,
+            success=True,
+            message="dry_run — not actually sent",
+            subject=subject,
+            to=to,
+            cc=cc,
+            dry_run=True,
         )
 
     try:
@@ -146,7 +159,10 @@ def send_alert_email(
 
     logger.info(
         "[global_email_service] Alert email sent — subject=%r to=%s cc=%s rows=%d",
-        subject, to, cc, len(request.rows),
+        subject,
+        to,
+        cc,
+        len(request.rows),
     )
     return EmailSendResult(success=True, message="sent", subject=subject, to=to, cc=cc)
 
@@ -154,13 +170,13 @@ def send_alert_email(
 def send_segment_alert(
     row: dict,
     *,
-    to: Optional[List[str]] = None,
-    subject: Optional[str] = None,
-    title: Optional[str] = None,
-    summary: Optional[str] = None,
-    config: Optional[EmailServiceConfig] = None,
+    to: list[str] | None = None,
+    subject: str | None = None,
+    title: str | None = None,
+    summary: str | None = None,
+    config: EmailServiceConfig | None = None,
 ) -> EmailSendResult:
-    payload: Dict[str, Any] = {"row": row}
+    payload: dict[str, Any] = {"row": row}
     if to:
         payload["to"] = to
     if subject:

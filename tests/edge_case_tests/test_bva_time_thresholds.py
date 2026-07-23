@@ -25,10 +25,10 @@ from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from src.agent.edp.models import SegmentStatus
 from src.agent.edp.utils.constants import STALE_HEARTBEAT_THRESHOLD
 from src.agent.edp.utils.datetime_utils import resolve_active_date
 from src.agent.edp.utils.serializers import _runtime_health
-from src.agent.edp.models import SegmentStatus
 
 IST = ZoneInfo("Asia/Kolkata")
 

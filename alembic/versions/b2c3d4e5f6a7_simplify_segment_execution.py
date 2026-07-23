@@ -5,24 +5,22 @@ Revises: a1b2c3d4e5f6
 Create Date: 2026-07-02 16:30:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = "b2c3d4e5f6a7"
-down_revision: Union[str, Sequence[str], None] = "a1b2c3d4e5f6"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "a1b2c3d4e5f6"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
     # 1. domain — this system is EDP-only (SETTLEMENT never shipped); drop
     #    from both tables and fold it out of the unique constraint.
-    op.drop_constraint(
-        "uq_segment_execution_per_day", "segment_execution", type_="unique"
-    )
+    op.drop_constraint("uq_segment_execution_per_day", "segment_execution", type_="unique")
 
     # 2. lock_json — consolidate lock_state/lock_owner/lock_acquired_at/
     #    lock_expires_at into one JSON column. Backfill from the existing
@@ -43,8 +41,8 @@ def upgrade() -> None:
         """
     )
     op.execute(
-        "UPDATE segment_execution SET lock_json = '{\"state\": \"UNLOCKED\", "
-        "\"owner\": null, \"acquired_at\": null, \"expires_at\": null}'::json "
+        'UPDATE segment_execution SET lock_json = \'{"state": "UNLOCKED", '
+        '"owner": null, "acquired_at": null, "expires_at": null}\'::json '
         "WHERE lock_json IS NULL"
     )
     op.alter_column("segment_execution", "lock_json", nullable=False)
@@ -78,9 +76,7 @@ def downgrade() -> None:
     op.execute("CREATE TYPE lockstate AS ENUM ('UNLOCKED', 'LOCKED')")
     op.execute("CREATE TYPE runtimehealth AS ENUM ('ACTIVE', 'STALE', 'RECOVERED')")
 
-    op.drop_constraint(
-        "uq_segment_execution_per_day", "segment_execution", type_="unique"
-    )
+    op.drop_constraint("uq_segment_execution_per_day", "segment_execution", type_="unique")
 
     op.add_column(
         "edp_properties",
@@ -103,9 +99,7 @@ def downgrade() -> None:
             server_default="UNLOCKED",
         ),
     )
-    op.add_column(
-        "segment_execution", sa.Column("lock_owner", sa.String(length=256), nullable=True)
-    )
+    op.add_column("segment_execution", sa.Column("lock_owner", sa.String(length=256), nullable=True))
     op.add_column(
         "segment_execution",
         sa.Column("lock_acquired_at", sa.DateTime(timezone=True), nullable=True),

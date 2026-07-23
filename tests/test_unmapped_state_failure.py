@@ -55,5 +55,5 @@ async def test_unmapped_state_marks_segment_failed(cfg, session_factory, test_da
     # untouched and still PENDING.
     rows = await helpers.get_rows(session_factory, test_date)
     idx = [r.segment_code for r in rows].index(SEGMENT)
-    for row in rows[idx + 1:]:
+    for row in rows[idx + 1 :]:
         assert row.segment_status == SegmentStatus.PENDING

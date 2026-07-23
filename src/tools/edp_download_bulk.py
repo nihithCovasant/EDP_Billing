@@ -22,11 +22,11 @@ import asyncio
 import os
 import re
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
-from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
+from langchain_core.tools import tool
 
 from src.config.agent_config import get_secrets, load_agent_config
 
@@ -36,39 +36,66 @@ _CONNECT_RETRY_ATTEMPTS = 3
 _CONNECT_RETRY_BACKOFF_SECONDS = 2.0
 _MAX_DATE_RANGE_DAYS = 31  # sanity cap -- avoid an accidental thousand-call request
 
-_cached_edpb_config: Optional[Dict[str, Any]] = None
+_cached_edpb_config: dict[str, Any] | None = None
 
 _DATE_FORMATS = (
-    "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
-    "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y", "%B %d, %Y", "%b %d, %Y",
+    "%Y-%m-%d",
+    "%d-%m-%Y",
+    "%d/%m/%Y",
+    "%d %B %Y",
+    "%d %b %Y",
+    "%B %d %Y",
+    "%b %d %Y",
+    "%B %d, %Y",
+    "%b %d, %Y",
 )
 _ORDINAL_SUFFIX_RE = re.compile(r"(?<=\d)(st|nd|rd|th)\b", re.IGNORECASE)
 
-_CODE_ALIASES: Dict[str, str] = {
-    "EQ": "EQ", "CASH": "EQ", "EQUITY": "EQ",
-    "DR": "DR", "F&O": "DR", "FO": "DR", "FNO": "DR", "DERIVATIVES": "DR",
-    "CUR": "CUR", "CD": "CUR", "CURRENCY": "CUR",
+_CODE_ALIASES: dict[str, str] = {
+    "EQ": "EQ",
+    "CASH": "EQ",
+    "EQUITY": "EQ",
+    "DR": "DR",
+    "F&O": "DR",
+    "FO": "DR",
+    "FNO": "DR",
+    "DERIVATIVES": "DR",
+    "CUR": "CUR",
+    "CD": "CUR",
+    "CURRENCY": "CUR",
     "SLB": "SLB",
     "NCDEX": "NCDEX",
-    "NCDEXPHY": "NCDEXPHY", "NCDEX PHY": "NCDEXPHY", "NCDEX PHYSICAL": "NCDEXPHY",
+    "NCDEXPHY": "NCDEXPHY",
+    "NCDEX PHY": "NCDEXPHY",
+    "NCDEX PHYSICAL": "NCDEXPHY",
     "MCX": "MCX",
-    "MCXPHY": "MCXPHY", "MCX PHY": "MCXPHY", "MCX PHYSICAL": "MCXPHY",
-    "NSECOM": "NSECOM", "NSE COMMODITY": "NSECOM", "COMMODITY": "NSECOM",
-    "COLVAL": "COLVAL", "COLLATERAL VALUATION": "COLVAL",
-    "COLALLOC": "COLALLOC", "COLLATERAL ALLOCATION": "COLALLOC",
-    "MTFFT": "MTFFT", "MTF FUND TRANSFER": "MTFFT", "MTF": "MTFFT",
-    "DMRPT": "DMRPT", "DAILY MARGIN REPORTING": "DMRPT",
-    "DMSTMT": "DMSTMT", "DAILY MARGIN STATEMENTS": "DMSTMT",
+    "MCXPHY": "MCXPHY",
+    "MCX PHY": "MCXPHY",
+    "MCX PHYSICAL": "MCXPHY",
+    "NSECOM": "NSECOM",
+    "NSE COMMODITY": "NSECOM",
+    "COMMODITY": "NSECOM",
+    "COLVAL": "COLVAL",
+    "COLLATERAL VALUATION": "COLVAL",
+    "COLALLOC": "COLALLOC",
+    "COLLATERAL ALLOCATION": "COLALLOC",
+    "MTFFT": "MTFFT",
+    "MTF FUND TRANSFER": "MTFFT",
+    "MTF": "MTFFT",
+    "DMRPT": "DMRPT",
+    "DAILY MARGIN REPORTING": "DMRPT",
+    "DMSTMT": "DMSTMT",
+    "DAILY MARGIN STATEMENTS": "DMSTMT",
 }
 
 ALL_SEGMENT_CODES = ("EQ", "DR", "CUR", "SLB", "NCDEX", "NCDEXPHY", "MCX", "MCXPHY", "NSECOM")
 
 
-def _resolve_code(identifier: str) -> Optional[str]:
+def _resolve_code(identifier: str) -> str | None:
     return _CODE_ALIASES.get(identifier.strip().upper())
 
 
-def _get_edpb_config() -> Dict[str, Any]:
+def _get_edpb_config() -> dict[str, Any]:
     global _cached_edpb_config
     if _cached_edpb_config is None:
         secrets = get_secrets("default", load_agent_config())
@@ -107,7 +134,7 @@ async def _download_one(code: str, trade_date: str) -> tuple[bool, str]:
     timeout_seconds = float(os.getenv("EDPB_DOWNLOAD_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)))
 
     resp = None
-    last_connect_error: Optional[Exception] = None
+    last_connect_error: Exception | None = None
     for attempt in range(1, _CONNECT_RETRY_ATTEMPTS + 1):
         try:
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -125,7 +152,11 @@ async def _download_one(code: str, trade_date: str) -> tuple[bool, str]:
             return False, f"❌ **{code}** ({trade_date}) — {exc}"
 
     if resp is None:
-        return False, f"❌ **{code}** ({trade_date}) — connection failed after {_CONNECT_RETRY_ATTEMPTS} attempts: {last_connect_error}"
+        return (
+            False,
+            f"❌ **{code}** ({trade_date}) — connection failed after "
+            f"{_CONNECT_RETRY_ATTEMPTS} attempts: {last_connect_error}",
+        )
 
     if resp.status_code != 200:
         return False, f"❌ **{code}** ({trade_date}) — HTTP {resp.status_code}: {resp.text[:200]}"
@@ -143,7 +174,7 @@ async def _download_one(code: str, trade_date: str) -> tuple[bool, str]:
 
 
 @tool
-async def download_edp_files_bulk(identifiers: List[str], trade_date: Optional[str] = None) -> str:
+async def download_edp_files_bulk(identifiers: list[str], trade_date: str | None = None) -> str:
     """
     Download EDPB files for SEVERAL segments/processes on the SAME trade
     date, in one request. Use this when the user asks to download files for

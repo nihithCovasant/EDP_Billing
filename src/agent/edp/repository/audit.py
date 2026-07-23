@@ -6,13 +6,13 @@ models.py::AuditLog for the exact scope/rationale).
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import AuditAction, AuditLog
-from cams_otel_lib import Logger as logger, otel_trace
 
 
 @otel_trace
@@ -21,10 +21,10 @@ async def record_event(
     actor: str,
     action: AuditAction,
     summary: str,
-    trade_date: Optional[date] = None,
-    version_name: Optional[str] = None,
-    config_id: Optional[str] = None,
-    changes: Optional[dict] = None,
+    trade_date: date | None = None,
+    version_name: str | None = None,
+    config_id: str | None = None,
+    changes: dict | None = None,
 ) -> AuditLog:
     """Append one audit entry. Caller commits/flushes the outer session."""
     row = AuditLog(
@@ -48,8 +48,8 @@ async def record_event(
 @otel_trace
 async def get_history(
     session: AsyncSession,
-    trade_date: Optional[date] = None,
-    action: Optional[str] = None,
+    trade_date: date | None = None,
+    action: str | None = None,
     limit: int = 50,
 ) -> list[AuditLog]:
     """Recent audit entries, most recent first, optionally filtered."""

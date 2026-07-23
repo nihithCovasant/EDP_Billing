@@ -35,8 +35,5 @@ def require_admin_role(request: Request) -> None:
     if role != ADMIN_ROLE:
         raise HTTPException(
             status_code=403,
-            detail=(
-                f"This action requires the '{ADMIN_ROLE}' role "
-                f"(caller role: {role or 'unknown'})."
-            ),
+            detail=(f"This action requires the '{ADMIN_ROLE}' role (caller role: {role or 'unknown'})."),
         )

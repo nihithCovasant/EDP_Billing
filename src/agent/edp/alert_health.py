@@ -13,17 +13,17 @@ check.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .utils.datetime_utils import now_ist
 
-_last_attempt_at: Optional[datetime] = None
-_last_success_at: Optional[datetime] = None
-_last_failure_at: Optional[datetime] = None
-_last_error: Optional[str] = None
+_last_attempt_at: datetime | None = None
+_last_success_at: datetime | None = None
+_last_failure_at: datetime | None = None
+_last_error: str | None = None
 
 
-def record_alert_attempt(success: bool, error: Optional[str] = None) -> None:
+def record_alert_attempt(success: bool, error: str | None = None) -> None:
     """Called by repository/segment.py::_send_terminal_alert() after every
     attempt to send a terminal-status alert email, success or failure."""
     global _last_attempt_at, _last_success_at, _last_failure_at, _last_error
@@ -37,7 +37,7 @@ def record_alert_attempt(success: bool, error: Optional[str] = None) -> None:
         _last_error = error
 
 
-def get_alert_health() -> Dict[str, Any]:
+def get_alert_health() -> dict[str, Any]:
     return {
         "last_attempt_at": _last_attempt_at.isoformat() if _last_attempt_at else None,
         "last_success_at": _last_success_at.isoformat() if _last_success_at else None,

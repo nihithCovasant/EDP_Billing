@@ -25,7 +25,8 @@ for _stream in (sys.stdout, sys.stderr):
 # or incoming requests. Tail logs\agent.log directly for a lag-free view.
 import logging as _logging
 import queue as _queue
-from logging.handlers import QueueHandler as _QueueHandler, QueueListener as _QueueListener
+from logging.handlers import QueueHandler as _QueueHandler
+from logging.handlers import QueueListener as _QueueListener
 
 _LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
@@ -68,33 +69,35 @@ _root_logger.addHandler(_queue_handler)
 _root_logger.setLevel(_logging.INFO)
 # cams_otel_lib's Otel_Client.initialize_otel_client() calls logging.basicConfig(level=INFO) again
 # later — make that a no-op for handler setup so it can't re-add a blocking direct StreamHandler.
-_logging.basicConfig = lambda *a, **k: None  # noqa: E731
+_logging.basicConfig = lambda *a, **k: None
 
-import uvicorn
 import uuid
 
-from fastapi import Request, Body, FastAPI, Response
-from langchain_core.messages import HumanMessage
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+import uvicorn
+from a2a.server.apps import A2AFastAPIApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.server.apps import A2AFastAPIApplication
-from a2a.types import AgentCard, AgentCapabilities, AgentProvider, AgentSkill
+from a2a.types import AgentCapabilities, AgentCard, AgentProvider, AgentSkill
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import Otel_Client, otel_trace
+from fastapi import Body, FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from langchain_core.messages import HumanMessage
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
 
-from .executor import AgentExecutor
-from src.agent.edp.loop import EdpWakeLoop
+from src.agent.edp.alert_health import get_alert_health
 from src.agent.edp.api import router as edp_router
+from src.agent.edp.database import check_connectivity as check_db_connectivity
+from src.agent.edp.loop import EdpWakeLoop
 from src.config.cams_config_adapter import CAMSConfigAdapter
 from src.config.settings import settings
-from src.agent.edp.alert_health import get_alert_health
-from src.agent.edp.database import check_connectivity as check_db_connectivity
 from src.middleware.claims_middleware import OtelContextMiddleware
 from src.utils.health import get_health_checker
-from cams_otel_lib import Logger as logger, Otel_Client, otel_trace
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+from .executor import AgentExecutor
 
 
 def _read_agent_config_field(field: str, default: str = "N/A") -> str:
@@ -361,9 +364,15 @@ def build_app() -> FastAPI:
 
         db_result, cbos_result = await asyncio.gather(
             check_db_connectivity(),
-            edp_loop.cbos.check_connectivity() if edp_loop.cbos is not None else asyncio.sleep(0, result={
-                "status": "error", "error": "CBOS client not initialized (wake loop not started)",
-            }),
+            edp_loop.cbos.check_connectivity()
+            if edp_loop.cbos is not None
+            else asyncio.sleep(
+                0,
+                result={
+                    "status": "error",
+                    "error": "CBOS client not initialized (wake loop not started)",
+                },
+            ),
         )
 
         billing_loop_ok = loop_snapshot["running"] and loop_alive
@@ -457,7 +466,7 @@ def build_app() -> FastAPI:
             }
 
         except Exception as e:
-            logger.error(f"Agent error: {str(e)}")
+            logger.error(f"Agent error: {e!s}")
             return {"error": str(e)}
 
     return app

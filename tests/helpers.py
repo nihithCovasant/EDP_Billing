@@ -11,7 +11,8 @@ transitions) is exercised exactly as in production.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 
 from sqlalchemy import delete
 
@@ -19,7 +20,7 @@ from src.agent.edp import repository
 from src.agent.edp.config import EdpBootstrapConfig, build_default_workflow_json
 from src.agent.edp.models import AuditLog, EdpProperties, SegmentExecution, SegmentStatus
 from src.agent.edp.orchestrator import EdpOrchestrator
-from src.agent.edp.utils.constants import SEGMENT_ORDER, POST_TRADE_ORDER, NEXT_DAY_WINDOW_SEGMENTS
+from src.agent.edp.utils.constants import NEXT_DAY_WINDOW_SEGMENTS, POST_TRADE_ORDER, SEGMENT_ORDER
 
 TERMINAL_STATES = {SegmentStatus.COMPLETED, SegmentStatus.SKIPPED, SegmentStatus.FAILED}
 
@@ -81,7 +82,8 @@ async def seed_day(session_factory, trade_date: date, cfg: EdpBootstrapConfig) -
 
 
 async def seed_post_trade_day(
-    session_factory, trade_date: date,
+    session_factory,
+    trade_date: date,
 ) -> None:
     """
     Seed the 5 post-trade process rows for trade_date. If no workflow has
@@ -92,9 +94,7 @@ async def seed_post_trade_day(
         workflow = await repository.get_active(session, trade_date)
         if not workflow:
             workflow_json = build_default_workflow_json([])
-            workflow, _ = await repository.upload(
-                session, trade_date, workflow_json, uploaded_by="test"
-            )
+            workflow, _ = await repository.upload(session, trade_date, workflow_json, uploaded_by="test")
             await session.commit()
 
     async with session_factory() as session:
@@ -116,15 +116,9 @@ async def get_post_trade_rows(session_factory, trade_date: date) -> list[Segment
 
 async def cleanup_day(session_factory, trade_date: date) -> None:
     async with session_factory() as session:
-        await session.execute(
-            delete(SegmentExecution).where(SegmentExecution.trade_date == trade_date)
-        )
-        await session.execute(
-            delete(EdpProperties).where(EdpProperties.trade_date == trade_date)
-        )
-        await session.execute(
-            delete(AuditLog).where(AuditLog.trade_date == trade_date)
-        )
+        await session.execute(delete(SegmentExecution).where(SegmentExecution.trade_date == trade_date))
+        await session.execute(delete(EdpProperties).where(EdpProperties.trade_date == trade_date))
+        await session.execute(delete(AuditLog).where(AuditLog.trade_date == trade_date))
         await session.commit()
 
 
@@ -173,13 +167,13 @@ async def drive_until_terminal(
         if all(r.segment_status in TERMINAL_STATES for r in rows):
             return rows
 
-    raise TimeoutError(
-        f"Day {trade_date} did not reach a terminal state within {max_cycles} cycles"
-    )
+    raise TimeoutError(f"Day {trade_date} did not reach a terminal state within {max_cycles} cycles")
 
 
 async def run_one_post_trade_cycle(
-    orchestrator: EdpOrchestrator, session_factory, trade_date: date,
+    orchestrator: EdpOrchestrator,
+    session_factory,
+    trade_date: date,
 ) -> dict:
     """One pass over the day's 5 post-trade processes, anchored to a fixed
     "now" inside Process 1's window. Post-trade equivalent of run_one_cycle()."""
@@ -212,6 +206,4 @@ async def drive_post_trade_until_terminal(
         if all(r.segment_status in TERMINAL_STATES for r in rows):
             return rows
 
-    raise TimeoutError(
-        f"Post-trade chain for {trade_date} did not reach a terminal state within {max_cycles} cycles"
-    )
+    raise TimeoutError(f"Post-trade chain for {trade_date} did not reach a terminal state within {max_cycles} cycles")

@@ -5,22 +5,22 @@ edpb_properties table — daily config upload and retrieval.
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import EdpProperties
 from ..utils.datetime_utils import now_ist
-from cams_otel_lib import Logger as logger, otel_trace
 
 
 @otel_trace
 async def get_active(
     session: AsyncSession,
     trade_date: date,
-) -> Optional[EdpProperties]:
+) -> EdpProperties | None:
     """Return the currently active workflow config for a given date."""
     stmt = select(EdpProperties).where(
         EdpProperties.trade_date == trade_date,
@@ -33,7 +33,7 @@ async def get_active(
 async def get_latest_effective(
     session: AsyncSession,
     as_of_date: date,
-) -> Optional[EdpProperties]:
+) -> EdpProperties | None:
     """
     Return the most recently uploaded active config on or before `as_of_date`
     — carries the last uploaded config forward until a newer one exists.
@@ -60,7 +60,7 @@ async def upload(
     trade_date: date,
     workflow_json: dict,
     uploaded_by: str = "system",
-    version_name: Optional[str] = None,
+    version_name: str | None = None,
     overwrite_version: bool = False,
 ) -> tuple[EdpProperties, bool]:
     """
@@ -125,10 +125,7 @@ async def upload(
     if version_name:
         await move_version_name(session, version_name, new_row)
 
-    logger.info(
-        f"Workflow uploaded: id={new_row.id} date={trade_date} by={uploaded_by} "
-        f"version_name={version_name!r}"
-    )
+    logger.info(f"Workflow uploaded: id={new_row.id} date={trade_date} by={uploaded_by} version_name={version_name!r}")
     return new_row, True
 
 
@@ -155,15 +152,14 @@ async def get_history(
 # "save with overwrite" always MOVE the name rather than duplicate it.
 # =============================================================================
 
+
 @otel_trace
 async def get_by_version_name(
     session: AsyncSession,
     version_name: str,
-) -> Optional[EdpProperties]:
+) -> EdpProperties | None:
     """Return the single row that currently owns this name, or None."""
-    stmt = select(EdpProperties).where(
-        func.lower(EdpProperties.version_name) == version_name.lower()
-    )
+    stmt = select(EdpProperties).where(func.lower(EdpProperties.version_name) == version_name.lower())
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
@@ -171,9 +167,7 @@ async def get_by_version_name(
 async def list_versions(session: AsyncSession) -> list[EdpProperties]:
     """All named rows (version_name IS NOT NULL), most recently uploaded first."""
     stmt = (
-        select(EdpProperties)
-        .where(EdpProperties.version_name.is_not(None))
-        .order_by(EdpProperties.uploaded_at.desc())
+        select(EdpProperties).where(EdpProperties.version_name.is_not(None)).order_by(EdpProperties.uploaded_at.desc())
     )
     return list((await session.execute(stmt)).scalars().all())
 

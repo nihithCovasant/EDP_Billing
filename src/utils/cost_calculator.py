@@ -1,13 +1,12 @@
-﻿"""
+"""
 Cost calculation utilities for LLM usage tracking in Langfuse.
 
 Provides pricing data and calculation functions for major LLM providers
 to track and monitor agent execution costs.
 """
 
-from typing import Dict, Optional
-
-from cams_otel_lib import Logger as logger, otel_trace
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
 # Pricing per 1M tokens (USD) - Updated as of January 2026
 # Source: Provider pricing pages
@@ -53,9 +52,9 @@ MODEL_PRICING = {
 @otel_trace
 def calculate_cost_details(
     model_name: str,
-    input_tokens: Optional[int] = None,
-    output_tokens: Optional[int] = None,
-) -> Optional[Dict[str, float]]:
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+) -> dict[str, float] | None:
     """
     Calculate cost details for Langfuse tracking.
 
@@ -86,9 +85,7 @@ def calculate_cost_details(
         for model_key in MODEL_PRICING:
             if model_key in normalized_model or normalized_model in model_key:
                 pricing = MODEL_PRICING[model_key]
-                logger.debug(
-                    f"Matched model '{model_name}' to pricing key '{model_key}'"
-                )
+                logger.debug(f"Matched model '{model_name}' to pricing key '{model_key}'")
                 break
 
     if not pricing:
@@ -108,7 +105,7 @@ def calculate_cost_details(
 
 
 @otel_trace
-def get_model_pricing(model_name: str) -> Optional[Dict[str, float]]:
+def get_model_pricing(model_name: str) -> dict[str, float] | None:
     """
     Get pricing information for a specific model.
 
@@ -137,9 +134,7 @@ def get_model_pricing(model_name: str) -> Optional[Dict[str, float]]:
 
 
 @otel_trace
-def add_custom_model_pricing(
-    model_name: str, input_price: float, output_price: float
-) -> None:
+def add_custom_model_pricing(model_name: str, input_price: float, output_price: float) -> None:
     """
     Add custom pricing for a model not in the default pricing table.
 
@@ -158,7 +153,4 @@ def add_custom_model_pricing(
         "input": input_price,
         "output": output_price,
     }
-    logger.info(
-        f"Added custom pricing for model '{model_name}': "
-        f"${input_price}/1M input, ${output_price}/1M output"
-    )
+    logger.info(f"Added custom pricing for model '{model_name}': ${input_price}/1M input, ${output_price}/1M output")

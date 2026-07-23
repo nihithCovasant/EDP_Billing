@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from src.tools.cbos_client import (
     CbosClient,
     _parse_already_triggered_sentence,
@@ -26,7 +24,6 @@ from src.tools.cbos_client import (
     _parse_new_trade_process,
     _parse_post_trade_trigger,
 )
-
 
 # =============================================================================
 # Shared malformed-input fixtures (equivalence classes)
@@ -48,6 +45,7 @@ def _huge_data_array_body(n: int = 100_000) -> str:
     """A Data array with n elements — confirms parsing completes quickly
     rather than hanging on a pathologically large payload."""
     import json as _json
+
     return _json.dumps({"Status": "Success", "Data": [{"MSG": "TRUE"}] * n})
 
 
@@ -60,6 +58,7 @@ def _huge_data_array_body(n: int = 100_000) -> str:
 # at all. The interesting question is whether well-formed-but-wrong-shaped
 # JSON (valid JSON, but MSG has the wrong type) still hits that fallback or
 # crashes before reaching it (e.g. `.upper()` on a non-string).
+
 
 def test_parse_msg_empty_string_falls_back_to_false():
     assert _parse_msg(EMPTY_STRING) == "FALSE"
@@ -135,6 +134,7 @@ def test_parse_msg_huge_data_array_completes_quickly():
 # as success=False, is_transient=True (see docstring) -- so gracefully
 # handled results here should show that specific shape, not just "no crash".
 
+
 def test_parse_new_trade_process_empty_string_is_graceful_transient_failure():
     result = _parse_new_trade_process(EMPTY_STRING)
     assert result.success is False
@@ -196,15 +196,26 @@ def test_parse_new_trade_process_huge_table2_completes_quickly():
     parse (building 100k NewTradeProcessStep objects) in reasonable time,
     not hang."""
     import json as _json
+
     row = {
-        "ID": 1, "STEPNO": 1, "NAME": "X", "STATUS": "PENDING",
-        "STATUSDESC": None, "UPLOADID": 0, "STARTDATETIME": None, "ENDDATETIME": None,
+        "ID": 1,
+        "STEPNO": 1,
+        "NAME": "X",
+        "STATUS": "PENDING",
+        "STATUSDESC": None,
+        "UPLOADID": 0,
+        "STARTDATETIME": None,
+        "ENDDATETIME": None,
     }
-    body = _json.dumps({
-        "Status": "Success",
-        "Result": {"Table1": [{"PROCESSID": 1, "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
-                   "Table2": [row] * 100_000},
-    })
+    body = _json.dumps(
+        {
+            "Status": "Success",
+            "Result": {
+                "Table1": [{"PROCESSID": 1, "ISRUNNABLE": True, "ISAUTOUPLOAD": True}],
+                "Table2": [row] * 100_000,
+            },
+        }
+    )
     t0 = time.monotonic()
     result = _parse_new_trade_process(body)
     elapsed = time.monotonic() - t0
@@ -220,6 +231,7 @@ def test_parse_new_trade_process_huge_table2_completes_quickly():
 # caller convention), not raw JSON, so the malformed-JSON-shape classes
 # above don't apply. Crash-relevant edge cases are about *type*: what if
 # the caller ever hands it something that isn't a str at all?
+
 
 def test_parse_already_triggered_sentence_empty_string_is_graceful():
     """Empty string matches no recognized pattern -> conservatively
@@ -247,6 +259,7 @@ def test_parse_already_triggered_sentence_non_string_number_is_graceful():
 # endpoints have no guaranteed JSON shape). The deliberate exception: a body
 # that looks like an HTML error page is reported as transient failure
 # instead of a false "success" (_looks_like_html_error_page).
+
 
 def test_parse_post_trade_trigger_empty_string_is_graceful():
     success, message, is_transient = _parse_post_trade_trigger(EMPTY_STRING)
@@ -355,6 +368,7 @@ def test_parse_post_trade_trigger_huge_data_array_completes_quickly():
 # that would catch it first?
 # =============================================================================
 
+
 async def test_already_triggered_sentence_non_string_is_absorbed_by_its_only_caller():
     """Traces the isinstance guard one level up through its sole caller,
     _already_triggered_via_file_status(): a non-str FileStatusResult.response
@@ -366,6 +380,7 @@ async def test_already_triggered_sentence_non_string_is_absorbed_by_its_only_cal
         """Simulates a hypothetical FileStatusResult whose .response is
         not a str (the real dataclass is typed `str`, but nothing enforces
         that at runtime -- this stands in for that theoretical case)."""
+
         is_error = False
         response = None
         raw_body = ""
@@ -374,12 +389,15 @@ async def test_already_triggered_sentence_non_string_is_absorbed_by_its_only_cal
         return _BadFileStatusResult()
 
     import types
+
     cbos.file_process_status = types.MethodType(
-        lambda self, *, segment, process_name, user_id, trade_date=None, include_segment=True:
-            fake_file_process_status(
-                segment=segment, process_name=process_name, user_id=user_id,
-                trade_date=trade_date, include_segment=include_segment,
-            ),
+        lambda self, *, segment, process_name, user_id, trade_date=None, include_segment=True: fake_file_process_status(
+            segment=segment,
+            process_name=process_name,
+            user_id=user_id,
+            trade_date=trade_date,
+            include_segment=include_segment,
+        ),
         cbos,
     )
 
@@ -393,6 +411,7 @@ async def test_parse_new_trade_process_crash_class_is_fully_absorbed_by_get_new_
     raised, its caller absorbs the failure — defense-in-depth. Verified by
     monkeypatching the module-level parser to actually raise."""
     import httpx
+
     import src.tools.cbos_client as cbos_client_module
 
     cbos = CbosClient("http://status", "http://process", use_mock=False)
@@ -403,8 +422,12 @@ async def test_parse_new_trade_process_crash_class_is_fully_absorbed_by_get_new_
 
     class _FakeAsyncClient:
         def __init__(self, *a, **kw): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
         async def post(self, url, json=None):
             return _FakeResponse()
 
@@ -418,6 +441,7 @@ async def test_parse_new_trade_process_crash_class_is_fully_absorbed_by_get_new_
     httpx.AsyncClient = _FakeAsyncClient
     try:
         from datetime import date
+
         result = await cbos.get_new_trade_process("EQ", "CV0001", date(2026, 6, 29), process_id="0")
     finally:
         cbos_client_module._parse_new_trade_process = original_parser

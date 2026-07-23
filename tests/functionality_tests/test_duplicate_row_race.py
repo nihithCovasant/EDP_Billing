@@ -35,8 +35,6 @@ from src.agent.edp import repository
 from src.agent.edp.config import build_default_workflow_json
 from src.agent.edp.models import SegmentStatus
 
-from .. import helpers
-
 
 async def test_get_or_create_concurrent_duplicate_insert_race(cfg, session_factory, test_date):
     """
@@ -55,9 +53,8 @@ async def test_get_or_create_concurrent_duplicate_insert_race(cfg, session_facto
         ]
     )
     async with session_factory() as session:
-        workflow, _ = await repository.upload(session, test_date, workflow_json, uploaded_by="test")
+        _workflow, _ = await repository.upload(session, test_date, workflow_json, uploaded_by="test")
         await session.commit()
-        workflow_id = workflow.id
 
     a_checked = asyncio.Event()
     b_checked = asyncio.Event()
@@ -103,9 +100,7 @@ async def test_get_or_create_concurrent_duplicate_insert_race(cfg, session_facto
         # BUG CONFIRMED: get_or_create() does not catch IntegrityError on a
         # concurrent duplicate insert — the loser's flush raises instead of
         # gracefully returning the winner's row.
-        assert len(exceptions) == 1, (
-            f"expected exactly one loser to raise, got {len(exceptions)}: {exceptions}"
-        )
+        assert len(exceptions) == 1, f"expected exactly one loser to raise, got {len(exceptions)}: {exceptions}"
         assert isinstance(exceptions[0], IntegrityError), (
             f"expected the unhandled exception to be an IntegrityError (from the unique "
             f"constraint), got {type(exceptions[0])}: {exceptions[0]}"
@@ -172,9 +167,7 @@ async def test_move_to_state_swallows_alert_email_failure(session_factory, test_
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, "EQ")
         try:
-            await repository.move_to_state(
-                session, row, SegmentStatus.FAILED, category="TEST", reason="test"
-            )
+            await repository.move_to_state(session, row, SegmentStatus.FAILED, category="TEST", reason="test")
             await session.commit()
         except Exception as exc:
             raise AssertionError(
@@ -195,7 +188,9 @@ async def test_move_to_state_swallows_alert_email_failure(session_factory, test_
 
 
 async def test_move_to_state_commits_terminal_status_before_sending_alert(
-    session_factory, test_date, monkeypatch,
+    session_factory,
+    test_date,
+    monkeypatch,
 ):
     """
     Regression test for the double-alert bug: on a genuine terminal
@@ -243,7 +238,10 @@ async def test_move_to_state_commits_terminal_status_before_sending_alert(
         monkeypatch.setattr(session, "commit", _tracked_commit)
 
         await repository.move_to_state(
-            session, row, SegmentStatus.COMPLETED, now=None,
+            session,
+            row,
+            SegmentStatus.COMPLETED,
+            now=None,
         )
 
     assert call_order == ["committed", "alert_sent"], (

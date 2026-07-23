@@ -39,7 +39,10 @@ class ScriptedEdpbClient(EdpbClient):
         self.correlation_ids: dict[str, list[str | None]] = {"download": [], "submit": [], "status": []}
 
     async def request_download(
-        self, segment: str, trade_date: date, correlation_id: str | None = None,
+        self,
+        segment: str,
+        trade_date: date,
+        correlation_id: str | None = None,
     ) -> DownloadResult:
         self.download_calls.append((segment.upper(), trade_date))
         self.correlation_ids["download"].append(correlation_id)
@@ -49,7 +52,9 @@ class ScriptedEdpbClient(EdpbClient):
         return script.pop(0) if len(script) > 1 else script[0]
 
     async def submit_batch(
-        self, manifest_path: str, correlation_id: str | None = None,
+        self,
+        manifest_path: str,
+        correlation_id: str | None = None,
     ) -> BatchSubmitResult:
         self.submit_calls.append(manifest_path)
         self.correlation_ids["submit"].append(correlation_id)
@@ -58,7 +63,9 @@ class ScriptedEdpbClient(EdpbClient):
         return self._submits.pop(0) if len(self._submits) > 1 else self._submits[0]
 
     async def get_batch_status(
-        self, batch_id: str, correlation_id: str | None = None,
+        self,
+        batch_id: str,
+        correlation_id: str | None = None,
     ) -> BatchStatusResult:
         self.correlation_ids["status"].append(correlation_id)
         return self._statuses.get(batch_id, BatchStatusResult(found=True, status="confirmed"))
@@ -97,12 +104,17 @@ async def test_download_segments_traverse_saga_states(cfg, session_factory, test
 async def test_no_data_waits_then_succeeds(cfg, session_factory, test_date):
     """no_data = the exchange hasn't published yet: the segment stays in
     DOWNLOADING (no attempt burned) and succeeds when files appear."""
-    client = ScriptedEdpbClient(downloads={"MCX": [
-        DownloadResult(status="no_data", message="nothing published"),
-        DownloadResult(status="no_data", message="nothing published"),
-        DownloadResult(status="success", manifest_path="/m/MCX/manifest.json",
-                       batch_id=f"MCX-{'2068-01-01'}-x1"),
-    ]})
+    client = ScriptedEdpbClient(
+        downloads={
+            "MCX": [
+                DownloadResult(status="no_data", message="nothing published"),
+                DownloadResult(status="no_data", message="nothing published"),
+                DownloadResult(
+                    status="success", manifest_path="/m/MCX/manifest.json", batch_id=f"MCX-{'2068-01-01'}-x1"
+                ),
+            ]
+        }
+    )
     edpb_client_module.set_edpb_client(client)
 
     orchestrator = _orchestrator(cfg)
@@ -116,9 +128,13 @@ async def test_no_data_waits_then_succeeds(cfg, session_factory, test_date):
 
 
 async def test_download_failure_exhausts_budget_then_fails(cfg, session_factory, test_date):
-    client = ScriptedEdpbClient(downloads={"MCX": [
-        DownloadResult(status="failed", message="auth_failed at portal"),
-    ]})
+    client = ScriptedEdpbClient(
+        downloads={
+            "MCX": [
+                DownloadResult(status="failed", message="auth_failed at portal"),
+            ]
+        }
+    )
     edpb_client_module.set_edpb_client(client)
 
     orchestrator = _orchestrator(cfg)
@@ -136,9 +152,11 @@ async def test_download_failure_exhausts_budget_then_fails(cfg, session_factory,
 async def test_uploader_rejection_is_terminal(cfg, session_factory, test_date):
     """A 4xx from POST /batches (bad manifest) cannot be fixed by resending —
     the segment fails immediately with the uploader's message."""
-    client = ScriptedEdpbClient(submits=[
-        BatchSubmitResult(accepted=False, message="uploader HTTP 422: checksum mismatch"),
-    ])
+    client = ScriptedEdpbClient(
+        submits=[
+            BatchSubmitResult(accepted=False, message="uploader HTTP 422: checksum mismatch"),
+        ]
+    )
     edpb_client_module.set_edpb_client(client)
 
     orchestrator = _orchestrator(cfg)
@@ -153,11 +171,13 @@ async def test_uploader_rejection_is_terminal(cfg, session_factory, test_date):
 
 
 async def test_transient_uploader_error_retries_then_succeeds(cfg, session_factory, test_date):
-    client = ScriptedEdpbClient(submits=[
-        BatchSubmitResult(accepted=False, message="uploader unreachable", is_transient=True),
-        BatchSubmitResult(accepted=False, message="uploader unreachable", is_transient=True),
-        BatchSubmitResult(accepted=True, batch_id="MCX-x", batch_status="queued"),
-    ])
+    client = ScriptedEdpbClient(
+        submits=[
+            BatchSubmitResult(accepted=False, message="uploader unreachable", is_transient=True),
+            BatchSubmitResult(accepted=False, message="uploader unreachable", is_transient=True),
+            BatchSubmitResult(accepted=True, batch_id="MCX-x", batch_status="queued"),
+        ]
+    )
     edpb_client_module.set_edpb_client(client)
 
     orchestrator = _orchestrator(cfg)
@@ -173,13 +193,22 @@ async def test_incomplete_batch_fails_segment_loudly(cfg, session_factory, test_
     """The uploader's completeness gate parked the batch: FILEUPLOAD would
     stay FALSE forever. The engine must FAIL the segment now (terminal email
     fires) with the missing slots in the reason — not wait out the window."""
-    downloads = {"MCX": [DownloadResult(
-        status="success", manifest_path="/m/MCX/manifest.json", batch_id="MCX-INCOMPLETE-1",
-    )]}
-    statuses = {"MCX-INCOMPLETE-1": BatchStatusResult(
-        found=True, status="incomplete",
-        missing_slots=[{"upload_id": "127", "step_no": 1, "name": "MCX Product Master Upload"}],
-    )}
+    downloads = {
+        "MCX": [
+            DownloadResult(
+                status="success",
+                manifest_path="/m/MCX/manifest.json",
+                batch_id="MCX-INCOMPLETE-1",
+            )
+        ]
+    }
+    statuses = {
+        "MCX-INCOMPLETE-1": BatchStatusResult(
+            found=True,
+            status="incomplete",
+            missing_slots=[{"upload_id": "127", "step_no": 1, "name": "MCX Product Master Upload"}],
+        )
+    }
     client = ScriptedEdpbClient(downloads=downloads, statuses=statuses)
     edpb_client_module.set_edpb_client(client)
 
@@ -214,8 +243,7 @@ async def test_one_correlation_id_per_segment_run(cfg, session_factory, test_dat
         per_segment_ids.add(cid)
     assert len(per_segment_ids) == 2, "each segment-day run gets its OWN id"
 
-    sent = set(client.correlation_ids["download"] + client.correlation_ids["submit"]
-               + client.correlation_ids["status"])
+    sent = set(client.correlation_ids["download"] + client.correlation_ids["submit"] + client.correlation_ids["status"])
     assert sent == per_segment_ids, (
         f"every client call must carry a per-run id (sent={sent}, expected={per_segment_ids})"
     )

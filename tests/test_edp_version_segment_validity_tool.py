@@ -13,10 +13,12 @@ async def _invoke(tool, **kwargs) -> str:
 
 async def test_all_valid_codes_reports_ok(monkeypatch):
     async def fake_get(path):
-        return 200, {"workflow_json": {
-            "segments": [{"segment_code": "EQ"}, {"segment_code": "DR"}],
-            "post_trade_processes": [{"process_code": "COLVAL"}],
-        }}
+        return 200, {
+            "workflow_json": {
+                "segments": [{"segment_code": "EQ"}, {"segment_code": "DR"}],
+                "post_trade_processes": [{"process_code": "COLVAL"}],
+            }
+        }
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 
@@ -27,10 +29,12 @@ async def test_all_valid_codes_reports_ok(monkeypatch):
 
 async def test_stale_segment_code_is_flagged(monkeypatch):
     async def fake_get(path):
-        return 200, {"workflow_json": {
-            "segments": [{"segment_code": "EQ"}, {"segment_code": "MF"}],
-            "post_trade_processes": [],
-        }}
+        return 200, {
+            "workflow_json": {
+                "segments": [{"segment_code": "EQ"}, {"segment_code": "MF"}],
+                "post_trade_processes": [],
+            }
+        }
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 
@@ -42,10 +46,12 @@ async def test_stale_segment_code_is_flagged(monkeypatch):
 
 async def test_stale_post_trade_code_is_flagged(monkeypatch):
     async def fake_get(path):
-        return 200, {"workflow_json": {
-            "segments": [],
-            "post_trade_processes": [{"process_code": "BOGUS_PROC"}],
-        }}
+        return 200, {
+            "workflow_json": {
+                "segments": [],
+                "post_trade_processes": [{"process_code": "BOGUS_PROC"}],
+            }
+        }
 
     monkeypatch.setattr(edp_versions, "_get", fake_get)
 

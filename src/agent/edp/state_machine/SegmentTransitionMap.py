@@ -17,15 +17,11 @@ from collections import defaultdict
 class SegmentTransitionMap:
     def __init__(self, allowed_segments: tuple[str, ...]):
         self.allowed_segments = allowed_segments
-        self.transitions_map: dict[str, dict[object, set[object]]] = defaultdict(
-            lambda: defaultdict(set)
-        )
+        self.transitions_map: dict[str, dict[object, set[object]]] = defaultdict(lambda: defaultdict(set))
 
     def check_valid_segment(self, segment: str) -> None:
         if segment not in self.allowed_segments:
-            raise ValueError(
-                f"Invalid segment: {segment}. Allowed segments are: {self.allowed_segments}"
-            )
+            raise ValueError(f"Invalid segment: {segment}. Allowed segments are: {self.allowed_segments}")
 
     def add_allowed_transition(self, segment: str, from_state: object, to_state: object) -> None:
         self.check_valid_segment(segment)

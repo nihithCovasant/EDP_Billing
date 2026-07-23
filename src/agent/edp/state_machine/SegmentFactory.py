@@ -65,10 +65,7 @@ class SegmentFactory:
 
         klass = _CLASS_BY_CODE.get(segment_code)
         if klass is None:
-            raise ValueError(
-                f"Unknown segment type: {segment_code!r}. "
-                f"Allowed codes are: {sorted(_CLASS_BY_CODE)}"
-            )
+            raise ValueError(f"Unknown segment type: {segment_code!r}. Allowed codes are: {sorted(_CLASS_BY_CODE)}")
         instance = klass()
         _INSTANCES[segment_code] = instance
         return instance

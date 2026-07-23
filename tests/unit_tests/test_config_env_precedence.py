@@ -30,9 +30,19 @@ import src.agent.edp.config as edp_config
 from src.agent.edp.config import EdpBootstrapConfig, _is_truthy_env
 
 _ENV_KEYS = (
-    "DATABASE_URL", "DB_HOST", "DB_PORT", "DB_NAME", "DB_USERNAME", "DB_PASSWORD",
-    "CBOS_STATUS_URL", "CBOS_PROCESS_URL", "CBOS_USE_MOCK", "EDP_STRICT_CONFIG",
-    "CBOS_LOGIN_ID", "POST_TRADE_LOGIN_ID", "EDP_WAKE_INTERVAL_SECONDS",
+    "DATABASE_URL",
+    "DB_HOST",
+    "DB_PORT",
+    "DB_NAME",
+    "DB_USERNAME",
+    "DB_PASSWORD",
+    "CBOS_STATUS_URL",
+    "CBOS_PROCESS_URL",
+    "CBOS_USE_MOCK",
+    "EDP_STRICT_CONFIG",
+    "CBOS_LOGIN_ID",
+    "POST_TRADE_LOGIN_ID",
+    "EDP_WAKE_INTERVAL_SECONDS",
 )
 
 
@@ -47,6 +57,7 @@ def clean_env(monkeypatch):
 # (a) _is_truthy_env() recognizes the documented truthy/falsy vocabulary,
 #     case-insensitively.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("value", ["1", "true", "True", "TRUE", "yes", "on"])
 def test_is_truthy_env_recognizes_truthy_values(value):
@@ -96,10 +107,9 @@ def test_cbos_use_mock_indirect_falsy_via_env(clean_env, value):
 #     neither is present does the hardcoded default (True) apply.
 # ---------------------------------------------------------------------------
 
+
 def test_cbos_use_mock_explicit_false_env_wins_over_json_true(clean_env):
-    clean_env.setattr(edp_config, "load_agent_config", lambda: {
-        "default": {"edp": {"cbos_use_mock": True}}
-    })
+    clean_env.setattr(edp_config, "load_agent_config", lambda: {"default": {"edp": {"cbos_use_mock": True}}})
     clean_env.setenv("DATABASE_URL", "postgresql://user:pw@dbhost:5432/edp")
     clean_env.setenv("CBOS_USE_MOCK", "false")
 
@@ -109,9 +119,7 @@ def test_cbos_use_mock_explicit_false_env_wins_over_json_true(clean_env):
 
 
 def test_cbos_use_mock_explicit_true_env_wins_over_json_false(clean_env):
-    clean_env.setattr(edp_config, "load_agent_config", lambda: {
-        "default": {"edp": {"cbos_use_mock": False}}
-    })
+    clean_env.setattr(edp_config, "load_agent_config", lambda: {"default": {"edp": {"cbos_use_mock": False}}})
     clean_env.setenv("DATABASE_URL", "postgresql://user:pw@dbhost:5432/edp")
     clean_env.setenv("CBOS_USE_MOCK", "true")
 
@@ -124,9 +132,7 @@ def test_cbos_use_mock_env_unset_falls_through_to_json_value(clean_env):
     """CBOS_USE_MOCK entirely unset (not even an empty string) -> falls
     through to agent_config.json's edp.cbos_use_mock, per the source's
     `cbos_use_mock_raw is None` branch."""
-    clean_env.setattr(edp_config, "load_agent_config", lambda: {
-        "default": {"edp": {"cbos_use_mock": False}}
-    })
+    clean_env.setattr(edp_config, "load_agent_config", lambda: {"default": {"edp": {"cbos_use_mock": False}}})
     clean_env.setenv("DATABASE_URL", "postgresql://user:pw@dbhost:5432/edp")
 
     cfg = edp_config.load_edp_config()
@@ -151,6 +157,7 @@ def test_cbos_use_mock_env_and_json_both_unset_falls_to_hardcoded_default_true(c
 #     hardcoded defaults http://localhost:8087 / http://localhost:8003.
 # ---------------------------------------------------------------------------
 
+
 def test_cbos_status_and_process_url_hardcoded_defaults(clean_env):
     clean_env.setattr(edp_config, "load_agent_config", lambda: {"default": {}})
     clean_env.setenv("DATABASE_URL", "postgresql://user:pw@dbhost:5432/edp")
@@ -174,12 +181,18 @@ def test_cbos_status_and_process_url_env_override_defaults(clean_env):
 
 
 def test_cbos_status_and_process_url_json_value_used_when_env_unset(clean_env):
-    clean_env.setattr(edp_config, "load_agent_config", lambda: {
-        "default": {"edp": {
-            "cbos_status_url": "http://json-cbos:8087",
-            "cbos_process_url": "http://json-cbos:8003",
-        }}
-    })
+    clean_env.setattr(
+        edp_config,
+        "load_agent_config",
+        lambda: {
+            "default": {
+                "edp": {
+                    "cbos_status_url": "http://json-cbos:8087",
+                    "cbos_process_url": "http://json-cbos:8003",
+                }
+            }
+        },
+    )
     clean_env.setenv("DATABASE_URL", "postgresql://user:pw@dbhost:5432/edp")
 
     cfg = edp_config.load_edp_config()
@@ -196,6 +209,7 @@ def test_cbos_status_and_process_url_json_value_used_when_env_unset(clean_env):
 #     test_config_loading.py already, so it is not re-tested here).
 # ---------------------------------------------------------------------------
 
+
 def test_edp_strict_config_mixed_case_yes_is_truthy_via_helper():
     assert _is_truthy_env("YES") is True
 
@@ -211,6 +225,7 @@ def test_edp_strict_config_mixed_case_yes_is_truthy_via_env_lookup(clean_env):
 # ---------------------------------------------------------------------------
 # (e) EdpBootstrapConfig is a plain @dataclass, not a pydantic model.
 # ---------------------------------------------------------------------------
+
 
 def test_edp_bootstrap_config_is_plain_dataclass_not_pydantic():
     import dataclasses

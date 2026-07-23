@@ -22,28 +22,30 @@ from __future__ import annotations
 
 import time
 from datetime import date, datetime, timedelta
-from typing import Optional
 from zoneinfo import ZoneInfo
 
-from .config import EdpBootstrapConfig, build_default_workflow_json
-from .edpb_client import EdpbClient, get_edpb_client
-from .database import get_session
-from .models import SegmentState, SegmentStatus
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
+
+from src.tools.cbos_client import CbosClient
+
 from . import repository
+from .config import EdpBootstrapConfig, build_default_workflow_json
+from .database import get_session
+from .edpb_client import EdpbClient, get_edpb_client
+from .models import SegmentState, SegmentStatus
 from .state_machine import SegmentFactory
 from .utils.constants import (
-    STALE_HEARTBEAT_THRESHOLD,
-    SEGMENT_ORDER,
-    POST_TRADE_ORDER,
-    POST_TRADE_GTG_PROCESS_NAME,
-    POST_TRADE_FIRST_WINDOW_START,
-    POST_TRADE_DEFAULT_WINDOW_END,
     NEXT_DAY_WINDOW_SEGMENTS,
+    POST_TRADE_DEFAULT_WINDOW_END,
+    POST_TRADE_FIRST_WINDOW_START,
+    POST_TRADE_GTG_PROCESS_NAME,
+    POST_TRADE_ORDER,
+    SEGMENT_ORDER,
+    STALE_HEARTBEAT_THRESHOLD,
 )
-from .utils.datetime_utils import resolve_active_date, ensure_aware, parse_window_dt
+from .utils.datetime_utils import ensure_aware, parse_window_dt, resolve_active_date
 from .utils.log_fmt import edp_log, seg_log
-from src.tools.cbos_client import CbosClient
-from cams_otel_lib import Logger as logger, otel_trace
 
 
 class EdpOrchestrator:
@@ -56,8 +58,7 @@ class EdpOrchestrator:
     resolved from the ops-uploaded workflow_json.
     """
 
-    def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient,
-                 edpb: EdpbClient | None = None):
+    def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient, edpb: EdpbClient | None = None):
         self.config = config
         self.cbos = cbos
         # Injected like cbos; None -> resolved lazily so tests that swap the
@@ -67,14 +68,14 @@ class EdpOrchestrator:
         # Snapshot for the current wake cycle — shared by every segment
         # processed within it instead of re-passing as arguments.
         self._cycle_active_date = None
-        self._cycle_now: Optional[datetime] = None
+        self._cycle_now: datetime | None = None
         # Segment codes the ACTIVE date's normal path drives this cycle - the
         # manual sweep must not double-drive those rows, but must pick up an
         # active-date row whose segment is absent from today's config.
         self._cycle_configured_codes: tuple[str, ...] = ()
 
     @property
-    def edpb(self) -> "EdpbClient":
+    def edpb(self) -> EdpbClient:
         return self._edpb or get_edpb_client()
 
     # -------------------------------------------------------------------------
@@ -84,9 +85,7 @@ class EdpOrchestrator:
     @otel_trace
     async def run_wake_cycle(self) -> dict:
         now = datetime.now(self._tz)
-        active_date = resolve_active_date(
-            now, self.config.active_date_cutoff_hour, self.config.timezone
-        )
+        active_date = resolve_active_date(now, self.config.active_date_cutoff_hour, self.config.timezone)
         self._cycle_active_date = active_date
         self._cycle_now = now
         summary = {
@@ -120,12 +119,14 @@ class EdpOrchestrator:
             if not workflow:
                 workflow = await repository.get_latest_effective(session, active_date)
                 if workflow:
-                    logger.info(edp_log(
-                        "No new config uploaded for today — reusing last uploaded config",
-                        date=active_date,
-                        config_uploaded_for=workflow.trade_date,
-                        config_id=workflow.id,
-                    ))
+                    logger.info(
+                        edp_log(
+                            "No new config uploaded for today — reusing last uploaded config",
+                            date=active_date,
+                            config_uploaded_for=workflow.trade_date,
+                            config_id=workflow.id,
+                        )
+                    )
             if not workflow:
                 if self.config.default_segments:
                     default_wf = build_default_workflow_json(
@@ -133,31 +134,37 @@ class EdpOrchestrator:
                         post_trade_processes=self.config.default_post_trade_processes or None,
                     )
                     workflow, _ = await repository.upload(
-                        session, active_date, default_wf, uploaded_by="agent-bootstrap",
+                        session,
+                        active_date,
+                        default_wf,
+                        uploaded_by="agent-bootstrap",
                         # "default" always points at whichever row was most
                         # recently auto-seeded (no explicit config existed
                         # for that day) — overwrite_version=True moves the
                         # name forward instead of raising on the 2nd+ day
                         # this ever fires (see move_version_name()).
-                        version_name="default", overwrite_version=True,
+                        version_name="default",
+                        overwrite_version=True,
                     )
-                    logger.info(edp_log(
-                        "Default workflow auto-seeded",
-                        date=active_date,
-                        segments=len(self.config.default_segments),
-                        post_trade_processes=len(default_wf.get("post_trade_processes", [])),
-                    ))
+                    logger.info(
+                        edp_log(
+                            "Default workflow auto-seeded",
+                            date=active_date,
+                            segments=len(self.config.default_segments),
+                            post_trade_processes=len(default_wf.get("post_trade_processes", [])),
+                        )
+                    )
                 else:
-                    logger.warning(edp_log(
-                        "No workflow config and no defaults — skipping cycle",
-                        date=active_date,
-                    ))
+                    logger.warning(
+                        edp_log(
+                            "No workflow config and no defaults — skipping cycle",
+                            date=active_date,
+                        )
+                    )
                     return summary
 
         # ------ Lazily ensure a record exists for each configured segment ---
-        configured_codes = [
-            seg_cfg["segment_code"] for seg_cfg in workflow.workflow_json.get("segments", [])
-        ]
+        configured_codes = [seg_cfg["segment_code"] for seg_cfg in workflow.workflow_json.get("segments", [])]
         ordered_codes = [c for c in SEGMENT_ORDER if c in configured_codes]
 
         self._cycle_configured_codes = tuple(ordered_codes)
@@ -167,9 +174,13 @@ class EdpOrchestrator:
                 existed = await repository.is_record_exists(session, active_date, segment_code)
                 row = await repository.get_or_create(session, workflow, active_date, segment_code)
             if not existed:
-                logger.info(edp_log(
-                    "Segment row created", date=active_date, segment=segment_code,
-                ))
+                logger.info(
+                    edp_log(
+                        "Segment row created",
+                        date=active_date,
+                        segment=segment_code,
+                    )
+                )
             segments.append(row)
 
         # Log any stale heartbeats — diagnostic only, nothing persisted.
@@ -179,13 +190,16 @@ class EdpOrchestrator:
                 and seg.last_heartbeat_at
                 and (now - ensure_aware(seg.last_heartbeat_at, self._tz)) > STALE_HEARTBEAT_THRESHOLD
             ):
-                logger.warning(seg_log(
-                    seg.segment_code, active_date,
-                    "Segment heartbeat STALE",
-                    state=seg.current_state.value if seg.current_state else None,
-                    last_heartbeat=seg.last_heartbeat_at.isoformat(),
-                    threshold=str(STALE_HEARTBEAT_THRESHOLD),
-                ))
+                logger.warning(
+                    seg_log(
+                        seg.segment_code,
+                        active_date,
+                        "Segment heartbeat STALE",
+                        state=seg.current_state.value if seg.current_state else None,
+                        last_heartbeat=seg.last_heartbeat_at.isoformat(),
+                        threshold=str(STALE_HEARTBEAT_THRESHOLD),
+                    )
+                )
 
         # ------ Drive each segment, independently ---------------------------
         # No segment is gated on another's status — every not-yet-handled
@@ -227,15 +241,14 @@ class EdpOrchestrator:
             # in today's config; everything else (past dates, or an
             # active-date row ops activated for a segment MISSING from
             # today's config) belongs to this sweep.
-            if (
-                row.trade_date == active_date
-                and row.segment_code in self._cycle_configured_codes
-            ):
+            if row.trade_date == active_date and row.segment_code in self._cycle_configured_codes:
                 continue
             summary["manual_runs_processed"] = summary.get("manual_runs_processed", 0) + 1
             t0 = time.monotonic()
             outcome = await self._process_one_segment(
-                row.segment_code, trade_date=row.trade_date, bypass_window=True,
+                row.segment_code,
+                trade_date=row.trade_date,
+                bypass_window=True,
             )
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             _log_segment_outcome(row.segment_code, row.trade_date, outcome, elapsed_ms)
@@ -285,20 +298,28 @@ class EdpOrchestrator:
                 # to the agent default. (Caught by live E2E: this used to
                 # return "failed" WITHOUT a terminal transition, error-looping
                 # every cycle for the whole lookback.)
-                logger.warning(seg_log(
-                    segment_code, active_date,
-                    "Segment not in this date's workflow_json - manual run "
-                    "proceeding with default login_id and no windows",
-                ))
+                logger.warning(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Segment not in this date's workflow_json - manual run "
+                        "proceeding with default login_id and no windows",
+                    )
+                )
                 seg_cfg = {}
             elif not seg_cfg:
-                logger.error(seg_log(
-                    segment_code, active_date,
-                    "Segment code missing from workflow_json — cannot process; "
-                    "marking FAILED (terminal) so this row cannot error-loop",
-                ))
+                logger.error(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Segment code missing from workflow_json — cannot process; "
+                        "marking FAILED (terminal) so this row cannot error-loop",
+                    )
+                )
                 await repository.move_to_state(
-                    session, row, SegmentStatus.FAILED,
+                    session,
+                    row,
+                    SegmentStatus.FAILED,
                     category="CONFIG_ERROR",
                     reason="segment_code missing from the date's workflow_json",
                     now=now,
@@ -307,9 +328,9 @@ class EdpOrchestrator:
             login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
 
             window_start, window_end = (
-                (None, None) if (bypass_window and not seg_cfg) else _resolve_window(
-                    segment_code, workflow.workflow_json, active_date, self._tz
-                )
+                (None, None)
+                if (bypass_window and not seg_cfg)
+                else _resolve_window(segment_code, workflow.workflow_json, active_date, self._tz)
             )
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
             # Inject the saga dependencies (mirrors cbos being passed in).
@@ -317,21 +338,27 @@ class EdpOrchestrator:
             state_machine.runtime_config = self.config
 
             if bypass_window:
-                logger.warning(seg_log(
-                    segment_code, active_date,
-                    "MANUAL ACTIVATION - window gating BYPASSED for this run "
-                    "(ops-requested backfill/retry; no window deadline applies)",
-                ))
+                logger.warning(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "MANUAL ACTIVATION - window gating BYPASSED for this run "
+                        "(ops-requested backfill/retry; no window deadline applies)",
+                    )
+                )
                 window_end = None
 
             # Window not yet open
             if not bypass_window and not state_machine.is_my_time_window(now, window_start):
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Segment window not yet open — skipping this cycle",
-                    window_opens=window_start.strftime("%H:%M:%S %Z"),
-                    now=now.strftime("%H:%M:%S %Z"),
-                ))
+                logger.info(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Segment window not yet open — skipping this cycle",
+                        window_opens=window_start.strftime("%H:%M:%S %Z"),
+                        now=now.strftime("%H:%M:%S %Z"),
+                    )
+                )
                 return "blocked"
 
             # Window deadline missed (PENDING only) — a local timeout, not a
@@ -345,14 +372,19 @@ class EdpOrchestrator:
                 and row.segment_status == SegmentStatus.PENDING
                 and not row.manually_activated
             ):
-                logger.warning(seg_log(
-                    segment_code, active_date,
-                    "Segment window deadline passed without starting — marking FAILED",
-                    deadline=window_end.strftime("%H:%M:%S %Z"),
-                    now=now.strftime("%H:%M:%S %Z"),
-                ))
+                logger.warning(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Segment window deadline passed without starting — marking FAILED",
+                        deadline=window_end.strftime("%H:%M:%S %Z"),
+                        now=now.strftime("%H:%M:%S %Z"),
+                    )
+                )
                 await repository.move_to_state(
-                    session, row, SegmentStatus.FAILED,
+                    session,
+                    row,
+                    SegmentStatus.FAILED,
                     category="TIMEOUT",
                     reason=f"Past deadline {window_end.isoformat()}",
                     now=now,
@@ -366,23 +398,29 @@ class EdpOrchestrator:
                 row.current_state = SegmentState.INIT
                 row.current_process = "BeginFileUpload"
                 await session.flush()
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Segment STARTED",
-                    started_at=now.strftime("%H:%M:%S %Z"),
-                    window_start=window_start.strftime("%H:%M:%S %Z") if window_start else None,
-                    window_end=window_end.strftime("%H:%M:%S %Z") if window_end else None,
-                    first_state=row.current_state.value,
-                ))
+                logger.info(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Segment STARTED",
+                        started_at=now.strftime("%H:%M:%S %Z"),
+                        window_start=window_start.strftime("%H:%M:%S %Z") if window_start else None,
+                        window_end=window_end.strftime("%H:%M:%S %Z") if window_end else None,
+                        first_state=row.current_state.value,
+                    )
+                )
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Resuming IN_PROGRESS segment",
-                    state=row.current_state.value if row.current_state else None,
-                    process=row.current_process,
-                    pid=row.process_id,
-                ))
+                logger.info(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Resuming IN_PROGRESS segment",
+                        state=row.current_state.value if row.current_state else None,
+                        process=row.current_process,
+                        pid=row.process_id,
+                    )
+                )
             else:
                 return "blocked"
 
@@ -416,10 +454,12 @@ class EdpOrchestrator:
             if not workflow:
                 workflow = await repository.get_latest_effective(session, active_date)
             if not workflow:
-                logger.warning(edp_log(
-                    "No workflow config available — cannot seed post-trade processes this cycle",
-                    date=active_date,
-                ))
+                logger.warning(
+                    edp_log(
+                        "No workflow config available — cannot seed post-trade processes this cycle",
+                        date=active_date,
+                    )
+                )
                 return
 
         if "post_trade_processes" in workflow.workflow_json:
@@ -436,9 +476,13 @@ class EdpOrchestrator:
                 existed = await repository.is_record_exists(session, active_date, process_code)
                 row = await repository.get_or_create(session, workflow, active_date, process_code)
             if not existed:
-                logger.info(edp_log(
-                    "Post-trade process row created", date=active_date, process=process_code,
-                ))
+                logger.info(
+                    edp_log(
+                        "Post-trade process row created",
+                        date=active_date,
+                        process=process_code,
+                    )
+                )
             post_trade_rows.append(row)
 
         # Every process is driven independently — not gated on siblings.
@@ -479,21 +523,20 @@ class EdpOrchestrator:
             proc_cfg = _find_post_trade_cfg(workflow.workflow_json, segment_code)
             login_id = (proc_cfg or {}).get("login_id") or self.config.post_trade_login_id
             gtg_process_name = _resolve_post_trade_process_name(segment_code, workflow.workflow_json)
-            window_start = _resolve_post_trade_window(
-                segment_code, workflow.workflow_json, active_date, self._tz
-            )
-            window_end = _resolve_post_trade_window_end(
-                segment_code, workflow.workflow_json, active_date, self._tz
-            )
+            window_start = _resolve_post_trade_window(segment_code, workflow.workflow_json, active_date, self._tz)
+            window_end = _resolve_post_trade_window_end(segment_code, workflow.workflow_json, active_date, self._tz)
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
 
             if not state_machine.is_my_time_window(now, window_start):
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Post-trade process window not yet open — skipping this cycle",
-                    window_opens=window_start.strftime("%H:%M:%S %Z"),
-                    now=now.strftime("%H:%M:%S %Z"),
-                ))
+                logger.info(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Post-trade process window not yet open — skipping this cycle",
+                        window_opens=window_start.strftime("%H:%M:%S %Z"),
+                        now=now.strftime("%H:%M:%S %Z"),
+                    )
+                )
                 return "blocked"
 
             # Window deadline missed (PENDING only) — mirrors
@@ -501,18 +544,20 @@ class EdpOrchestrator:
             # that never even started would sit PENDING forever past its
             # deadline instead of failing loudly. (No bypass here: manual
             # activation covers real segments only, not post-trade.)
-            if (
-                state_machine.is_my_window_over(now, window_end)
-                and row.segment_status == SegmentStatus.PENDING
-            ):
-                logger.warning(seg_log(
-                    segment_code, active_date,
-                    "Post-trade process window deadline passed without starting — marking FAILED",
-                    deadline=window_end.strftime("%H:%M:%S %Z"),
-                    now=now.strftime("%H:%M:%S %Z"),
-                ))
+            if state_machine.is_my_window_over(now, window_end) and row.segment_status == SegmentStatus.PENDING:
+                logger.warning(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Post-trade process window deadline passed without starting — marking FAILED",
+                        deadline=window_end.strftime("%H:%M:%S %Z"),
+                        now=now.strftime("%H:%M:%S %Z"),
+                    )
+                )
                 await repository.move_to_state(
-                    session, row, SegmentStatus.FAILED,
+                    session,
+                    row,
+                    SegmentStatus.FAILED,
                     category="TIMEOUT",
                     reason=f"Past deadline {window_end.isoformat()}",
                     now=now,
@@ -525,21 +570,27 @@ class EdpOrchestrator:
                 row.current_state = SegmentState.WAITING_FOR_GTG
                 row.current_process = gtg_process_name
                 await session.flush()
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Post-trade process STARTED",
-                    started_at=now.strftime("%H:%M:%S %Z"),
-                    window_opens=window_start.strftime("%H:%M:%S %Z") if window_start else None,
-                    first_state=row.current_state.value,
-                ))
+                logger.info(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Post-trade process STARTED",
+                        started_at=now.strftime("%H:%M:%S %Z"),
+                        window_opens=window_start.strftime("%H:%M:%S %Z") if window_start else None,
+                        first_state=row.current_state.value,
+                    )
+                )
 
             elif row.segment_status == SegmentStatus.IN_PROGRESS:
-                logger.info(seg_log(
-                    segment_code, active_date,
-                    "Resuming IN_PROGRESS post-trade process",
-                    state=row.current_state.value if row.current_state else None,
-                    process=row.current_process,
-                ))
+                logger.info(
+                    seg_log(
+                        segment_code,
+                        active_date,
+                        "Resuming IN_PROGRESS post-trade process",
+                        state=row.current_state.value if row.current_state else None,
+                        process=row.current_process,
+                    )
+                )
             else:
                 return "blocked"
 
@@ -563,6 +614,7 @@ class EdpOrchestrator:
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
+
 def _find_segment_cfg(workflow_json: dict, segment_code: str) -> dict | None:
     for seg in workflow_json.get("segments", []):
         if seg.get("segment_code") == segment_code:
@@ -575,7 +627,7 @@ def _resolve_window(
     workflow_json: dict,
     trade_date: date,
     tz: ZoneInfo,
-) -> tuple[Optional[datetime], Optional[datetime]]:
+) -> tuple[datetime | None, datetime | None]:
     """Resolve (window_start, window_end) for a segment on demand — a pure
     function of (segment_code, workflow_json, trade_date, tz), so a config
     re-upload takes effect immediately.
@@ -638,7 +690,7 @@ def _resolve_post_trade_window(
     workflow_json: dict,
     trade_date: date,
     tz: ZoneInfo,
-) -> Optional[datetime]:
+) -> datetime | None:
     """
     Resolve the opening gate for a post-trade process, mirroring
     _resolve_window(). Every one of the 5 processes defaults to the fixed
@@ -687,11 +739,11 @@ def _log_segment_outcome(
     elapsed_ms: int,
 ) -> None:
     msg_map = {
-        "completed": ("info",  "Segment COMPLETED"),
-        "skipped":   ("info",  "Segment SKIPPED (holiday)"),
-        "failed":    ("error", "Segment FAILED"),
-        "advanced":  ("info",  "Segment advanced — will continue next cycle"),
-        "blocked":   ("info",  "Segment blocked — waiting for CBOS or window"),
+        "completed": ("info", "Segment COMPLETED"),
+        "skipped": ("info", "Segment SKIPPED (holiday)"),
+        "failed": ("error", "Segment FAILED"),
+        "advanced": ("info", "Segment advanced — will continue next cycle"),
+        "blocked": ("info", "Segment blocked — waiting for CBOS or window"),
     }
     level, label = msg_map.get(outcome, ("info", f"Segment outcome={outcome}"))
     log_fn = getattr(logger, level)

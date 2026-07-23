@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any
 
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -18,10 +21,9 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .migrations import run_migrations
-from cams_otel_lib import Logger as logger, otel_trace
 
-_engine: Optional[AsyncEngine] = None
-_session_factory: Optional[async_sessionmaker[AsyncSession]] = None
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 @otel_trace
@@ -47,7 +49,7 @@ async def close_database() -> None:
 
 
 @otel_trace
-async def check_connectivity() -> Dict[str, Any]:
+async def check_connectivity() -> dict[str, Any]:
     """
     Live "SELECT 1" against the EDP database — used by GET /edp/health (see
     src/agent/__main__.py). Deliberately a fresh live check every call rather

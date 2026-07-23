@@ -66,10 +66,10 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-
 # ---------------------------------------------------------------------------
 # Mock LLM
 # ---------------------------------------------------------------------------
+
 
 class RecordingMockLLM:
     """
@@ -99,8 +99,7 @@ class RecordingMockLLM:
 
     def invoke(self, messages, config=None):
         raise AssertionError(
-            "AgentNode should call ainvoke(), not invoke() -- "
-            "if this fires, source behavior has changed."
+            "AgentNode should call ainvoke(), not invoke() -- if this fires, source behavior has changed."
         )
 
 
@@ -122,20 +121,14 @@ def mock_llm(monkeypatch):
     def _fake_get_llm_model(*args, **kwargs):
         return llm
 
-    monkeypatch.setattr(
-        "src.agent.nodes.agent_node.get_llm_model", _fake_get_llm_model
-    )
+    monkeypatch.setattr("src.agent.nodes.agent_node.get_llm_model", _fake_get_llm_model)
     # response_generator.py / query_processor.py also import get_llm_model,
     # but are unreachable in this deployment (build_react_graph is chosen
     # over build_graph whenever tools are present -- see executor.py
     # _run_graph). Patched anyway for defense-in-depth in case tools are
     # ever removed and build_graph's fixed pipeline becomes reachable.
-    monkeypatch.setattr(
-        "src.agent.nodes.response_generator.get_llm_model", _fake_get_llm_model
-    )
-    monkeypatch.setattr(
-        "src.agent.nodes.query_processor.get_llm_model", _fake_get_llm_model
-    )
+    monkeypatch.setattr("src.agent.nodes.response_generator.get_llm_model", _fake_get_llm_model)
+    monkeypatch.setattr("src.agent.nodes.query_processor.get_llm_model", _fake_get_llm_model)
     return llm
 
 
@@ -170,6 +163,7 @@ def _run(client, query: str, conversation_id=None):
 # Scenario 1: new conversation gets a fresh conversation_id
 # ---------------------------------------------------------------------------
 
+
 def test_new_conversation_gets_fresh_conversation_id(client):
     body = _run(client, "hello", conversation_id=None)
 
@@ -195,6 +189,7 @@ def test_omitting_conversation_id_field_also_gets_fresh_id(client):
 # Scenario 2: same conversation_id carries prior context into the 2nd call
 # ---------------------------------------------------------------------------
 
+
 def test_same_conversation_id_carries_prior_context(client, mock_llm):
     first = _run(client, "How is today's EDP processing going?", conversation_id=None)
     conv_id = first["conversation_id"]
@@ -219,20 +214,21 @@ def test_same_conversation_id_carries_prior_context(client, mock_llm):
     second_call_messages = mock_llm.calls[1]
     second_call_texts = [getattr(m, "content", "") for m in second_call_messages]
 
-    assert any(
-        "How is today's EDP processing going?" in t for t in second_call_texts
-    ), f"1st turn's user query missing from 2nd call's message history: {second_call_texts}"
-    assert any(
-        mock_llm.canned_response in t for t in second_call_texts
-    ), f"1st turn's assistant response missing from 2nd call's message history: {second_call_texts}"
-    assert any(
-        "and what about post-trade?" in t for t in second_call_texts
-    ), "2nd turn's own user query should also be present"
+    assert any("How is today's EDP processing going?" in t for t in second_call_texts), (
+        f"1st turn's user query missing from 2nd call's message history: {second_call_texts}"
+    )
+    assert any(mock_llm.canned_response in t for t in second_call_texts), (
+        f"1st turn's assistant response missing from 2nd call's message history: {second_call_texts}"
+    )
+    assert any("and what about post-trade?" in t for t in second_call_texts), (
+        "2nd turn's own user query should also be present"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Scenario 3: a different/unknown conversation_id does not leak history
 # ---------------------------------------------------------------------------
+
 
 def test_different_conversation_id_does_not_leak_history(client, mock_llm):
     first = _run(client, "How is today's EDP processing going?", conversation_id=None)
@@ -266,6 +262,7 @@ def test_different_conversation_id_does_not_leak_history(client, mock_llm):
 # Scenario 4: an arbitrary, never-issued conversation_id
 # ---------------------------------------------------------------------------
 
+
 def test_arbitrary_unknown_conversation_id_starts_fresh_empty_conversation(client, mock_llm):
     """
     Empirical finding: MemorySaver has no concept of "known" vs "unknown"
@@ -298,7 +295,7 @@ def test_arbitrary_unknown_conversation_id_starts_fresh_empty_conversation(clien
     # what's handed to the LLM for this call -- so "fresh conversation"
     # means exactly [SystemMessage, HumanMessage("does this work?")], with
     # nothing left over from any other thread_id.
-    from langchain_core.messages import SystemMessage, HumanMessage
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     assert len(call_messages) == 2
     assert isinstance(call_messages[0], SystemMessage)
@@ -309,6 +306,7 @@ def test_arbitrary_unknown_conversation_id_starts_fresh_empty_conversation(clien
 # ---------------------------------------------------------------------------
 # Scenario 5: MemorySaver instantiation scope (singleton vs per-request)
 # ---------------------------------------------------------------------------
+
 
 def test_memorysaver_is_a_process_wide_singleton_not_recreated_per_request(client):
     """
@@ -327,7 +325,6 @@ def test_memorysaver_is_a_process_wide_singleton_not_recreated_per_request(clien
     2. The checkpointer object identity itself is stable across requests.
     """
     from src.agent.__main__ import build_app as _build_app  # noqa: F401
-    import src.agent.__main__ as agent_main_module
 
     # Access the actual AgentExecutor instance FastAPI/A2A is using via the
     # app's request handler, by rebuilding via the same code path the
@@ -372,6 +369,7 @@ def test_checkpointer_attribute_is_same_object_across_two_executor_builds(monkey
     # Simulate two requests against the same executor instance (as would
     # happen for two real /agent/run calls against one running process).
     import asyncio
+
     from langchain_core.messages import HumanMessage
 
     async def _invoke_once(msg):

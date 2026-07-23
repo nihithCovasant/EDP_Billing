@@ -6,9 +6,10 @@ Provides no-op tracing and standard logging so the agent can run locally.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Optional, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -70,19 +71,15 @@ class RequestContext:
     service_name: str
 
 
-_request_context: ContextVar[Optional[RequestContext]] = ContextVar(
-    "request_context", default=None
-)
-_observability_client: ContextVar[Optional[Any]] = ContextVar(
-    "observability_client", default=None
-)
+_request_context: ContextVar[RequestContext | None] = ContextVar("request_context", default=None)
+_observability_client: ContextVar[Any | None] = ContextVar("observability_client", default=None)
 
 
 def set_request_context(ctx: RequestContext) -> Token:
     return _request_context.set(ctx)
 
 
-def get_request_context() -> Optional[RequestContext]:
+def get_request_context() -> RequestContext | None:
     """Current request's context (set by OtelContextMiddleware), or None
     outside a request (e.g. a script/background task with no HTTP
     request). Mirrors the real cams-otel-lib's
@@ -111,7 +108,7 @@ class Otel_Client:
         environment: str = "dev",
         agent_id: str = "N/A",
         **_: Any,
-    ) -> "Otel_Client":
+    ) -> Otel_Client:
         logging.basicConfig(level=logging.INFO)
         _logger.info(
             "OTEL stub initialized: service=%s env=%s agent_id=%s",

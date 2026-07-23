@@ -8,19 +8,19 @@ so they can be built directly from SQLAlchemy ORM rows via model_validate().
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 # =============================================================================
 # Workflow
 # =============================================================================
 
+
 class WorkflowUploadRequest(BaseModel):
     # No trade_date field — server always targets "today's trading date"
     # (resolve_active_date()), or tomorrow if today's already underway.
-    workflow_json: Dict[str, Any]
+    workflow_json: dict[str, Any]
     uploaded_by: str = "ops"
     # Required label to save this config under (e.g. "diwali_2026") — every
     # explicit upload must be named so it can be found again later via
@@ -47,11 +47,11 @@ class WorkflowResponse(BaseModel):
     trade_date: date
     is_active: bool
     uploaded_by: str
-    uploaded_at: Optional[datetime]
+    uploaded_at: datetime | None
     segment_count: int = 0
     # None for a legacy config with no "post_trade_processes" list at all.
-    post_trade_process_count: Optional[int] = None
-    version_name: Optional[str] = None
+    post_trade_process_count: int | None = None
+    version_name: str | None = None
 
 
 class WorkflowUploadResponse(WorkflowResponse):
@@ -64,18 +64,19 @@ class WorkflowUploadResponse(WorkflowResponse):
 
 
 class WorkflowDetailResponse(WorkflowResponse):
-    workflow_json: Dict[str, Any]
+    workflow_json: dict[str, Any]
     # The date actually requested by the caller — differs from `trade_date`
     # (the row's own date) only when no config was ever uploaded for the
     # requested date and the last-uploaded-before-it config was carried
     # forward instead (see repository.get_latest_effective()).
-    requested_trade_date: Optional[date] = None
+    requested_trade_date: date | None = None
     carried_forward: bool = False
 
 
 # =============================================================================
 # Named workflow versions
 # =============================================================================
+
 
 class WorkflowVersionSummary(BaseModel):
     """One row returned by GET /workflow/versions (list) and .../{name} (get)."""
@@ -85,9 +86,9 @@ class WorkflowVersionSummary(BaseModel):
     trade_date: date
     is_active: bool
     uploaded_by: str
-    uploaded_at: Optional[datetime]
+    uploaded_at: datetime | None
     segment_count: int = 0
-    post_trade_process_count: Optional[int] = None
+    post_trade_process_count: int | None = None
 
 
 class WorkflowVersionApplyRequest(BaseModel):
@@ -98,6 +99,7 @@ class WorkflowVersionApplyRequest(BaseModel):
 # Segment summary (used inside DaySummaryResponse)
 # =============================================================================
 
+
 class SegmentSummary(BaseModel):
     segment_code: str
     segment_name: str
@@ -105,18 +107,18 @@ class SegmentSummary(BaseModel):
     # not a stored/uploaded field.
     sequence_order: int
     segment_status: str
-    current_process: Optional[str] = None
-    current_state: Optional[str] = None
-    process_id: Optional[str] = None
-    process_id_reserved_at: Optional[str] = None
-    skip_category: Optional[str] = None
-    skip_reason: Optional[str] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    last_heartbeat_at: Optional[str] = None
+    current_process: str | None = None
+    current_state: str | None = None
+    process_id: str | None = None
+    process_id_reserved_at: str | None = None
+    skip_category: str | None = None
+    skip_reason: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    last_heartbeat_at: str | None = None
     # Computed live (not stored) — see utils/serializers._runtime_health().
     runtime_health: str = "ACTIVE"
-    processes_json: Dict[str, Any] = Field(default_factory=dict)
+    processes_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class DaySummaryResponse(BaseModel):
@@ -127,12 +129,13 @@ class DaySummaryResponse(BaseModel):
     completed: int
     skipped: int
     failed: int
-    segments: List[SegmentSummary]
+    segments: list[SegmentSummary]
 
 
 # =============================================================================
 # Single segment detail
 # =============================================================================
+
 
 class SegmentDetailResponse(BaseModel):
     id: str
@@ -143,30 +146,31 @@ class SegmentDetailResponse(BaseModel):
     # not a stored/uploaded field.
     sequence_order: int
     segment_status: str
-    current_process: Optional[str] = None
-    current_state: Optional[str] = None
-    process_id: Optional[str] = None
-    process_id_reserved_at: Optional[str] = None
-    skip_category: Optional[str] = None
-    skip_reason: Optional[str] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    last_heartbeat_at: Optional[str] = None
+    current_process: str | None = None
+    current_state: str | None = None
+    process_id: str | None = None
+    process_id_reserved_at: str | None = None
+    skip_category: str | None = None
+    skip_reason: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    last_heartbeat_at: str | None = None
     # Computed live (not stored) — see utils/serializers._runtime_health().
     runtime_health: str = "ACTIVE"
-    config_id_used: Optional[str] = None
-    processes_json: Dict[str, Any] = Field(default_factory=dict)
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    config_id_used: str | None = None
+    processes_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 # =============================================================================
 # Agent control
 # =============================================================================
 
+
 class AgentControlRequest(BaseModel):
     requested_by: str = "ops"
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 class AgentControlResponse(BaseModel):
@@ -174,21 +178,22 @@ class AgentControlResponse(BaseModel):
     effective_state: str
     requested_at: str
     requested_by: str
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 class AgentStopResponse(AgentControlResponse):
-    snapshot: Dict[str, Any] = Field(default_factory=dict)
+    snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentStatusResponse(BaseModel):
     effective_state: str
-    history: List[AgentControlResponse] = Field(default_factory=list)
+    history: list[AgentControlResponse] = Field(default_factory=list)
 
 
 # =============================================================================
 # Audit log
 # =============================================================================
+
 
 class AuditLogEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -197,8 +202,8 @@ class AuditLogEntry(BaseModel):
     occurred_at: datetime
     actor: str
     action: str
-    trade_date: Optional[date] = None
-    version_name: Optional[str] = None
-    config_id: Optional[str] = None
+    trade_date: date | None = None
+    version_name: str | None = None
+    config_id: str | None = None
     summary: str
-    changes_json: Dict[str, Any] = Field(default_factory=dict)
+    changes_json: dict[str, Any] = Field(default_factory=dict)

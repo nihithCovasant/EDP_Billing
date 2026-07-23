@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import quote_plus
 
-from edpb_core import DOWNLOAD_SEGMENTS
+from cams_otel_lib import Logger as logger
+from cams_otel_lib import otel_trace
 
+from edpb_core import DOWNLOAD_SEGMENTS
 from src.config.agent_config import load_agent_config
-from .utils.constants import POST_TRADE_ORDER, POST_TRADE_FIRST_WINDOW_START
-from cams_otel_lib import Logger as logger, otel_trace
+
+from .utils.constants import POST_TRADE_FIRST_WINDOW_START, POST_TRADE_ORDER
 
 
 def _normalize_postgres_url(url: str) -> str:
@@ -31,7 +33,7 @@ def _normalize_postgres_url(url: str) -> str:
     return url
 
 
-def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> str:
+def _resolve_database_url(edp_raw: dict[str, Any], secrets: dict[str, Any]) -> str:
     """
     Resolve the EDP (PostgreSQL-only) database URL. Priority (highest first):
       1. DATABASE_URL env var (full connection string)
@@ -61,11 +63,7 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
             userinfo = f"{userinfo}:{quote_plus(db_password)}"
         return f"postgresql+asyncpg://{userinfo}@{db_host}:{db_port}/{db_name}"
 
-    db_url = (
-        secrets.get("database", {})
-        .get("postgres", {})
-        .get("connection_string")
-    )
+    db_url = secrets.get("database", {}).get("postgres", {}).get("connection_string")
     if db_url:
         resolved = _normalize_postgres_url(db_url)
         _validate_database_url(resolved)
@@ -86,7 +84,7 @@ def _resolve_database_url(edp_raw: Dict[str, Any], secrets: Dict[str, Any]) -> s
     )
 
 
-def _env_nonempty(name: str) -> Optional[str]:
+def _env_nonempty(name: str) -> str | None:
     """Like os.getenv(name), but treats an explicitly-set-to-empty-string
     env var (e.g. a copy-paste-gone-wrong deploy leaving CBOS_STATUS_URL=""
     in place) the same as an unset one, instead of letting "" silently win
@@ -118,7 +116,7 @@ def _validate_database_url(url: str) -> None:
         )
 
 
-def _validate_process_entries(entries: List[Dict[str, Any]], *, config_key: str, code_field: str) -> None:
+def _validate_process_entries(entries: list[dict[str, Any]], *, config_key: str, code_field: str) -> None:
     """Fail fast on a malformed default_segments/default_post_trade_processes
     entry (e.g. a bare string instead of a {"segment_code": ...} object) —
     otherwise this only surfaces later, at first-run auto-seed time, as an
@@ -133,8 +131,7 @@ def _validate_process_entries(entries: List[Dict[str, Any]], *, config_key: str,
             )
         if not entry.get(code_field):
             raise RuntimeError(
-                f"agent_config.json's edp.{config_key}[{idx}] is missing a "
-                f"non-empty {code_field!r} value: {entry!r}"
+                f"agent_config.json's edp.{config_key}[{idx}] is missing a non-empty {code_field!r} value: {entry!r}"
             )
 
 
@@ -154,12 +151,12 @@ def to_alembic_url(database_url: str) -> str:
 class EdpBootstrapConfig:
     # Loop settings
     wake_interval_seconds: int = 60
-    active_date_cutoff_hour: int = 6   # before 06:00 IST = previous calendar day
+    active_date_cutoff_hour: int = 6  # before 06:00 IST = previous calendar day
     timezone: str = "Asia/Kolkata"
 
     # CBOS — two separate base URLs
-    cbos_status_url: str = "http://localhost:8087"    # port 8087: file_process_status
-    cbos_process_url: str = "http://localhost:8003"   # port 8003: getNewTradeProcess etc.
+    cbos_status_url: str = "http://localhost:8087"  # port 8087: file_process_status
+    cbos_process_url: str = "http://localhost:8003"  # port 8003: getNewTradeProcess etc.
     cbos_use_mock: bool = True
     cbos_login_id: str = "CV0001"
 
@@ -189,9 +186,9 @@ class EdpBootstrapConfig:
     agent_instance_id: str = "agent-1"
 
     # Auto-seed defaults, used when no config has been uploaded yet.
-    default_segments: List[Dict[str, Any]] = field(default_factory=list)
+    default_segments: list[dict[str, Any]] = field(default_factory=list)
     # Empty means "use fixed legacy defaults" (see build_default_workflow_json()).
-    default_post_trade_processes: List[Dict[str, Any]] = field(default_factory=list)
+    default_post_trade_processes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _is_truthy_env(value: str | None) -> bool:
@@ -210,7 +207,7 @@ def load_edp_config() -> EdpBootstrapConfig:
     """
     raw = load_agent_config()
     default_cfg = raw.get("default", {})
-    edp_raw: Dict[str, Any] = default_cfg.get("edp", {})
+    edp_raw: dict[str, Any] = default_cfg.get("edp", {})
     if not isinstance(edp_raw, dict):
         logger.error(
             f"[EDP CONFIG] agent_config.json's default.edp section is not an object "
@@ -232,18 +229,10 @@ def load_edp_config() -> EdpBootstrapConfig:
     secrets = default_cfg.get("secrets", {})
     db_url = _resolve_database_url(edp_raw, secrets)
 
-    cbos_status_url = (
-        _env_nonempty("CBOS_STATUS_URL")
-        or edp_raw.get("cbos_status_url")
-        or "http://localhost:8087"
-    )
+    cbos_status_url = _env_nonempty("CBOS_STATUS_URL") or edp_raw.get("cbos_status_url") or "http://localhost:8087"
     cbos_status_url_defaulted = not _env_nonempty("CBOS_STATUS_URL") and not edp_raw.get("cbos_status_url")
 
-    cbos_process_url = (
-        _env_nonempty("CBOS_PROCESS_URL")
-        or edp_raw.get("cbos_process_url")
-        or "http://localhost:8003"
-    )
+    cbos_process_url = _env_nonempty("CBOS_PROCESS_URL") or edp_raw.get("cbos_process_url") or "http://localhost:8003"
     cbos_process_url_defaulted = not _env_nonempty("CBOS_PROCESS_URL") and not edp_raw.get("cbos_process_url")
 
     cbos_use_mock_raw = os.getenv("CBOS_USE_MOCK")
@@ -254,11 +243,13 @@ def load_edp_config() -> EdpBootstrapConfig:
         cbos_use_mock = bool(edp_raw.get("cbos_use_mock", True))
 
     defaulted_settings = [
-        name for name, defaulted in (
+        name
+        for name, defaulted in (
             ("cbos_status_url", cbos_status_url_defaulted),
             ("cbos_process_url", cbos_process_url_defaulted),
             ("cbos_use_mock", cbos_use_mock_defaulted),
-        ) if defaulted
+        )
+        if defaulted
     ]
     if defaulted_settings:
         logger.warning(
@@ -295,7 +286,9 @@ def load_edp_config() -> EdpBootstrapConfig:
     default_post_trade_processes = edp_raw.get("post_trade_processes", [])
     _validate_process_entries(default_segments, config_key="segments", code_field="segment_code")
     _validate_process_entries(
-        default_post_trade_processes, config_key="post_trade_processes", code_field="process_code",
+        default_post_trade_processes,
+        config_key="post_trade_processes",
+        code_field="process_code",
     )
 
     edpb_use_mock_raw = os.getenv("EDPB_USE_MOCK")
@@ -308,9 +301,7 @@ def load_edp_config() -> EdpBootstrapConfig:
 
     download_segments_raw = os.getenv("EDPB_DOWNLOAD_SEGMENTS") or edp_raw.get("download_segments")
     if isinstance(download_segments_raw, str):
-        download_segments = tuple(
-            s.strip().upper() for s in download_segments_raw.split(",") if s.strip()
-        )
+        download_segments = tuple(s.strip().upper() for s in download_segments_raw.split(",") if s.strip())
     elif isinstance(download_segments_raw, (list, tuple)):
         download_segments = tuple(str(s).upper() for s in download_segments_raw)
     else:
@@ -324,14 +315,10 @@ def load_edp_config() -> EdpBootstrapConfig:
         cbos_process_url=cbos_process_url,
         cbos_use_mock=cbos_use_mock,
         edpb_download_url=(
-            _env_nonempty("EDPB_DOWNLOAD_API_URL")
-            or edp_raw.get("edpb_download_url")
-            or "http://localhost:7000"
+            _env_nonempty("EDPB_DOWNLOAD_API_URL") or edp_raw.get("edpb_download_url") or "http://localhost:7000"
         ),
         edpb_uploader_url=(
-            _env_nonempty("EDPB_UPLOADER_API_URL")
-            or edp_raw.get("edpb_uploader_url")
-            or "http://localhost:8000"
+            _env_nonempty("EDPB_UPLOADER_API_URL") or edp_raw.get("edpb_uploader_url") or "http://localhost:8000"
         ),
         edpb_use_mock=edpb_use_mock,
         edpb_download_timeout_seconds=int(
@@ -341,14 +328,14 @@ def load_edp_config() -> EdpBootstrapConfig:
             os.getenv("EDPB_DOWNLOAD_MAX_ATTEMPTS", edp_raw.get("edpb_download_max_attempts", 3))
         ),
         download_segments=download_segments,
-        manual_activation_lookback_days=int(os.getenv(
-            "EDP_MANUAL_ACTIVATION_LOOKBACK_DAYS",
-            edp_raw.get("manual_activation_lookback_days", 30),
-        )),
-        cbos_login_id=os.getenv("CBOS_LOGIN_ID", edp_raw.get("cbos_login_id", "CV0001")),
-        post_trade_login_id=os.getenv(
-            "POST_TRADE_LOGIN_ID", edp_raw.get("post_trade_login_id", "G_LID")
+        manual_activation_lookback_days=int(
+            os.getenv(
+                "EDP_MANUAL_ACTIVATION_LOOKBACK_DAYS",
+                edp_raw.get("manual_activation_lookback_days", 30),
+            )
         ),
+        cbos_login_id=os.getenv("CBOS_LOGIN_ID", edp_raw.get("cbos_login_id", "CV0001")),
+        post_trade_login_id=os.getenv("POST_TRADE_LOGIN_ID", edp_raw.get("post_trade_login_id", "G_LID")),
         database_url=db_url,
         agent_instance_id=edp_raw.get("agent_instance_id", "agent-1"),
         default_segments=default_segments,
@@ -357,8 +344,8 @@ def load_edp_config() -> EdpBootstrapConfig:
 
 
 def build_default_workflow_json(
-    segments: List[Dict[str, Any]],
-    post_trade_processes: Optional[List[Dict[str, Any]]] = None,
+    segments: list[dict[str, Any]],
+    post_trade_processes: list[dict[str, Any]] | None = None,
 ) -> dict:
     """
     Build a workflow_json from default_segments / default_post_trade_processes.
@@ -381,12 +368,14 @@ def build_default_workflow_json(
     built_segments = []
     for seg in segments:
         seg_code = seg.get("segment_code", "")
-        built_segments.append({
-            "segment_code": seg_code,
-            "login_id": seg.get("login_id", "CV0001"),
-            "window_start": seg.get("window_start", "17:00"),
-            "window_end": seg.get("window_end", "06:00"),
-        })
+        built_segments.append(
+            {
+                "segment_code": seg_code,
+                "login_id": seg.get("login_id", "CV0001"),
+                "window_start": seg.get("window_start", "17:00"),
+                "window_end": seg.get("window_end", "06:00"),
+            }
+        )
 
     if post_trade_processes is None:
         post_trade_processes = [{"process_code": code} for code in POST_TRADE_ORDER]
@@ -397,7 +386,7 @@ def build_default_workflow_json(
 
     built_post_trade = []
     for proc in post_trade_processes:
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "process_code": proc.get("process_code", ""),
             "login_id": proc.get("login_id", "G_LID"),
         }
