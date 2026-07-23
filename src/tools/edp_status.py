@@ -336,8 +336,56 @@ def _fmt_ts_ist(raw: Optional[str]) -> str:
         return raw
 
 
+# Business hours assumption for the off-hours audit flag below: Mon-Sat,
+# 09:00-19:00 IST. Not sourced from any config — this codebase has no
+# existing business-hours concept (checked utils/constants.py and
+# elsewhere), so this is a documented, conservative default covering
+# typical back-office hours; adjust here if MOFSL's actual hours differ.
+_BUSINESS_HOURS_START = 9
+_BUSINESS_HOURS_END = 19
+
+
+def _is_outside_business_hours(occurred_at_raw: Optional[str]) -> bool:
+    if not occurred_at_raw:
+        return False
+    try:
+        dt = datetime.fromisoformat(occurred_at_raw).astimezone(IST)
+    except ValueError:
+        return False
+    if dt.weekday() == 6:  # Sunday
+        return True
+    return not (_BUSINESS_HOURS_START <= dt.hour < _BUSINESS_HOURS_END)
+
+
+def _format_changes_detail(changes_json: Dict[str, Any]) -> str:
+    """Readable per-field diff from an audit row's changes_json, same
+    {"segments": [...], "post_trade_processes": [...]} shape produced at
+    upload time (see api/workflow.py::diff_workflow_configs) — each entry
+    is {"code","change":"added|removed"} or
+    {"code","change":"modified","field","old","new"}."""
+    if not changes_json or changes_json.get("initial"):
+        return "  _(initial upload — no prior config to diff against)_"
+    all_changes = list(changes_json.get("segments") or []) + list(changes_json.get("post_trade_processes") or [])
+    if not all_changes:
+        return "  _(no field-level changes recorded)_"
+    parts = []
+    for c in all_changes:
+        if c.get("change") == "added":
+            parts.append(f"  - **{c.get('code')}**: added")
+        elif c.get("change") == "removed":
+            parts.append(f"  - **{c.get('code')}**: removed")
+        else:
+            parts.append(f"  - **{c.get('code')}**.{c.get('field')}: `{c.get('old')}` → `{c.get('new')}`")
+    return "\n".join(parts)
+
+
 @tool
-async def list_edp_audit_log(trade_date: Optional[str] = None, limit: int = 20) -> str:
+async def list_edp_audit_log(
+    trade_date: Optional[str] = None,
+    action: Optional[str] = None,
+    limit: int = 20,
+    show_details: bool = False,
+) -> str:
     """
     Show recent EDP workflow config changes — who changed what, when. Use
     this when the user asks "what changed recently", "who updated the
@@ -348,13 +396,26 @@ async def list_edp_audit_log(trade_date: Optional[str] = None, limit: int = 20) 
 
     `trade_date` is optional (any date phrasing, e.g. "today", "2026-07-10")
     — filters to changes affecting that trading date; omit it to see the
-    most recent changes across all dates. `limit` caps how many entries
-    come back (default 20, max 200).
+    most recent changes across all dates. `action` is optional — filter to
+    one change type, e.g. "WORKFLOW_UPLOAD" or "WORKFLOW_VERSION_DELETE";
+    omit to see all types. `limit` caps how many entries come back (default
+    20, max 200). `show_details` — set True when the user asks to see the
+    actual field-level diff for an entry (e.g. "what exactly changed in
+    that update") rather than just the one-line summary; best combined
+    with a narrow trade_date/limit so the detail stays readable.
+
+    Entries whose timestamp falls outside Mon-Sat 09:00-19:00 IST (or any
+    time on Sunday) are flagged with ⚠️ as an off-hours change — worth a
+    second look during a review.
     """
     path = f"/edp/audit?limit={limit}"
     if trade_date:
         path += f"&trade_date={_normalize_date(trade_date)}"
+    if action:
+        path += f"&action={action}"
     status_code, data = await _get(path)
+    if status_code == 422:
+        return f"❌ Unrecognized action filter **{action}**: {data.get('detail', data)}"
     if status_code >= 400:
         return f"❌ Could not fetch the audit log (HTTP {status_code}): {data.get('detail', data)}"
     if not data:
@@ -367,10 +428,13 @@ async def list_edp_audit_log(trade_date: Optional[str] = None, limit: int = 20) 
         "|---|---|---|---|---|---|",
     ]
     for e in data:
+        off_hours_flag = "⚠️ " if _is_outside_business_hours(e.get("occurred_at")) else ""
         lines.append(
-            f"| {_fmt_ts_ist(e.get('occurred_at'))} | {e.get('actor')} | {e.get('action')} | "
+            f"| {off_hours_flag}{_fmt_ts_ist(e.get('occurred_at'))} | {e.get('actor')} | {e.get('action')} | "
             f"{e.get('trade_date') or '—'} | {e.get('version_name') or '—'} | {e.get('summary')} |"
         )
+        if show_details:
+            lines.append(_format_changes_detail(e.get("changes_json") or {}))
     return "\n".join(lines)
 
 

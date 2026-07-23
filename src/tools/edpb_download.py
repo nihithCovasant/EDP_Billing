@@ -24,6 +24,7 @@ billing wake loop/state machine); this file is never imported from there.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import date, datetime
@@ -34,6 +35,17 @@ from langchain_core.tools import tool
 from cams_otel_lib import Logger as logger
 
 from src.config.agent_config import get_secrets, load_agent_config
+
+# Auto-retry ONLY applies to connection-establishment failures (DNS/refused/
+# unreachable) -- i.e. the request never actually reached the server, so
+# retrying is safe. A read-timeout (server accepted the request but didn't
+# respond in time) is deliberately NEVER auto-retried here: per the
+# _DEFAULT_TIMEOUT_SECONDS comment above, the server-side download keeps
+# running after a client timeout, so blindly retrying on timeout risks
+# kicking off a SECOND concurrent server-side download while the first one
+# may still be in flight.
+_CONNECT_RETRY_ATTEMPTS = 3
+_CONNECT_RETRY_BACKOFF_SECONDS = 2.0
 
 # Placeholder — used only if neither agent_config.json nor an EDPB_* env
 # var provides a real one.
@@ -153,22 +165,46 @@ async def download_file(identifier: str, trade_date: Optional[str] = None) -> st
 
     logger.info(f"[EDPB_DOWNLOAD] code={code} trade_date={resolved_trade_date} | POST {api_url}")
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(api_url, json=payload, headers=headers)
-    except httpx.TimeoutException as exc:
+    resp = None
+    last_connect_error: Optional[Exception] = None
+    for attempt in range(1, _CONNECT_RETRY_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                resp = await client.post(api_url, json=payload, headers=headers)
+            break
+        except httpx.ConnectError as exc:
+            last_connect_error = exc
+            logger.warning(
+                f"[EDPB_DOWNLOAD] code={code} | connection attempt {attempt}/{_CONNECT_RETRY_ATTEMPTS} "
+                f"failed (never reached the server, safe to retry): {exc}"
+            )
+            if attempt < _CONNECT_RETRY_ATTEMPTS:
+                await asyncio.sleep(_CONNECT_RETRY_BACKOFF_SECONDS * attempt)
+        except httpx.TimeoutException as exc:
+            logger.error(
+                f"[EDPB_DOWNLOAD] code={code} | TIMEOUT after {timeout_seconds}s error={exc} — "
+                f"the server-side download may still complete even though this request gave up waiting; "
+                f"NOT auto-retrying a timeout (unlike a connection failure) since the request may have "
+                f"already reached the server"
+            )
+            return (
+                f"Timed out waiting for the EDPB download API for **{code}** (trade_date={resolved_trade_date}) "
+                f"after {timeout_seconds:.0f}s. The download may still be running/have completed on the server "
+                f"side — re-check status before assuming it failed."
+            )
+        except Exception as exc:
+            logger.error(f"[EDPB_DOWNLOAD] code={code} | EXCEPTION error={exc}")
+            return f"Failed to call the EDPB download API for **{code}**: {exc}"
+
+    if resp is None:
         logger.error(
-            f"[EDPB_DOWNLOAD] code={code} | TIMEOUT after {timeout_seconds}s error={exc} — "
-            f"the server-side download may still complete even though this request gave up waiting"
+            f"[EDPB_DOWNLOAD] code={code} | connection failed after {_CONNECT_RETRY_ATTEMPTS} attempts: "
+            f"{last_connect_error}"
         )
         return (
-            f"Timed out waiting for the EDPB download API for **{code}** (trade_date={resolved_trade_date}) "
-            f"after {timeout_seconds:.0f}s. The download may still be running/have completed on the server "
-            f"side — re-check status before assuming it failed."
+            f"Could not reach the EDPB download API for **{code}** (trade_date={resolved_trade_date}) after "
+            f"{_CONNECT_RETRY_ATTEMPTS} attempts — connection failed each time: {last_connect_error}"
         )
-    except Exception as exc:
-        logger.error(f"[EDPB_DOWNLOAD] code={code} | EXCEPTION error={exc}")
-        return f"Failed to call the EDPB download API for **{code}**: {exc}"
 
     if resp.status_code != 200:
         logger.error(
