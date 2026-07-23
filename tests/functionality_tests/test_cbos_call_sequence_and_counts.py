@@ -176,7 +176,7 @@ async def test_holiday_skipped_segment_makes_exactly_one_cbos_call_ever(cfg, ses
         async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
             self.calls.append((segment.upper(), process_name))
             if segment.upper() == self._skip_segment and process_name == self._skip_process:
-                return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
+                return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
             return await CbosClient.file_process_status(self, segment, process_name, user_id)
 
     cbos = RecordingSkippingCbosClient(
@@ -387,7 +387,7 @@ async def test_full_day_all_segments_and_post_trade_call_count_audit(cfg, sessio
         async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
             self.calls.append((segment.upper(), process_name))
             if segment.upper() in self._skip_segments and process_name == "BeginFileUpload":
-                return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
+                return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
             return await CbosClient.file_process_status(self, segment, process_name, user_id)
 
     cbos = RecordingMultiSkippingCbosClient(

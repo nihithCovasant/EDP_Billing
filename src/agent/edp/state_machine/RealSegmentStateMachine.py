@@ -110,7 +110,8 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
     async def handle_init(
         self, cbos: CbosClient, row: SegmentExecution, session: AsyncSession, login_id: str, now: datetime,
     ) -> SegmentHandlerResult:
-        """POST file_process_status(BeginFileUpload). SKIP -> holiday | FALSE -> not yet open | TRUE -> proceed."""
+        """POST file_process_status(BeginFileUpload). V5: SKIP -> proceed (not
+        a holiday!) | FALSE -> not yet open | any other MSG -> holiday."""
         logger.info(stage_log(row.segment_code, "INIT", "Checking holiday gate (BeginFileUpload)"))
 
         result = await cbos.file_process_status(
@@ -133,21 +134,33 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             ))
             return self._fail_result(row, "CBOS_ERROR", f"BeginFileUpload error: {result.error}", now)
 
-        if result.is_skip:
+        # V5 SEMANTIC INVERSION (caught by live E2E against the v5 mock):
+        # BeginFileUpload's MSG=SKIP means "NOT a holiday — proceed" (V5 doc
+        # Step 1: "MSG = SKIP means proceed. Any other value indicates a
+        # holiday"); the uploader has implemented this since feat/existing-pid
+        # (BEGIN_UPLOAD_PROCEED = "SKIP"). The old branch here treated SKIP
+        # as the holiday — v3 semantics — and the in-process mock's TRUE
+        # answer masked it in every test. TRUE is kept as proceed for
+        # v3-compat (real v5 answers SKIP); FALSE stays "not yet open".
+        if result.is_skip or result.is_ready:
+            pass  # proceed — fall through to the advance below
+        elif result.is_pending:
+            logger.info(stage_log(
+                row.segment_code, "INIT",
+                "EDP window not yet open — will check next cycle", response=result.response,
+            ))
+            return SegmentHandlerResult(outcome=BLOCKED)
+        else:
             logger.info(stage_log(
                 row.segment_code, "INIT",
                 "Market HOLIDAY — segment will be SKIPPED",
                 response=result.response, at=now.strftime("%H:%M:%S %Z"),
             ))
             mark_step_done(row, SegmentState.INIT.value, "BeginFileUpload_STATUS", result.response, now)
-            return self._skip_result(row, "CBOS_SKIP", "BeginFileUpload returned SKIP — market holiday", now)
-
-        if result.is_pending:
-            logger.info(stage_log(
-                row.segment_code, "INIT",
-                "EDP window not yet open — will check next cycle", response=result.response,
-            ))
-            return SegmentHandlerResult(outcome=BLOCKED)
+            return self._skip_result(
+                row, "CBOS_SKIP",
+                f"BeginFileUpload answered {result.response!r} — market holiday", now,
+            )
 
         # Engine-owned saga (BATCH_HANDOFF_CONTRACT.md): segments the RPA bot
         # can download route through DOWNLOADING -> UPLOADING first; everyone
@@ -204,13 +217,17 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         attempts, then FAILED. Crash-safe by construction: re-running the
         download supersedes the manifest (fresh batch_id), never duplicates."""
         client = self._edpb()
+        cid = self._run_correlation_id(row)
+        # The correlation id must appear in THIS service's log too (ticket
+        # 11's grep-across-services promise) - caught by live E2E: engine.log
+        # had zero occurrences while bot/uploader logged it on every line.
         logger.info(stage_log(
             row.segment_code, "DOWNLOADING",
             "Requesting full-segment download from the RPA bot",
-            trade_date=str(row.trade_date),
+            trade_date=str(row.trade_date), corr=cid,
         ))
         result = await client.request_download(
-            row.segment_code, row.trade_date, correlation_id=self._run_correlation_id(row),
+            row.segment_code, row.trade_date, correlation_id=cid,
         )
         record_poll(row, SegmentState.DOWNLOADING.value, "edpb_download",
                     f"{result.status}: {result.message[:200]}", now)
@@ -278,9 +295,12 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             return self._fail_result(row, "UPLOAD_ERROR", "no manifest_path recorded by DOWNLOADING", now)
 
         client = self._edpb()
-        result = await client.submit_batch(
-            manifest_path, correlation_id=self._run_correlation_id(row),
-        )
+        cid = self._run_correlation_id(row)
+        logger.info(stage_log(
+            row.segment_code, "UPLOADING",
+            "Submitting manifest to the uploader", manifest=manifest_path, corr=cid,
+        ))
+        result = await client.submit_batch(manifest_path, correlation_id=cid)
         record_poll(row, SegmentState.UPLOADING.value, "submit_batch",
                     f"accepted={result.accepted} {result.batch_status or result.message}"[:200], now)
         await session.flush()
@@ -412,9 +432,8 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         decision) instead of a silent window-expiry hours later."""
         batch_id = get_download_result(row).get("batch_id")
         if batch_id:
-            batch = await self._edpb().get_batch_status(
-                batch_id, correlation_id=self._run_correlation_id(row),
-            )
+            cid = self._run_correlation_id(row)
+            batch = await self._edpb().get_batch_status(batch_id, correlation_id=cid)
             if batch.found and batch.status == BatchStatus.INCOMPLETE:
                 missing = ", ".join(
                     f"{slot.get('upload_id')} ({slot.get('name')})" for slot in batch.missing_slots
@@ -424,7 +443,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                     "Uploader parked the batch INCOMPLETE — mandatory files missing; "
                     "FILEUPLOAD cannot go TRUE. Failing now so ops is alerted "
                     "(fix: re-download, or audited POST /batches/{id}/proceed).",
-                    batch_id=batch_id, missing_slots=missing,
+                    batch_id=batch_id, missing_slots=missing, corr=cid,
                 ))
                 return self._fail_result(
                     row, "BATCH_INCOMPLETE",

@@ -63,7 +63,15 @@ class SkippingCbosClient(CbosClient):
         self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() == self._skip_segment and process_name == self._skip_process:
-            return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
+            # V5 split semantics: BeginFileUpload's holiday answer is any
+            # NON-SKIP value ("SKIP" means proceed there!); post-trade GTG
+            # checks keep the classic SKIP-means-holiday meaning.
+            msg = "HOLIDAY" if process_name == "BeginFileUpload" else "SKIP"
+            return FileStatusResult(
+                response=msg,
+                raw_body=f'{{"Status":"Success","Data":[{{"MSG":"{msg}"}}]}}',
+                error=None, is_transient=False,
+            )
         return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
 

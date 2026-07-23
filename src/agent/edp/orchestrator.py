@@ -278,16 +278,38 @@ class EdpOrchestrator:
                 return "failed"
 
             seg_cfg = _find_segment_cfg(workflow.workflow_json, segment_code)
-            if not seg_cfg:
+            if not seg_cfg and bypass_window:
+                # Manual runs (backfills / POST /edp/run) may target a segment
+                # the day's workflow doesn't configure - that is the POINT of
+                # the sweep. Windows are bypassed anyway; the login falls back
+                # to the agent default. (Caught by live E2E: this used to
+                # return "failed" WITHOUT a terminal transition, error-looping
+                # every cycle for the whole lookback.)
+                logger.warning(seg_log(
+                    segment_code, active_date,
+                    "Segment not in this date's workflow_json - manual run "
+                    "proceeding with default login_id and no windows",
+                ))
+                seg_cfg = {}
+            elif not seg_cfg:
                 logger.error(seg_log(
                     segment_code, active_date,
-                    "Segment code missing from workflow_json — cannot process",
+                    "Segment code missing from workflow_json — cannot process; "
+                    "marking FAILED (terminal) so this row cannot error-loop",
                 ))
+                await repository.move_to_state(
+                    session, row, SegmentStatus.FAILED,
+                    category="CONFIG_ERROR",
+                    reason="segment_code missing from the date's workflow_json",
+                    now=now,
+                )
                 return "failed"
             login_id = seg_cfg.get("login_id", self.config.cbos_login_id)
 
-            window_start, window_end = _resolve_window(
-                segment_code, workflow.workflow_json, active_date, self._tz
+            window_start, window_end = (
+                (None, None) if (bypass_window and not seg_cfg) else _resolve_window(
+                    segment_code, workflow.workflow_json, active_date, self._tz
+                )
             )
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
             # Inject the saga dependencies (mirrors cbos being passed in).

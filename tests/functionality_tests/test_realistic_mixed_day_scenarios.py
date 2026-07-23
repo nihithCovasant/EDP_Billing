@@ -49,7 +49,7 @@ class MultiSkippingCbosClient(CbosClient):
         self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True,
     ) -> FileStatusResult:
         if segment.upper() in self._skip_segments and process_name == "BeginFileUpload":
-            return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
+            return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
         return await super().file_process_status(segment, process_name, user_id, trade_date, include_segment=include_segment)
 
 
@@ -416,7 +416,7 @@ async def test_end_of_day_summary_matches_real_mixed_outcomes_exactly(cfg, sessi
         async def file_process_status(self, segment: str, process_name: str, user_id: str, trade_date=None, *, include_segment=True) -> FileStatusResult:
             seg = segment.upper()
             if seg in END_OF_DAY_HOLIDAY_SEGMENTS and process_name == "BeginFileUpload":
-                return FileStatusResult(response="SKIP", raw_body='{"Status":"SKIP"}', error=None, is_transient=False)
+                return FileStatusResult(response="HOLIDAY", raw_body='{"Status":"Success","Data":[{"MSG":"HOLIDAY"}]}', error=None, is_transient=False)
             if END_OF_DAY_FAIL_PAIRS.get(seg) == process_name:
                 return FileStatusResult(
                     response="FALSE",
