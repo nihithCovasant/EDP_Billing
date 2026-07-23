@@ -216,7 +216,11 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                     f"{result.status}: {result.message[:200]}", now)
         await session.flush()
 
-        if result.status in DownloadStatus.FINALIZED and result.manifest_path and result.batch_id:
+        if (
+            result.status in (DownloadStatus.SUCCESS, DownloadStatus.PARTIAL)
+            and result.manifest_path
+            and result.batch_id
+        ):
             record_download_result(row, result.manifest_path, result.batch_id, result.status, now)
             logger.info(stage_log(
                 row.segment_code, "DOWNLOADING",

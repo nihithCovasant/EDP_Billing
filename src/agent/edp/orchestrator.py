@@ -26,6 +26,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from .config import EdpBootstrapConfig, build_default_workflow_json
+from .edpb_client import EdpbClient, get_edpb_client
 from .database import get_session
 from .models import SegmentState, SegmentStatus
 from . import repository
@@ -56,7 +57,7 @@ class EdpOrchestrator:
     """
 
     def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient,
-                 edpb: "EdpbClient | None" = None):
+                 edpb: EdpbClient | None = None):
         self.config = config
         self.cbos = cbos
         # Injected like cbos; None -> resolved lazily so tests that swap the
@@ -73,9 +74,7 @@ class EdpOrchestrator:
         self._cycle_configured_codes: tuple[str, ...] = ()
 
     @property
-    def edpb(self):
-        from .edpb_client import get_edpb_client
-
+    def edpb(self) -> "EdpbClient":
         return self._edpb or get_edpb_client()
 
     # -------------------------------------------------------------------------
@@ -315,10 +314,14 @@ class EdpOrchestrator:
 
             # Window deadline missed (PENDING only) — a local timeout, not a
             # CBOS-driven skip signal, so this is FAILED/TIMEOUT, not SKIPPED.
+            # A manually_activated row is exempt: ops explicitly retried/ran
+            # it (often BECAUSE the window was missed) — insta-refailing it
+            # made same-day retry useless until rollover.
             if (
                 not bypass_window
                 and state_machine.is_my_window_over(now, window_end)
                 and row.segment_status == SegmentStatus.PENDING
+                and not row.manually_activated
             ):
                 logger.warning(seg_log(
                     segment_code, active_date,

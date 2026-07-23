@@ -189,3 +189,66 @@ async def test_run_endpoint(cfg, session_factory, test_date, api_client):
     async with session_factory() as session:
         eq = await repository.get_one(session, test_date, "EQ")
         assert eq is None or eq.manually_activated is False, "only MCX was activated"
+
+
+async def test_post_trade_rows_never_enter_the_manual_lane(cfg, session_factory, test_date):
+    """Round-2 review: retry_segment marked post-trade rows too, and the sweep
+    then drove them through the real-segment machine into a misleading error
+    every cycle. Post-trade rows are now excluded at both the marker and the
+    sweep query (ticket 13: real segments only)."""
+    await helpers.seed_day(session_factory, test_date, cfg)
+    async with session_factory() as session:
+        from src.agent.edp.repository import seed_from_workflow  # noqa: F401 - post-trade rows
+    # Create a post-trade row and fail it, then retry it.
+    from src.agent.edp.utils.constants import POST_TRADE_ORDER
+    code = POST_TRADE_ORDER[0]  # COLVAL
+    async with session_factory() as session:
+        wf = await repository.get_active(session, test_date)
+        row = await repository.get_or_create(session, wf, test_date, code)
+        await repository.move_to_state(session, row, SegmentStatus.FAILED,
+                                       category="CBOS_ERROR", reason="forced")
+        retried = await repository.retry_segment(session, test_date, code)
+        await session.commit()
+
+    assert retried is not None and retried.segment_status == SegmentStatus.PENDING
+    assert retried.manually_activated is False, "post-trade rows must not be marked"
+
+    async with session_factory() as session:
+        rows = await repository.get_manually_activated_rows(
+            session, min_date=test_date - timedelta(days=30))
+        assert not any(r.segment_code == code for r in rows), "sweep query excludes post-trade"
+
+
+async def test_same_day_missed_window_retry_is_not_insta_refailed(cfg, session_factory, test_date):
+    """Round-2 review: an active-date retry after the window deadline was
+    immediately re-FAILED as TIMEOUT by the normal path, making same-day
+    retry useless until rollover. manually_activated rows are now exempt
+    from the deadline insta-fail."""
+    from datetime import time as dtime
+
+    orchestrator = _orchestrator(cfg)
+    await helpers.seed_day(session_factory, test_date, cfg)
+    # EQ: same-day window (17:00-18:00) - 23:55 is unambiguously past its
+    # deadline (MCX's window resolves to the NEXT morning, so it would read
+    # as not-yet-open instead).
+    await _fail_segment(session_factory, test_date, "EQ")
+    async with session_factory() as session:
+        await repository.retry_segment(session, test_date, "EQ")
+        await session.commit()
+
+    # Drive the NORMAL path with `now` far past the window deadline.
+    orchestrator._cycle_active_date = test_date
+    orchestrator._cycle_configured_codes = ("EQ",)
+    late = datetime.combine(test_date, dtime(23, 55), tzinfo=orchestrator._tz)
+    for _ in range(40):
+        orchestrator._cycle_now = late
+        await orchestrator._process_one_segment("EQ")
+        async with session_factory() as session:
+            row = await repository.get_one(session, test_date, "EQ")
+        if row.segment_status in helpers.TERMINAL_STATES:
+            break
+
+    assert row.segment_status == SegmentStatus.COMPLETED, (
+        f"expected the ops-requested retry to RUN past the deadline, got "
+        f"{row.segment_status} ({row.skip_category}: {row.skip_reason})"
+    )

@@ -24,6 +24,22 @@ class BatchStatus(str, enum.Enum):
         return self in (BatchStatus.INCOMPLETE, BatchStatus.FAILED, BatchStatus.REJECTED)
 
 
+class DownloadOutcome(str, enum.Enum):
+    """The bot's classified download outcomes (PortalStatus/McxStatus on the
+    bot side) plus the engine client's transport-level ERROR."""
+
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    NO_DATA = "no_data"
+    FAILED = "failed"
+    ERROR = "error"
+
+    @property
+    def finalized(self) -> bool:
+        """True when this outcome carries a finalized manifest."""
+        return self in (DownloadOutcome.SUCCESS, DownloadOutcome.PARTIAL)
+
+
 BATCHES_PATH = "/batches"
 BATCH_STATUS_PATH = "/batches/{batch_id}"
 BATCHES_RESCAN_PATH = "/batches/rescan"

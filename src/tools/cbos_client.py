@@ -249,6 +249,14 @@ class CbosClient:
         # V5 getNewTradeProcess carries PASSWORD next to LOGINID. Env-only
         # (CBOS_PASSWORD) - never from config files, never logged.
         self.password = password if password is not None else os.getenv("CBOS_PASSWORD", "")
+        if not self.use_mock and not self.password:
+            # CBOS has no input validation and "silently accepts and
+            # misbehaves" (module docstring) - an empty PASSWORD would do
+            # exactly that, so say it loudly at construction.
+            logger.warning(
+                "[CBOS] CBOS_PASSWORD is not set - real-mode getNewTradeProcess "
+                "will send an empty PASSWORD field"
+            )
 
         # Mock state — controls when polls "become ready"
         self._mock_ready_after: int = 2

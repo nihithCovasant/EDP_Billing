@@ -4,10 +4,16 @@ AbstractSegmentStateMachine instance that drives that segment/process.
 
 Replaces pipeline.executor.get_segment_state_handler()'s
 is_post_trade_process() dict-family lookup with an explicit code -> class
-mapping, one entry per concrete leaf class. Instances are stateless (aside
-from the SEGMENT_CODE/TRIGGER_METHOD_NAME class attributes), so a fresh one
-per call is cheap; cached here anyway since there's no reason to
-re-instantiate identical objects every wake cycle.
+mapping, one entry per concrete leaf class.
+
+Instances are cached process-wide and are NO LONGER fully stateless: the
+orchestrator injects `edpb`/`runtime_config` onto the cached instance right
+before each execute_handler call (see _process_one_segment). That is safe
+under the current model — segments are driven sequentially on one event
+loop, and every drive re-injects before use — but it is temporal coupling:
+driving machines concurrently (asyncio.gather) or reading the attributes
+outside a drive would observe another drive's injection. If concurrency
+ever arrives, switch to constructor injection with per-drive instances.
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@ from ..models import (
     SegmentExecution,
     SegmentStatus,
 )
-from ..utils.constants import get_sequence_order, POST_TRADE_ORDER
+from ..utils.constants import get_sequence_order, POST_TRADE_ORDER, SEGMENT_ORDER
 from ..utils.datetime_utils import now_ist
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -352,8 +352,12 @@ async def retry_segment(
     _reset_to_pending(row)
     # Mark for the wake loop: without this, retrying a PAST date is a silent
     # no-op — the loop only drives the active date plus marked rows
-    # (wayfinder ticket 13).
-    row.manually_activated = True
+    # (wayfinder ticket 13). REAL SEGMENTS ONLY: the manual sweep drives
+    # rows through the real-segment machine; a marked post-trade row would
+    # error every cycle (its config lives under post_trade_processes) —
+    # post-trade retries rely on the normal post-trade chain instead.
+    if segment_code in SEGMENT_ORDER:
+        row.manually_activated = True
     await session.flush()
     logger.info(
         f"[OPS] segment={segment_code} trade_date={trade_date} | "
@@ -426,6 +430,7 @@ async def get_manually_activated_rows(
         .where(
             SegmentExecution.manually_activated.is_(True),
             SegmentExecution.trade_date >= min_date,
+            SegmentExecution.segment_code.in_(SEGMENT_ORDER),  # real segments only
             SegmentExecution.segment_status.notin_(list(_TERMINAL_STATUSES)),
         )
         .order_by(SegmentExecution.trade_date, SegmentExecution.id)

@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .config import load_edp_config, EdpBootstrapConfig
 from .database import close_database, init_database
+from .edpb_client import get_edpb_client
 from .orchestrator import EdpOrchestrator
 from .utils.datetime_utils import now_ist
 from .utils.log_fmt import edp_log
@@ -65,7 +66,10 @@ class EdpWakeLoop:
             process_url=config.cbos_process_url,
             use_mock=config.cbos_use_mock,
         )
-        self._orchestrator = EdpOrchestrator(config, cbos)
+        # Explicit DI, mirroring cbos: the saga's bot/uploader client is
+        # constructed here from config, not resolved via module globals
+        # inside handlers.
+        self._orchestrator = EdpOrchestrator(config, cbos, edpb=get_edpb_client())
         self._config = config
         self._stop_event.clear()
         self._cycle_count = 0
