@@ -125,7 +125,13 @@ def record_pid_reservation(
     row: SegmentExecution, process_id: str, source: str, now: datetime,
 ) -> None:
     """
-    Record the PID-reservation outcome as a "reserve_process_id" step
+    Record the PID-resolution outcome as a "reserve_process_id" step.
+    (The step key predates the single-reserver contract - the engine now only
+    READS the PID - and is kept verbatim for data compatibility with existing
+    processes_json rows and their consumers; process_id_source is always
+    "EXISTING" since commit 8e5e009.)
+
+    Recorded as a "reserve_process_id" step
     nested inside WAITING_FOR_FILE_UPLOAD's own dict (its first-entry
     operation) — not a separate top-level key, so processes_json's
     top-level keys stay exactly the SegmentState vocabulary.

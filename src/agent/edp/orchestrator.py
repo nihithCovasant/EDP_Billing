@@ -55,14 +55,28 @@ class EdpOrchestrator:
     resolved from the ops-uploaded workflow_json.
     """
 
-    def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient):
+    def __init__(self, config: EdpBootstrapConfig, cbos: CbosClient,
+                 edpb: "EdpbClient | None" = None):
         self.config = config
         self.cbos = cbos
+        # Injected like cbos; None -> resolved lazily so tests that swap the
+        # process client via set_edpb_client() after construction still win.
+        self._edpb = edpb
         self._tz = ZoneInfo(config.timezone)
         # Snapshot for the current wake cycle — shared by every segment
         # processed within it instead of re-passing as arguments.
         self._cycle_active_date = None
         self._cycle_now: Optional[datetime] = None
+        # Segment codes the ACTIVE date's normal path drives this cycle - the
+        # manual sweep must not double-drive those rows, but must pick up an
+        # active-date row whose segment is absent from today's config.
+        self._cycle_configured_codes: tuple[str, ...] = ()
+
+    @property
+    def edpb(self):
+        from .edpb_client import get_edpb_client
+
+        return self._edpb or get_edpb_client()
 
     # -------------------------------------------------------------------------
     # Public entry point — called by loop.py on every wake interval
@@ -147,6 +161,7 @@ class EdpOrchestrator:
         ]
         ordered_codes = [c for c in SEGMENT_ORDER if c in configured_codes]
 
+        self._cycle_configured_codes = tuple(ordered_codes)
         segments = []
         for segment_code in ordered_codes:
             async with get_session() as session:
@@ -206,9 +221,18 @@ class EdpOrchestrator:
         active_date = self._cycle_active_date
         min_date = active_date - timedelta(days=self.config.manual_activation_lookback_days)
         async with get_session() as session:
-            rows = await repository.get_manually_activated_rows(session, active_date, min_date)
+            rows = await repository.get_manually_activated_rows(session, min_date)
 
         for row in rows:
+            # The normal path already drives active-date rows whose segment is
+            # in today's config; everything else (past dates, or an
+            # active-date row ops activated for a segment MISSING from
+            # today's config) belongs to this sweep.
+            if (
+                row.trade_date == active_date
+                and row.segment_code in self._cycle_configured_codes
+            ):
+                continue
             summary["manual_runs_processed"] = summary.get("manual_runs_processed", 0) + 1
             t0 = time.monotonic()
             outcome = await self._process_one_segment(
@@ -226,7 +250,7 @@ class EdpOrchestrator:
     async def _process_one_segment(
         self,
         segment_code: str,
-        trade_date=None,
+        trade_date: date | None = None,
         bypass_window: bool = False,
     ) -> str:
         """
@@ -267,6 +291,9 @@ class EdpOrchestrator:
                 segment_code, workflow.workflow_json, active_date, self._tz
             )
             state_machine = SegmentFactory.get_segment_state_machine(segment_code)
+            # Inject the saga dependencies (mirrors cbos being passed in).
+            state_machine.edpb = self.edpb
+            state_machine.runtime_config = self.config
 
             if bypass_window:
                 logger.warning(seg_log(

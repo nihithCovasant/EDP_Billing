@@ -109,3 +109,38 @@ async def test_legacy_call_without_trade_date_sends_v3_and_logs(client, captured
     assert any(
         "WITHOUT trade_date" in r.message for r in caplog.records
     ), "the legacy path must log loudly"
+
+
+async def test_dmstmt_trigger_uses_shape_b(client, captured):
+    """Review finding: V5 STEP 38 (the DMSTMT trigger) was the one
+    file_process_status caller still sending the legacy v3 payload."""
+    await client.trigger_daily_margin_statements("G_LID", TRADE_DATE)
+    _url, payload = captured[0]
+    assert payload == {
+        "TradeDate": "2026-07-20",
+        "ProcessName": "DAILYMARGINSTATEMENT",
+        "UserID": "G_LID",
+    }
+
+
+async def test_get_new_trade_process_uses_v5_builder(client, captured, monkeypatch):
+    monkeypatch.setattr(client, "password", "pw-under-test")
+    await client.get_new_trade_process("MCX", "CV0001", TRADE_DATE, process_id="17658")
+    url, payload = captured[0]
+    assert url.endswith("/v1/api/process/getNewTradeProcess")
+    assert payload == {
+        "GROUPNAME": "MCX",
+        "LOGINID": "CV0001",
+        "PASSWORD": "pw-under-test",  # v5 field the v3 inline dict omitted
+        "TRADEDATE": "2026-07-20",
+        "PROCESSID": "17658",
+    }
+
+
+async def test_get_existing_process_id_uses_v5_builder(client, captured):
+    await client.get_existing_process_id("MCX", "CV0001", TRADE_DATE)
+    url, payload = captured[0]
+    assert url.endswith("/v1/api/brokerage/getdropdown")
+    assert payload["TAG"] == "EXISTINGPROCESSID"
+    assert payload["FILTER1"] == "MCX"
+    assert payload["FILTER2"] == "2026-07-20"

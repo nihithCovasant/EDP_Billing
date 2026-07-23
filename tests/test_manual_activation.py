@@ -77,7 +77,13 @@ async def test_past_date_retry_actually_runs(cfg, session_factory, test_date):
     assert summary.get("manual_runs_processed", 0) >= 1
 
 
-async def test_sweep_excludes_active_date_and_bounds_lookback(cfg, session_factory, test_date):
+async def test_sweep_ownership_and_lookback(cfg, session_factory, test_date):
+    """The repository returns every marked row in the lookback; the SWEEP
+    decides ownership: active-date rows whose segment today's config drives
+    are skipped (normal path owns them), but an active-date row for a segment
+    MISSING from today's config belongs to the sweep — review finding: the
+    old date-based exclusion orphaned exactly that row until rollover."""
+    orchestrator = _orchestrator(cfg)
     await helpers.seed_day(session_factory, test_date, cfg)
     async with session_factory() as session:
         row = await repository.get_one(session, test_date, "MCX")
@@ -85,25 +91,31 @@ async def test_sweep_excludes_active_date_and_bounds_lookback(cfg, session_facto
         await session.commit()
 
     async with session_factory() as session:
-        # Active date == the row's date -> excluded (normal path owns it).
-        same_day = await repository.get_manually_activated_rows(
-            session, exclude_date=test_date, min_date=test_date - timedelta(days=30),
-        )
-        assert all(r.trade_date != test_date for r in same_day)
-
-        # Later active date, row within lookback -> included.
+        # Lookback bound still applies at the repository.
         included = await repository.get_manually_activated_rows(
-            session, exclude_date=test_date + timedelta(days=1),
-            min_date=test_date - timedelta(days=30),
+            session, min_date=test_date - timedelta(days=30),
         )
         assert any(r.trade_date == test_date and r.segment_code == "MCX" for r in included)
-
-        # Row older than the lookback bound -> excluded.
         excluded = await repository.get_manually_activated_rows(
-            session, exclude_date=test_date + timedelta(days=40),
-            min_date=test_date + timedelta(days=10),
+            session, min_date=test_date + timedelta(days=10),
         )
         assert not any(r.trade_date == test_date for r in excluded)
+
+    # Sweep on the SAME active date: MCX is in today's configured codes ->
+    # the sweep must not double-drive it.
+    orchestrator._cycle_active_date = test_date
+    orchestrator._cycle_now = datetime.now(orchestrator._tz)
+    orchestrator._cycle_configured_codes = ("EQ", "MCX")
+    summary: dict = {}
+    await orchestrator._process_manually_activated(summary)
+    assert summary.get("manual_runs_processed", 0) == 0
+
+    # Same active date, but MCX absent from today's config -> the sweep owns
+    # it (the row would otherwise be orphaned until rollover).
+    orchestrator._cycle_configured_codes = ("EQ",)
+    summary = {}
+    await orchestrator._process_manually_activated(summary)
+    assert summary.get("manual_runs_processed", 0) >= 1
 
 
 async def test_activate_segment_run_semantics(cfg, session_factory, test_date):

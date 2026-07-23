@@ -51,7 +51,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edpb_core import mint_run_id
 from edpb_core.batch_api import BatchStatus
 
-from ..edpb_client import get_edpb_client
+from ..config import EdpBootstrapConfig, load_edp_config
+from ..edpb_client import DownloadStatus, EdpbClient, get_edpb_client
 from ..models import SegmentExecution, SegmentState
 from ..utils.json_helpers import (
     get_download_result,
@@ -74,8 +75,20 @@ from cams_otel_lib import Logger as logger
 
 
 class RealSegmentStateMachine(AbstractSegmentStateMachine):
+    # Injected by the orchestrator before execute_handler (mirrors how cbos
+    # arrives as a handler parameter); the get_edpb_client()/load_edp_config()
+    # fallbacks only serve handlers driven directly in tests.
+    edpb: EdpbClient | None = None
+    runtime_config: EdpBootstrapConfig | None = None
+
     def __init__(self) -> None:
         super().__init__(REAL_SEGMENT_TRANSITION_MAP)
+
+    def _edpb(self) -> EdpbClient:
+        return self.edpb or get_edpb_client()
+
+    def _config(self) -> EdpBootstrapConfig:
+        return self.runtime_config or load_edp_config()
 
     def get_state_handler(self, state: SegmentState | None):
         handlers = {
@@ -152,16 +165,11 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         mark_step_done(row, SegmentState.INIT.value, "BeginFileUpload_STATUS", result.response, now)
         return SegmentHandlerResult(outcome=ADVANCE, next_state=next_state, next_process=None)
 
-    @staticmethod
-    def _is_download_segment(segment_code: str) -> bool:
+    def _is_download_segment(self, segment_code: str) -> bool:
         """True when this segment's downloads are engine-driven (config
         download_segments AND the client actually has a route for it)."""
-        from ..config import load_edp_config
-        from ..edpb_client import EdpbClient
-
-        cfg = load_edp_config()
         return (
-            segment_code.upper() in cfg.download_segments
+            segment_code.upper() in self._config().download_segments
             and EdpbClient.supports_segment(segment_code)
         )
 
@@ -195,9 +203,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         no_data -> files not published yet, wait. failed/error -> bounded
         attempts, then FAILED. Crash-safe by construction: re-running the
         download supersedes the manifest (fresh batch_id), never duplicates."""
-        from ..config import load_edp_config
-
-        client = get_edpb_client()
+        client = self._edpb()
         logger.info(stage_log(
             row.segment_code, "DOWNLOADING",
             "Requesting full-segment download from the RPA bot",
@@ -210,7 +216,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
                     f"{result.status}: {result.message[:200]}", now)
         await session.flush()
 
-        if result.status in ("success", "partial") and result.manifest_path and result.batch_id:
+        if result.status in DownloadStatus.FINALIZED and result.manifest_path and result.batch_id:
             record_download_result(row, result.manifest_path, result.batch_id, result.status, now)
             logger.info(stage_log(
                 row.segment_code, "DOWNLOADING",
@@ -219,7 +225,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             ))
             return SegmentHandlerResult(outcome=ADVANCE, next_state=SegmentState.UPLOADING, next_process=None)
 
-        if result.status == "no_data":
+        if result.status == DownloadStatus.NO_DATA:
             logger.info(stage_log(
                 row.segment_code, "DOWNLOADING",
                 "Exchange has not published the files yet — will retry next cycle",
@@ -227,21 +233,21 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             ))
             return SegmentHandlerResult(outcome=BLOCKED)
 
-        # failed / error / success-without-manifest: bounded retry budget.
+        # failed / error / success-without-manifest: bounded retry budget
+        # (transient or not - the budget is what bounds the wait either way).
         state = get_state(row, SegmentState.DOWNLOADING.value)
         attempts = int(state.get("failed_attempts", 0)) + 1
         state["failed_attempts"] = attempts
         set_state(row, SegmentState.DOWNLOADING.value, state)
 
-        max_attempts = load_edp_config().edpb_download_max_attempts
-        if result.is_transient or attempts < max_attempts:
+        max_attempts = self._config().edpb_download_max_attempts
+        if attempts < max_attempts:
             logger.warning(stage_log(
                 row.segment_code, "DOWNLOADING",
                 f"Download attempt {attempts}/{max_attempts} failed — will retry next cycle",
                 error=result.message,
             ))
-            if attempts < max_attempts:
-                return SegmentHandlerResult(outcome=BLOCKED)
+            return SegmentHandlerResult(outcome=BLOCKED)
         logger.error(stage_log(
             row.segment_code, "DOWNLOADING",
             f"Download failed after {attempts} attempt(s) — marking FAILED",
@@ -267,7 +273,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
             ))
             return self._fail_result(row, "UPLOAD_ERROR", "no manifest_path recorded by DOWNLOADING", now)
 
-        client = get_edpb_client()
+        client = self._edpb()
         result = await client.submit_batch(
             manifest_path, correlation_id=self._run_correlation_id(row),
         )
@@ -402,7 +408,7 @@ class RealSegmentStateMachine(AbstractSegmentStateMachine):
         decision) instead of a silent window-expiry hours later."""
         batch_id = get_download_result(row).get("batch_id")
         if batch_id:
-            batch = await get_edpb_client().get_batch_status(
+            batch = await self._edpb().get_batch_status(
                 batch_id, correlation_id=self._run_correlation_id(row),
             )
             if batch.found and batch.status == BatchStatus.INCOMPLETE:

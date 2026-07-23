@@ -33,3 +33,5 @@ docs/
 .cursor/
 src/config/agent_config.json
 src/config/agent_config.json
+
+.idea/

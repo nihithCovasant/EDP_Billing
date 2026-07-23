@@ -25,7 +25,7 @@ async def test_trigger_daily_margin_statements_hits_status_api_per_step_38(monke
 
     captured = {}
 
-    async def fake_file_process_status(*, segment, process_name, user_id):
+    async def fake_file_process_status(*, segment, process_name, user_id, trade_date=None, include_segment=True):
         captured["called"] = "file_process_status"
         captured["segment"] = segment
         captured["process_name"] = process_name

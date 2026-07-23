@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
+from edpb_core import DOWNLOAD_SEGMENTS
+
 from src.config.agent_config import load_agent_config
 from .utils.constants import POST_TRADE_ORDER, POST_TRADE_FIRST_WINDOW_START
 from cams_otel_lib import Logger as logger, otel_trace
@@ -174,7 +176,7 @@ class EdpBootstrapConfig:
     edpb_use_mock: bool = True
     edpb_download_timeout_seconds: int = 240
     edpb_download_max_attempts: int = 3
-    download_segments: tuple = ("MCX", "EQ")
+    download_segments: tuple = DOWNLOAD_SEGMENTS
     # How many days back the manual-activation sweep (backfills/past-day
     # retries, ticket 13) looks for marked rows - a bound, not a feature.
     manual_activation_lookback_days: int = 30
@@ -312,7 +314,7 @@ def load_edp_config() -> EdpBootstrapConfig:
     elif isinstance(download_segments_raw, (list, tuple)):
         download_segments = tuple(str(s).upper() for s in download_segments_raw)
     else:
-        download_segments = ("MCX", "EQ")
+        download_segments = DOWNLOAD_SEGMENTS
 
     return EdpBootstrapConfig(
         wake_interval_seconds=wake_interval_seconds,

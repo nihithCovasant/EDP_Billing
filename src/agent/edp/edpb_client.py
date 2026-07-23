@@ -30,12 +30,32 @@ from edpb_core.batch_api import BATCHES_PATH
 
 from cams_otel_lib import Logger as logger, otel_trace
 
-# Which bot endpoint + body serves each download segment. EQ's full-segment
-# run is the BSE "all" action; MCX's single endpoint IS its full-segment run.
+# Which bot endpoint + body serves each download segment (keys must stay a
+# subset of edpb_core.DOWNLOAD_SEGMENTS - the vocabulary lives there; this
+# table only adds the transport detail). EQ's full-segment run is the BSE
+# "all" action; MCX's single endpoint IS its full-segment run.
 _SEGMENT_ROUTES: dict[str, tuple[str, dict]] = {
     "MCX": ("/edpb/mcx/download", {}),
     "EQ": ("/edpb/bse_member/download", {"action": "all"}),
 }
+
+
+class DownloadStatus:
+    """The bot's classified download outcomes (see PortalStatus/McxStatus in
+    the bot repo) plus this client's own transport-level ERROR."""
+
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    NO_DATA = "no_data"
+    FAILED = "failed"
+    ERROR = "error"
+
+    FINALIZED = (SUCCESS, PARTIAL)  # states that carry a manifest
+
+
+def _is_transient_status(status_code: int) -> bool:
+    """5xx, 429 and 504 are retryable; anything else 4xx is terminal."""
+    return status_code >= 500 or status_code in (429, 504)
 
 
 @dataclass
@@ -111,7 +131,9 @@ class EdpbClient:
     ) -> DownloadResult:
         seg = segment.upper()
         if seg not in _SEGMENT_ROUTES:
-            return DownloadResult(status="error", message=f"no download route for segment {seg}")
+            return DownloadResult(
+                status=DownloadStatus.ERROR, message=f"no download route for segment {seg}",
+            )
 
         if self.use_mock:
             return self._mock_download(seg, trade_date)
@@ -123,21 +145,20 @@ class EdpbClient:
             async with httpx.AsyncClient(timeout=self.download_timeout) as client:
                 resp = await client.post(url, json=payload, headers=self._headers(correlation_id))
         except httpx.HTTPError as exc:
-            return DownloadResult(status="error", message=f"bot unreachable: {exc}", is_transient=True)
-
-        if resp.status_code in (429, 504) or resp.status_code >= 500:
             return DownloadResult(
-                status="error", message=f"bot HTTP {resp.status_code}: {resp.text[:200]}",
-                is_transient=True,
+                status=DownloadStatus.ERROR, message=f"bot unreachable: {exc}", is_transient=True,
             )
+
         if resp.status_code != 200:
             return DownloadResult(
-                status="error", message=f"bot HTTP {resp.status_code}: {resp.text[:200]}",
+                status=DownloadStatus.ERROR,
+                message=f"bot HTTP {resp.status_code}: {resp.text[:200]}",
+                is_transient=_is_transient_status(resp.status_code),
             )
 
         body = resp.json()
         return DownloadResult(
-            status=str(body.get("status", "failed")),
+            status=str(body.get("status", DownloadStatus.FAILED)),
             manifest_path=body.get("manifest_path"),
             batch_id=body.get("batch_id"),
             message=str(body.get("message", "")),
@@ -147,7 +168,7 @@ class EdpbClient:
         batch_id = f"{segment}-{trade_date.isoformat()}-mock{next(self._mock_batch_counter):04d}"
         logger.info(f"[EDPB][MOCK] segment={segment} api=request_download -> success ({batch_id})")
         return DownloadResult(
-            status="success",
+            status=DownloadStatus.SUCCESS,
             manifest_path=f"/mock/{trade_date.strftime('%d-%m-%Y')}/{segment}/manifest.json",
             batch_id=batch_id,
             message="mock download",
@@ -183,7 +204,7 @@ class EdpbClient:
                 batch_id=body.get("batch_id"),
                 batch_status=str(body.get("status", "")),
             )
-        if resp.status_code >= 500 or resp.status_code == 429:
+        if _is_transient_status(resp.status_code):
             return BatchSubmitResult(
                 accepted=False, message=f"uploader HTTP {resp.status_code}", is_transient=True
             )

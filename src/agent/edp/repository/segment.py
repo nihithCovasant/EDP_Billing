@@ -415,17 +415,16 @@ async def activate_segment_run(
 @otel_trace
 async def get_manually_activated_rows(
     session: AsyncSession,
-    exclude_date: date,
     min_date: date,
 ) -> list[SegmentExecution]:
-    """Non-terminal rows ops explicitly (re)activated for dates OTHER than
-    the active one (that date's rows are driven by the normal path). min_date
-    bounds the lookback so the sweep never scans unbounded history."""
+    """Non-terminal rows ops explicitly (re)activated, lookback-bounded. The
+    orchestrator's sweep decides which of these the normal active-date path
+    already covers (it skips those) - deciding here by date alone missed
+    active-date rows whose segment is absent from today's config."""
     result = await session.execute(
         select(SegmentExecution)
         .where(
             SegmentExecution.manually_activated.is_(True),
-            SegmentExecution.trade_date != exclude_date,
             SegmentExecution.trade_date >= min_date,
             SegmentExecution.segment_status.notin_(list(_TERMINAL_STATUSES)),
         )

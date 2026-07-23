@@ -8,21 +8,26 @@ Agent control endpoints.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from ..config import load_edp_config
 from ..database import get_session
 from ..models import AgentControlAction
 from ..repository import (
+    activate_segment_run,
     get_effective_state,
     record_action,
     get_control_history,
     get_day_summary,
 )
+from ..repository import workflow as workflow_repo
+from ..utils.constants import SEGMENT_ORDER
 from ..utils.datetime_utils import resolve_active_date
+from .auth import require_admin_role
 from .schemas import (
     AgentControlRequest,
     AgentControlResponse,
@@ -138,19 +143,8 @@ async def agent_status():
 # On-demand segment run (wayfinder ticket 13) — backfill / arbitrary trade date
 # =============================================================================
 
-from datetime import date as _date  # noqa: E402
-
-from fastapi import HTTPException, Request  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
-
-from ..repository import activate_segment_run  # noqa: E402
-from ..repository import workflow as workflow_repo  # noqa: E402
-from ..utils.constants import SEGMENT_ORDER  # noqa: E402
-from .auth import require_admin_role  # noqa: E402
-
-
 class RunSegmentRequest(BaseModel):
-    trade_date: _date = Field(description="Trade date to run (YYYY-MM-DD) — any date, not just today")
+    trade_date: date = Field(description="Trade date to run (YYYY-MM-DD) — any date, not just today")
     segment_code: str = Field(description=f"One of {', '.join(SEGMENT_ORDER)}")
 
 

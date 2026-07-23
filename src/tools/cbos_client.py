@@ -95,6 +95,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import os
 import json as _json
 import time as _time
 from dataclasses import dataclass, field
@@ -103,7 +104,12 @@ from typing import List, Optional
 
 import httpx
 
-from edpb_core.cbos import file_process_status_payload, file_process_status_payload_b
+from edpb_core.cbos import (
+    existing_process_id_payload,
+    file_process_status_payload,
+    file_process_status_payload_b,
+    get_new_trade_process_payload,
+)
 
 from cams_otel_lib import Logger as logger, otel_trace
 
@@ -234,11 +240,15 @@ class CbosClient:
         process_url: str,
         use_mock: bool = True,
         timeout_seconds: float = 30.0,
+        password: str | None = None,
     ):
         self.status_url = status_url.rstrip("/")    # http://10.167.202.234:8087
         self.process_url = process_url.rstrip("/")  # http://10.167.202.164:8003
         self.use_mock = use_mock
         self.timeout = timeout_seconds
+        # V5 getNewTradeProcess carries PASSWORD next to LOGINID. Env-only
+        # (CBOS_PASSWORD) - never from config files, never logged.
+        self.password = password if password is not None else os.getenv("CBOS_PASSWORD", "")
 
         # Mock state — controls when polls "become ready"
         self._mock_ready_after: int = 2
@@ -439,12 +449,12 @@ class CbosClient:
             return result
 
         url = f"{self.process_url}/v1/api/process/getNewTradeProcess"
-        payload = {
-            "GROUPNAME": group_name,
-            "LOGINID": login_id,
-            "TRADEDATE": trade_date.isoformat(),
-            "PROCESSID": str(process_id),
-        }
+        # V5 shape from edpb_core (shared with the uploader) - includes the
+        # PASSWORD field the v3-era inline dict omitted.
+        payload = get_new_trade_process_payload(
+            group_name, trade_date.isoformat(), login_id, self.password,
+            str(process_id),
+        )
         mode = "reserve_pid" if process_id == "0" else f"trigger(pid={process_id})"
         logger.info(
             f"[CBOS] segment={group_name} api=getNewTradeProcess mode={mode} "
@@ -513,14 +523,7 @@ class CbosClient:
             return result
 
         url = f"{self.process_url}/v1/api/brokerage/getdropdown"
-        payload = {
-            "TAG": "EXISTINGPROCESSID",
-            "LOGINID": login_id,
-            "FILTER1": segment,
-            "FILTER2": trade_date.isoformat(),
-            "extraoption2": "",
-            "extraoption3": "",
-        }
+        payload = existing_process_id_payload(segment, trade_date.isoformat(), login_id)
         logger.info(
             f"[CBOS] segment={segment} api=getdropdown(EXISTINGPROCESSID) "
             f"date={trade_date} | POST {url}"
@@ -634,15 +637,15 @@ class CbosClient:
     ) -> PostTradeTriggerResult:
         """
         POST {STATUS_URL}/api/edp/file_process_status with
-        {"ProcessName":"DAILYMARGINSTATEMENT","UserID":login_id} — confirmed
-        against EDP_Trade_Process_API_v3 STEP 38 (response {"MSG":"TRUE"}
-        on success). Unlike the other 4 post-trade triggers, this one goes
-        through the STATUS API, not the PROCESS API's {LOGINID,TRADEDATE}
-        shape. trade_date is accepted but unused, kept only to match every
-        other trigger_*()'s signature for PostTradeStateMachine's dispatch.
+        {"TradeDate":...,"ProcessName":"DAILYMARGINSTATEMENT","UserID":login_id}
+        — V5 STEP 38 (Shape B: TradeDate required, no Segment; response
+        {"MSG":"TRUE"} on success). Unlike the other 4 post-trade triggers,
+        this one goes through the STATUS API, not the PROCESS API's
+        {LOGINID,TRADEDATE} shape.
         """
         result = await self.file_process_status(
             segment="DMSTMT", process_name="DAILYMARGINSTATEMENT", user_id=login_id,
+            trade_date=trade_date, include_segment=False,
         )
         if result.is_error:
             return PostTradeTriggerResult(
