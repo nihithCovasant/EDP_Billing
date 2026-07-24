@@ -82,6 +82,15 @@ GOOGLE_API_KEY=your-google-key-here
 pip install -r requirements.txt
 ```
 
+> **Shared `edpb-core` package.** This repo hosts `packages/edpb-core`, the
+> shared EDPB contract consumed by `EDPBilling_FIle_Upload` and
+> `mofsl_file_download_rpa_bot`. Those repos resolve it via
+> `../EDP_Billing/packages/edpb-core` (a `[tool.uv.sources]` path), so they
+> expect this repo checked out as a **sibling** in the same parent directory and
+> on a branch that contains `packages/edpb-core`. If you're setting up one of the
+> sibling repos and `uv sync` can't resolve `edpb-core`, that's the missing
+> checkout.
+
 ### Step 3: Run Locally
 
 ```bash
